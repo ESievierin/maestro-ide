@@ -996,3 +996,90 @@ select {
 .line-question-answer {
   color: #c5cbd9;
 }
+
+/* ---------- Prompt editor (T8) ---------- */
+
+.prompt-modal {
+  width: 900px;
+  max-width: 94vw;
+}
+
+.prompt-body {
+  display: flex;
+  gap: 0.9rem;
+  margin-top: 0.75rem;
+  min-height: 0;
+}
+
+.prompt-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 200px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-height: 460px;
+  overflow-y: auto;
+}
+
+.prompt-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.prompt-list li:hover {
+  background: #1c1f26;
+}
+
+.prompt-list li.selected {
+  border-color: #7aa2f7;
+  background: #1c2230;
+}
+
+.prompt-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-detail {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.prompt-detail code {
+  font-size: 0.72rem;
+  margin-right: 0.3rem;
+}
+
+.prompt-textarea {
+  flex: 1;
+  min-height: 380px;
+  background: #14161b;
+  color: inherit;
+  border: 1px solid #3a3f4b;
+  border-radius: 8px;
+  padding: 0.7rem 0.85rem;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}

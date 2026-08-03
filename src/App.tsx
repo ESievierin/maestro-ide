@@ -5,6 +5,7 @@ import { DiffViewer } from "./views/DiffViewer";
 import { SessionPanel } from "./views/SessionPanel";
 import { WorktreeList } from "./views/WorktreeList";
 import { GateDialog } from "./views/GateDialog";
+import { PromptEditor } from "./views/PromptEditor";
 
 function MainPanel() {
   const selected = useWorktrees((s) => s.selected);
@@ -52,10 +53,17 @@ function MainPanel() {
 }
 
 export default function App() {
+  const [showPrompts, setShowPrompts] = useState(false);
+
   return (
     <div className="app">
       <header className="app-header">
         <h1>MaestroIDE</h1>
+        <div className="actions">
+          <button className="small" onClick={() => setShowPrompts(true)}>
+            Prompts
+          </button>
+        </div>
       </header>
       <div className="app-body">
         <WorktreeList />
@@ -65,6 +73,7 @@ export default function App() {
       </div>
       <EventLog />
       <GateDialog />
+      {showPrompts && <PromptEditor onClose={() => setShowPrompts(false)} />}
     </div>
   );
 }

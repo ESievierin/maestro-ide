@@ -104,7 +104,7 @@ pub fn run() {
         sessions.clone(),
         worktrees.clone(),
         store.clone(),
-        prompts,
+        prompts.clone(),
         bus.clone(),
     ));
 
@@ -116,6 +116,7 @@ pub fn run() {
         diffs: diffs.clone(),
         gates,
         questions: questions.clone(),
+        prompts,
     };
 
     tauri::Builder::default()
@@ -141,7 +142,10 @@ pub fn run() {
             ipc::blame_range,
             ipc::list_pending_gates,
             ipc::respond_gate,
-            ipc::ask_line_question
+            ipc::ask_line_question,
+            ipc::list_prompts,
+            ipc::save_prompt,
+            ipc::reset_prompt
         ])
         .setup(move |app| {
             ipc::spawn_event_forwarder(app.handle().clone(), bus.clone());

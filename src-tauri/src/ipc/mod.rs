@@ -14,6 +14,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::bus::{Event, EventBus};
 use crate::core::diff::{DiffManager, DiffScope, DiffSnapshot, FileDiff};
+use crate::core::questions::{LineQuestionInfo, LineQuestionManager};
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
 use crate::core::store::{Branch, Store};
 use crate::core::worktree::{
@@ -30,6 +31,7 @@ pub struct AppState {
     pub worktrees: Arc<WorktreeManager>,
     pub sessions: Arc<SessionManager>,
     pub diffs: Arc<DiffManager>,
+    pub questions: Arc<LineQuestionManager>,
 }
 
 /// Forward every bus event to the frontend over a single Tauri event channel.
@@ -302,6 +304,27 @@ pub async fn blame_range(
     let diffs = state.diffs.clone();
     run_core(state.bus.clone(), move || {
         diffs.blame(&branch, &path, start, end)
+    })
+    .await
+}
+
+// ---------- line questions ----------
+
+/// Ask a question about a range of lines in a diff (T6). Builds context (hunk text,
+/// blame, branch), renders the `line-question` template, and sends it to the
+/// branch's active session (or a fresh one), per the `line_question_target` setting.
+#[tauri::command]
+pub async fn ask_line_question(
+    state: State<'_, AppState>,
+    branch: String,
+    path: String,
+    start: u32,
+    end: u32,
+    question: String,
+) -> Result<LineQuestionInfo, String> {
+    let questions = state.questions.clone();
+    run_core(state.bus.clone(), move || {
+        questions.ask(&branch, &path, start, end, &question)
     })
     .await
 }

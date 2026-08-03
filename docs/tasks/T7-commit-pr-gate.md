@@ -10,6 +10,7 @@ MaestroIDE is a Tauri 2 desktop app orchestrating parallel Claude Code agents on
 worktrees. Read `README.md` and `maestro-stage1-prompt.md` at the repo root first.
 
 Non-negotiable architecture rules (from the project brief):
+
 - All logic lives in the Rust core (`src-tauri/src/core/*`). The frontend only renders
   state and sends commands.
 - Every state change is an event on the central bus (`core/bus`); UI panels subscribe.
@@ -19,6 +20,7 @@ Non-negotiable architecture rules (from the project brief):
 - Typed errors (`src-tauri/src/error.rs`), no `unwrap()` in core paths, `tracing` logs.
 
 How agent tool permissions flow today (this is the mechanism you hook into):
+
 - The Node sidecar wraps the Claude Agent SDK. When the agent wants to run a tool, the
   sidecar emits a `permission_request { session_id, request_id, tool, args, title }`
   protocol event (see `sidecar/src/protocol.ts` — you do NOT need to change the sidecar).
@@ -26,7 +28,7 @@ How agent tool permissions flow today (this is the mechanism you hook into):
   `handle_event` and currently forwards it to the UI as the bus event
   `session.permission_request` (rendered as Allow/Deny in the chat panel).
 - The decision goes back via `SessionManager::respond_permission(request_id, allow,
-  updated_args, message)` → sidecar → SDK `canUseTool` result. `updated_args` replaces
+updated_args, message)` → sidecar → SDK `canUseTool` result. `updated_args` replaces
   the tool input; `message` is the deny feedback shown to the agent.
 
 ## Task (from the Stage 1 brief)
@@ -50,8 +52,8 @@ only the approved content is executed.
     `GateParam { key: String, label: String, value: String, multiline: bool }` —
     e.g. commit → one param `message`; pr → `title` + `body`.
   - `trait GateRule: Send + Sync { fn id(&self) -> &str; fn matches(&self, tool: &str,
-    args: &serde_json::Value) -> Option<GateMatch>; fn apply(&self, args:
-    &serde_json::Value, edited: &[GateParam]) -> serde_json::Value; }` — `apply`
+args: &serde_json::Value) -> Option<GateMatch>; fn apply(&self, args:
+&serde_json::Value, edited: &[GateParam]) -> serde_json::Value; }` — `apply`
     substitutes the (possibly edited) params back into the tool args and returns the
     updated args for `respond_permission`.
   - `GateRegistry { rules: Vec<Box<dyn GateRule>> }` with `register(rule)` and
@@ -74,7 +76,7 @@ only the approved content is executed.
     agent CLI produces). Thorough unit tests for the matchers and `apply` rebuilding,
     including quotes inside messages.
   - `PendingGates`: map gate_id (uuid) → `{ request_id, session_id, branch, rule_id,
-    kind, params, original_args, created_at }`, with `list()` for UI reload.
+kind, params, original_args, created_at }`, with `list()` for UI reload.
 - Wire into the session manager with **minimal surface**: in
   `core/session/manager.rs`, `SessionManager` gets an
   `Option<Arc<GateManager>>` (or a trait object) set at construction; in `handle_event`
@@ -91,7 +93,7 @@ only the approved content is executed.
   `attention.required` clear? No — just remove the pending entry. Handle unknown
   gate_id with a typed error.
 - Unit tests: matcher extraction (`gh pr create --title "A \"quoted\" title" --body
-  'multi word'`), apply-rebuild round-trip, registry routing (non-matching tool falls
+'multi word'`), apply-rebuild round-trip, registry routing (non-matching tool falls
   through), manager integration with the existing MockEngine pattern (permission
   request for `git push` → `gate.pending` published, respond allow → engine received
   `respond_permission` with updated args; git commit rule respects the `gate_commit`

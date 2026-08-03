@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView, lineNumbers } from "@codemirror/view";
 import { MergeView, unifiedMergeView } from "@codemirror/merge";
@@ -6,8 +6,16 @@ import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { selectSnapshot, useDiffs } from "../state/diffs";
+import { selectQuestions, useQuestions } from "../state/questions";
 import type { ChangedFile, DiffScope } from "../types/diffs";
+import type { LineQuestion } from "../types/questions";
 import type { WorktreeInfo } from "../types/worktrees";
+import {
+  type LineRange,
+  lineQuestionsField,
+  selectionListener,
+  setLineQuestions,
+} from "./diffQuestions";
 
 type ViewMode = "split" | "unified";
 
@@ -56,17 +64,23 @@ function FileRow({
   );
 }
 
-/** Read-only CodeMirror unified diff of one file. */
+/** Read-only CodeMirror unified diff of one file. The single editor here shows the
+ * "new" side, so line selection and question blocks attach directly to it. */
 function UnifiedFileDiff({
   path,
   oldText,
   newText,
+  questions,
+  onSelectionChange,
 }: {
   path: string;
   oldText: string;
   newText: string;
+  questions: LineQuestion[];
+  onSelectionChange: (range: LineRange | null) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<EditorView | null>(null);
 
   useEffect(() => {
     const host = ref.current;
@@ -82,6 +96,8 @@ function UnifiedFileDiff({
           doc: newText,
           extensions: [
             ...readOnlyExtensions(language),
+            lineQuestionsField,
+            selectionListener(onSelectionChange),
             unifiedMergeView({
               original: oldText,
               mergeControls: false,
@@ -92,28 +108,41 @@ function UnifiedFileDiff({
         }),
         parent: host,
       });
+      viewRef.current = view;
+      view.dispatch({ effects: setLineQuestions.of(questions) });
     })();
 
     return () => {
       cancelled = true;
+      viewRef.current = null;
       view?.destroy();
     };
   }, [path, oldText, newText]);
 
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: setLineQuestions.of(questions) });
+  }, [questions]);
+
   return <div className="cm-host" ref={ref} />;
 }
 
-/** Rider-style side-by-side diff: old on the left, new on the right. */
+/** Rider-style side-by-side diff: old on the left, new on the right. Selection and
+ * question blocks attach to the "new" (right) side only. */
 function SplitFileDiff({
   path,
   oldText,
   newText,
+  questions,
+  onSelectionChange,
 }: {
   path: string;
   oldText: string;
   newText: string;
+  questions: LineQuestion[];
+  onSelectionChange: (range: LineRange | null) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<MergeView | null>(null);
 
   useEffect(() => {
     const host = ref.current;
@@ -131,20 +160,31 @@ function SplitFileDiff({
         },
         b: {
           doc: newText,
-          extensions: readOnlyExtensions(language),
+          extensions: [
+            ...readOnlyExtensions(language),
+            lineQuestionsField,
+            selectionListener(onSelectionChange),
+          ],
         },
         parent: host,
         gutter: true,
         // In split view, in-line change highlighting is what makes it readable.
         highlightChanges: true,
       });
+      viewRef.current = view;
+      view.b.dispatch({ effects: setLineQuestions.of(questions) });
     })();
 
     return () => {
       cancelled = true;
+      viewRef.current = null;
       view?.destroy();
     };
   }, [path, oldText, newText]);
+
+  useEffect(() => {
+    viewRef.current?.b.dispatch({ effects: setLineQuestions.of(questions) });
+  }, [questions]);
 
   return <div className="cm-host cm-host-split" ref={ref} />;
 }
@@ -163,12 +203,44 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [filePair, setFilePair] = useState<{ path: string; old: string; new: string } | null>(null);
 
+  const askLineQuestion = useQuestions((s) => s.ask);
+  const questions = useQuestions(selectQuestions(branch, selectedPath ?? ""));
+  const [selection, setSelection] = useState<LineRange | null>(null);
+  const [asking, setAsking] = useState(false);
+  const [questionText, setQuestionText] = useState("");
+  const handleSelectionChange = useCallback((range: LineRange | null) => setSelection(range), []);
+
   useEffect(() => {
     // fetch is a stable zustand action; snapshot comes from the core cache.
     void fetch(branch, scope);
     setSelectedPath(null);
     setFilePair(null);
   }, [branch, scope, fetch]);
+
+  // Selecting a different file — or the file content changing under us (agent edits,
+  // diff.updated refresh) — drops the in-progress selection and ask form: the line
+  // numbers it captured no longer point at the same text.
+  useEffect(() => {
+    setSelection(null);
+    setAsking(false);
+    setQuestionText("");
+  }, [selectedPath, filePair?.old, filePair?.new]);
+
+  const submitQuestion = async () => {
+    if (!selectedPath || !selection || !questionText.trim()) return;
+    const asked = await askLineQuestion({
+      branch,
+      path: selectedPath,
+      start: selection.start,
+      end: selection.end,
+      question: questionText.trim(),
+      scope,
+    });
+    if (asked) {
+      setAsking(false);
+      setQuestionText("");
+    }
+  };
 
   // Keep the selection valid and auto-select the first file.
   useEffect(() => {
@@ -238,8 +310,44 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
           <button className="small" onClick={() => void refresh(branch, scope)} disabled={loading}>
             Refresh
           </button>
+          {selection && !asking && (
+            <button className="small" onClick={() => setAsking(true)}>
+              Ask about line{selection.start === selection.end ? "" : "s"} {selection.start}
+              {selection.start === selection.end ? "" : `–${selection.end}`}
+            </button>
+          )}
         </div>
       </div>
+
+      {asking && selection && (
+        <div className="line-question-form">
+          <textarea
+            autoFocus
+            rows={2}
+            placeholder={`Ask about line${selection.start === selection.end ? "" : "s"} ${selection.start}${selection.start === selection.end ? "" : `–${selection.end}`}…`}
+            value={questionText}
+            onChange={(e) => setQuestionText(e.target.value)}
+          />
+          <div className="actions">
+            <button
+              className="small"
+              onClick={() => void submitQuestion()}
+              disabled={!questionText.trim()}
+            >
+              Ask
+            </button>
+            <button
+              className="small"
+              onClick={() => {
+                setAsking(false);
+                setQuestionText("");
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="error-banner" onClick={clearError} title="Click to dismiss">
@@ -266,12 +374,20 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
           <div className="diff-editor">
             {filePair && filePair.path === selectedPath ? (
               viewMode === "split" ? (
-                <SplitFileDiff path={filePair.path} oldText={filePair.old} newText={filePair.new} />
+                <SplitFileDiff
+                  path={filePair.path}
+                  oldText={filePair.old}
+                  newText={filePair.new}
+                  questions={questions}
+                  onSelectionChange={handleSelectionChange}
+                />
               ) : (
                 <UnifiedFileDiff
                   path={filePair.path}
                   oldText={filePair.old}
                   newText={filePair.new}
+                  questions={questions}
+                  onSelectionChange={handleSelectionChange}
                 />
               )
             ) : selectedPath ? (

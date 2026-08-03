@@ -10,6 +10,7 @@ MaestroIDE is a Tauri 2 desktop app orchestrating parallel Claude Code agents on
 worktrees. Read `README.md` and `maestro-stage1-prompt.md` at the repo root first.
 
 Non-negotiable architecture rules (from the project brief):
+
 - All logic lives in the Rust core (`src-tauri/src/core/*`). The frontend only renders
   state and sends commands.
 - Every state change is an event on the central bus (`core/bus`); UI panels subscribe.
@@ -20,8 +21,9 @@ Non-negotiable architecture rules (from the project brief):
   through one template engine with `{{var}}` substitution. New prompt type = new file.
 
 What already exists and works (do not rebuild):
+
 - `core/diff::DiffManager` — diff snapshots per branch+scope, `blame(branch, path,
-  start, end)` (via `git blame --line-porcelain` in the worktree), `file_diff`.
+start, end)` (via `git blame --line-porcelain` in the worktree), `file_diff`.
 - `core/session::SessionManager` — `spawn(SpawnParams)` (params include `branch`, `cwd`,
   `session_type`, `model`, `effort`, `permission_mode`, `prompt`, `resume_from`),
   `send(session_id, prompt)`, `list_for_branch`. Sessions stream back via bus events
@@ -67,7 +69,7 @@ DoD: select → ask → answer appears inline; works on several worktrees in par
 
 - New module `src-tauri/src/core/questions/mod.rs` (or fold into diff — your call, keep
   it small): `LineQuestionManager` with `ask(branch, path, start, end, question) ->
-  Result<LineQuestionInfo>`:
+Result<LineQuestionInfo>`:
   - Build context: file lines from `DiffManager::file_diff` (new side) for the hunk
     text; `DiffManager::blame` for blame lines.
   - Render the `line-question` template.
@@ -87,7 +89,7 @@ DoD: select → ask → answer appears inline; works on several worktrees in par
     clear the entry. (The UI decides whether the user is still looking; core always
     announces completion.)
   - Return `LineQuestionInfo { question_id, session_id, branch, path, line_start,
-    line_end, question }` so the UI can bind the inline block to the session stream.
+line_end, question }` so the UI can bind the inline block to the session stream.
 - IPC: `ask_line_question(branch, path, start, end, question)` command; register it in
   `lib.rs`. Append at the end of `ipc/mod.rs`; do not reorder existing code.
 - Unit tests with the existing mock patterns (see `core/diff/mod.rs` tests for a full
@@ -98,7 +100,7 @@ DoD: select → ask → answer appears inline; works on several worktrees in par
 
 - `src/state/questions.ts`: zustand store: `byFile: Record<branch|path, LineQuestion[]>`
   where each question tracks `{id, sessionId, lineEnd, question, answer, status:
-  "waiting"|"streaming"|"done"}`. Subscribe via `onBusEvent`:
+"waiting"|"streaming"|"done"}`. Subscribe via `onBusEvent`:
   - `session.stream_delta` for a tracked sessionId → append to `answer` (fresh-session
     mode: all deltas; active-session mode: deltas after ask time — keep it simple, just
     collect from ask onward).

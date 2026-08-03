@@ -49,7 +49,10 @@ export type TranscriptItem =
   | { kind: "status"; status: SessionStatus };
 
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
-export const PERMISSION_MODES = ["default", "acceptEdits", "plan", "bypassPermissions"] as const;
+// `bypassPermissions` is deliberately absent: with it the SDK never calls canUseTool,
+// so pushes/PRs/commits would run without ever reaching the gate. The plumbing still
+// accepts it (config file / settings), it just isn't offered in the UI.
+export const PERMISSION_MODES = ["default", "acceptEdits", "plan"] as const;
 export const READ_ONLY_MODE = "plan";
 export const ACTIVE_STATUSES: SessionStatus[] = ["spawning", "streaming", "awaiting_input"];
 

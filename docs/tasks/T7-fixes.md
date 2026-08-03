@@ -32,6 +32,7 @@ Verified non-matching today: `sh -c "git push"`, `bash -c '…'`, `eval "git pus
 `if true; then git push; fi`, `for … do git push; done`, `xargs -I{} git push`.
 
 Fix (fail-closed, in this order):
+
 - Compare the **basename** of the program token (`/usr/bin/git` → `git`).
 - Strip leading wrapper words before deciding the program: `command`, `env`, `time`,
   `nohup`, `exec`, `sudo`, `stdbuf`, plus `VAR=value` assignments (already handled).
@@ -68,6 +69,7 @@ registry-level test with exactly that combined command (the existing
 ## 4. HIGH — Only the first segment / first flag occurrence is extracted
 
 `find_flag` returns on the first hit and the rules use `.find(...)` over segments, so:
+
 - `gh pr create --title A --body B --title EVIL` shows/edits `A`, but `gh` uses the last
   `--title` → the approved title is discarded and `EVIL` executes.
 - `git commit -m "a" && git commit -m "b"` shows only `a`; the second commit executes
@@ -98,6 +100,7 @@ dismissal, so a dead gate blocks the entire app; clicking Allow "succeeds" silen
 approved.
 
 Fix:
+
 - `GateManager::cancel_for_session(session_id)` removing all its pending gates; call it
   from `SessionManager` on `SessionClosed`, in `handle_crash`, and in
   `fail_stale_sessions`.

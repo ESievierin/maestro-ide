@@ -945,11 +945,54 @@ select {
   color: inherit;
   border: 1px solid #3a3f4b;
   border-radius: 6px;
-  padding: 0.4rem 0.6rem;
+  padding: 0.5rem 0.6rem;
+  font: inherit;
+  resize: vertical;
+}
+
+/* ---------- Line-level questions (T6) ---------- */
+
+.line-question-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  border: 1px solid #33415e;
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  background: #1c2230;
+}
+
+.line-question-form textarea {
+  background: #1c1f26;
+  color: inherit;
+  border: 1px solid #3a3f4b;
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem;
   font: inherit;
   resize: vertical;
 }
 
 .gate-queue-hint {
   margin: 0.6rem 0 0;
+}
+
+.line-question-block {
+  margin: 0.25rem 0.5rem;
+  padding: 0.5rem 0.7rem;
+  border-left: 3px solid #7aa2f7;
+  background: #1c2230;
+  border-radius: 0 6px 6px 0;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.line-question-text {
+  color: #7aa2f7;
+  font-weight: 600;
+  margin-bottom: 0.3rem;
+}
+
+.line-question-answer {
+  color: #c5cbd9;
 }

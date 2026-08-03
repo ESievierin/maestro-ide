@@ -37,6 +37,7 @@ function GateModal({ gate, queued }: { gate: PendingGate; queued: number }) {
         <pre className="gate-command">
           <code>{commandOf(gate)}</code>
         </pre>
+        {gate.note && <p className="hint warn">Not editable: {gate.note}</p>}
         <div className="form-grid">
           {gate.params.map((p) => (
             <label key={p.key}>

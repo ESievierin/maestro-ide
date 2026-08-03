@@ -9,6 +9,8 @@ use crate::core::agent::{SidecarConfig, SidecarEngine};
 use crate::core::bus::EventBus;
 use crate::core::diff::DiffManager;
 use crate::core::gate::{self, GateManager};
+use crate::core::prompts::PromptManager;
+use crate::core::questions::LineQuestionManager;
 use crate::core::session::SessionManager;
 use crate::core::store::SqliteStore;
 use crate::core::worktree::{GitCli, WorktreeManager};
@@ -89,6 +91,23 @@ pub fn run() {
         bus.clone(),
     ));
 
+    let prompts_dir = maestro_home().join("prompts");
+    let prompts = match PromptManager::new(&prompts_dir) {
+        Ok(prompts) => Arc::new(prompts),
+        Err(err) => {
+            tracing::error!(error = %err, path = %prompts_dir.display(), "failed to set up prompts directory");
+            std::process::exit(1);
+        }
+    };
+    let questions = Arc::new(LineQuestionManager::new(
+        diffs.clone(),
+        sessions.clone(),
+        worktrees.clone(),
+        store.clone(),
+        prompts,
+        bus.clone(),
+    ));
+
     let state = AppState {
         bus: bus.clone(),
         store,
@@ -96,6 +115,7 @@ pub fn run() {
         sessions: sessions.clone(),
         diffs: diffs.clone(),
         gates,
+        questions: questions.clone(),
     };
 
     tauri::Builder::default()
@@ -120,12 +140,14 @@ pub fn run() {
             ipc::get_file_diff,
             ipc::blame_range,
             ipc::list_pending_gates,
-            ipc::respond_gate
+            ipc::respond_gate,
+            ipc::ask_line_question
         ])
         .setup(move |app| {
             ipc::spawn_event_forwarder(app.handle().clone(), bus.clone());
             tauri::async_runtime::spawn(sessions.clone().run_loop(signal_rx));
             tauri::async_runtime::spawn(diffs.clone().run_invalidation_loop(bus.clone()));
+            tauri::async_runtime::spawn(questions.clone().run_loop(bus.clone()));
             tracing::info!("event forwarder, session manager, and diff invalidator started");
             Ok(())
         })

@@ -70,6 +70,18 @@ pub(crate) fn tokenize(command: &str) -> Vec<Token> {
                 });
                 i += 1;
             }
+            '(' | ')' => {
+                // Grouping punctuation: its own token so `(git push)` still parses as
+                // a git invocation. `$(` never reaches here — it is consumed above.
+                flush!(off);
+                tokens.push(Token {
+                    text: c.to_string(),
+                    is_separator: true,
+                    start: off,
+                    end: end_of(i + 1),
+                });
+                i += 1;
+            }
             '&' | '|' => {
                 flush!(off);
                 let doubled = chars.get(i + 1).is_some_and(|&(_, c2)| c2 == c);
@@ -138,6 +150,20 @@ pub(crate) fn tokenize(command: &str) -> Vec<Token> {
                 }
             }
             '\\' => {
+                // Backslash-newline is a line continuation: both characters vanish and
+                // the token continues. Emitting the newline instead used to fuse the
+                // next word into this token (`push\n--force`), which made every
+                // subcommand match fail — the gate silently opened.
+                if chars.get(i + 1).is_some_and(|&(_, n)| n == '\n') {
+                    i += 2;
+                    continue;
+                }
+                if chars.get(i + 1).is_some_and(|&(_, n)| n == '\r')
+                    && chars.get(i + 2).is_some_and(|&(_, n)| n == '\n')
+                {
+                    i += 3;
+                    continue;
+                }
                 if !has_token {
                     has_token = true;
                     start = off;
@@ -356,9 +382,74 @@ fn looks_like_assignment(text: &str) -> bool {
     }
 }
 
-/// Index of the program name in a segment (skipping `VAR=value` prefixes).
+/// Words that merely prefix another command; the real program follows them.
+const WRAPPER_WORDS: &[&str] = &[
+    "command", "env", "time", "nohup", "exec", "sudo", "stdbuf", "then", "else", "do", "elif",
+];
+
+/// Grouping/no-op tokens that can precede a command inside a segment.
+const GROUPING_TOKENS: &[&str] = &["(", ")", "{", "}", "!"];
+
+/// Shells whose `-c <string>` argument is itself a command line.
+const SHELL_PROGRAMS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
+
+/// Program name without its directory (`/usr/bin/git` → `git`).
+pub(crate) fn program_basename(text: &str) -> &str {
+    text.rsplit(['/', '\\']).next().unwrap_or(text)
+}
+
+/// Index of the program name in a segment, skipping `VAR=value` prefixes, grouping
+/// tokens and wrapper words (`env`, `command`, `then`, …). Fail-closed: the point is
+/// that `command git push` and `(git push)` still reach the gate.
 fn program_index(segment: &[Token]) -> Option<usize> {
-    segment.iter().position(|t| !looks_like_assignment(&t.text))
+    segment.iter().position(|t| {
+        let text = t.text.as_str();
+        !looks_like_assignment(text)
+            && !GROUPING_TOKENS.contains(&text)
+            && !WRAPPER_WORDS.contains(&program_basename(text))
+    })
+}
+
+/// Nested command strings inside `segment`: `sh -c "<cmd>"`, `eval "<cmd>"`, and any
+/// `$(…)` / backtick token. Used to look for gated commands one level down; matches
+/// found there are never editable (splicing into a nested quoted string is unsafe).
+pub(crate) fn nested_commands(segment: &[Token]) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(program) = program_index(segment) else {
+        return out;
+    };
+    let program_name = program_basename(&segment[program].text);
+
+    if SHELL_PROGRAMS.contains(&program_name) {
+        let mut i = program + 1;
+        while i < segment.len() {
+            if segment[i].text == "-c" {
+                if let Some(script) = segment.get(i + 1) {
+                    out.push(script.text.clone());
+                }
+                break;
+            }
+            i += 1;
+        }
+    } else if program_name == "eval" {
+        for token in &segment[program + 1..] {
+            out.push(token.text.clone());
+        }
+    }
+
+    // Substitutions are kept verbatim by the tokenizer, e.g. `$(git push)`.
+    for token in segment {
+        let text = token.text.trim();
+        if let Some(inner) = text
+            .strip_prefix("$(")
+            .and_then(|rest| rest.strip_suffix(')'))
+        {
+            out.push(inner.to_string());
+        } else if let Some(inner) = text.strip_prefix('`').and_then(|r| r.strip_suffix('`')) {
+            out.push(inner.to_string());
+        }
+    }
+    out
 }
 
 /// Git global flags that take a separate value argument.
@@ -367,7 +458,7 @@ const GIT_VALUE_FLAGS: &[&str] = &["-C", "-c", "--git-dir", "--work-tree", "--na
 /// Index of the git subcommand token, skipping global flags (`git -C x push`).
 fn git_subcommand(segment: &[Token]) -> Option<usize> {
     let program = program_index(segment)?;
-    if segment[program].text != "git" {
+    if program_basename(&segment[program].text) != "git" {
         return None;
     }
     let mut i = program + 1;
@@ -385,11 +476,19 @@ fn git_subcommand(segment: &[Token]) -> Option<usize> {
     None
 }
 
+fn is_git_push(segment: &[Token]) -> bool {
+    git_subcommand(segment).is_some_and(|i| segment[i].text == "push")
+}
+
+fn is_git_commit(segment: &[Token]) -> bool {
+    git_subcommand(segment).is_some_and(|i| segment[i].text == "commit")
+}
+
 fn is_gh_pr_create(segment: &[Token]) -> bool {
     let Some(program) = program_index(segment) else {
         return false;
     };
-    if segment[program].text != "gh" {
+    if program_basename(&segment[program].text) != "gh" {
         return false;
     }
     let mut words = segment[program + 1..]
@@ -414,25 +513,62 @@ struct FlagHit {
 /// `-f value`, `-f=value`, `-fvalue`, and (with `cluster`) combined short flags
 /// like `git commit -am "msg"`.
 fn find_flag(segment: &[Token], long: &str, short: Option<&str>, cluster: bool) -> Option<FlagHit> {
+    count_flag(segment, long, short, cluster).1
+}
+
+/// How many times the flag occurs, plus the hit git/gh would actually use (the last
+/// one). Multiplicity makes the gate drop editing: showing one value while another
+/// executes is exactly what this boundary exists to prevent.
+fn count_flag(
+    segment: &[Token],
+    long: &str,
+    short: Option<&str>,
+    cluster: bool,
+) -> (usize, Option<FlagHit>) {
+    let (count, hit, _) = count_flag_detail(segment, long, short, cluster);
+    (count, hit)
+}
+
+/// `(occurrences, last hit, ambiguous)`. Ambiguous means a flag's value looks like
+/// another flag (`--title --body B`): the tool would swallow the flag as the value, so
+/// the gate must not present it as editable text.
+fn count_flag_detail(
+    segment: &[Token],
+    long: &str,
+    short: Option<&str>,
+    cluster: bool,
+) -> (usize, Option<FlagHit>, bool) {
+    let mut count = 0usize;
+    let mut ambiguous = false;
+    let mut last: Option<FlagHit> = None;
     for (i, token) in segment.iter().enumerate() {
         let text = token.text.as_str();
         if text == long || short == Some(text) {
-            let value = segment.get(i + 1)?;
-            return Some(FlagHit {
-                value: value.text.clone(),
-                start: value.start,
-                end: value.end,
-                prefix: String::new(),
-            });
+            // A dangling flag has no value; keep scanning instead of giving up.
+            if let Some(value) = segment.get(i + 1) {
+                if value.text.starts_with('-') {
+                    ambiguous = true;
+                }
+                count += 1;
+                last = Some(FlagHit {
+                    value: value.text.clone(),
+                    start: value.start,
+                    end: value.end,
+                    prefix: String::new(),
+                });
+            }
+            continue;
         }
         if let Some(rest) = text.strip_prefix(long) {
             if let Some(v) = rest.strip_prefix('=') {
-                return Some(FlagHit {
+                count += 1;
+                last = Some(FlagHit {
                     value: v.to_string(),
                     start: token.start,
                     end: token.end,
                     prefix: format!("{long}="),
                 });
+                continue;
             }
         }
         if let Some(s) = short {
@@ -442,12 +578,14 @@ fn find_flag(segment: &[Token], long: &str, short: Option<&str>, cluster: bool) 
                         Some(v) => (v, format!("{s}=")),
                         None => (rest, s.to_string()),
                     };
-                    return Some(FlagHit {
+                    count += 1;
+                    last = Some(FlagHit {
                         value: value.to_string(),
                         start: token.start,
                         end: token.end,
                         prefix,
                     });
+                    continue;
                 }
             }
             let letter = s.trim_start_matches('-');
@@ -458,17 +596,20 @@ fn find_flag(segment: &[Token], long: &str, short: Option<&str>, cluster: bool) 
                 && text.ends_with(letter)
                 && text[1..].chars().all(|c| c.is_ascii_alphanumeric())
             {
-                let value = segment.get(i + 1)?;
-                return Some(FlagHit {
-                    value: value.text.clone(),
-                    start: value.start,
-                    end: value.end,
-                    prefix: String::new(),
-                });
+                if let Some(value) = segment.get(i + 1) {
+                    count += 1;
+                    last = Some(FlagHit {
+                        value: value.text.clone(),
+                        start: value.start,
+                        end: value.end,
+                        prefix: String::new(),
+                    });
+                }
+                continue;
             }
         }
     }
-    None
+    (count, last, ambiguous)
 }
 
 /// Extracted flag value with here-doc substitutions unwrapped to their body.
@@ -547,6 +688,66 @@ fn edited_value<'a>(edited: &'a [GateParam], key: &str) -> Option<&'a str> {
         .map(|p| p.value.as_str())
 }
 
+/// Recursion depth for nested command strings (`sh -c "sh -c '…'"`).
+const MAX_NESTING: usize = 3;
+
+/// Does any segment of `command` — including one level down inside `sh -c`, `eval`,
+/// `$(…)` or backticks — satisfy `pred`? Fail-closed: a wrapped `git push` must still
+/// reach the gate even though its params cannot be edited safely.
+fn any_segment_nested(command: &str, depth: usize, pred: &dyn Fn(&[Token]) -> bool) -> bool {
+    let tokens = tokenize(command);
+    let segments = split_commands(&tokens);
+    if segments.iter().any(|seg| pred(seg)) {
+        return true;
+    }
+    if depth == 0 {
+        return false;
+    }
+    segments
+        .iter()
+        .flat_map(|seg| nested_commands(seg))
+        .any(|inner| any_segment_nested(&inner, depth - 1, pred))
+}
+
+/// Segments of the top level only (where splicing is safe) matching `pred`.
+fn top_level_segments<'a>(
+    tokens: &'a [Token],
+    pred: &dyn Fn(&[Token]) -> bool,
+) -> Vec<&'a [Token]> {
+    split_commands(tokens)
+        .into_iter()
+        .filter(|seg| pred(seg))
+        .collect()
+}
+
+/// Flags that make the message/body come from somewhere the dialog cannot show.
+const EXTERNAL_MESSAGE_FLAGS: &[&str] = &[
+    "-F",
+    "--file",
+    "--body-file",
+    "-C",
+    "--reuse-message",
+    "--fill",
+    "--fill-first",
+    "--fill-verbose",
+    "--template",
+];
+
+/// `Some(reason)` when a segment sources its text externally, so the value shown in
+/// the dialog would be empty and editing it would produce a broken command.
+fn external_source(segment: &[Token]) -> Option<String> {
+    for token in segment {
+        let text = token.text.as_str();
+        let flag = text.split('=').next().unwrap_or(text);
+        if EXTERNAL_MESSAGE_FLAGS.contains(&flag) {
+            return Some(format!(
+                "the text comes from `{flag}` — approve the command as-is or deny it"
+            ));
+        }
+    }
+    None
+}
+
 // ---------- built-in rules ----------
 
 /// Gates any `git push` invocation (also `git -C <path> push`, and pushes hidden
@@ -560,14 +761,11 @@ impl GateRule for GitPushRule {
 
     fn matches(&self, tool: &str, args: &Value) -> Option<GateMatch> {
         let command = bash_command(tool, args)?;
-        let tokens = tokenize(command);
-        split_commands(&tokens)
-            .into_iter()
-            .any(|seg| git_subcommand(seg).is_some_and(|i| seg[i].text == "push"))
-            .then(|| GateMatch {
-                kind: "git push".into(),
-                params: Vec::new(),
-            })
+        any_segment_nested(command, MAX_NESTING, &is_git_push).then(|| GateMatch {
+            kind: "git push".into(),
+            params: Vec::new(),
+            note: None,
+        })
     }
 
     fn apply(&self, args: &Value, _edited: &[GateParam]) -> Value {
@@ -589,8 +787,66 @@ impl GateRule for GhPrCreateRule {
     fn matches(&self, tool: &str, args: &Value) -> Option<GateMatch> {
         let command = bash_command(tool, args)?;
         let tokens = tokenize(command);
-        let segments = split_commands(&tokens);
-        let segment = segments.into_iter().find(|s| is_gh_pr_create(s))?;
+        let segments = top_level_segments(&tokens, &is_gh_pr_create);
+
+        // Wrapped/nested invocation: gate it, but never pretend it is editable.
+        if segments.is_empty() {
+            return any_segment_nested(command, MAX_NESTING, &is_gh_pr_create).then(|| {
+                GateMatch {
+                    kind: "PR creation".into(),
+                    params: Vec::new(),
+                    note: Some(
+                        "the `gh pr create` call is nested inside another command —                          approve the command as-is or deny it"
+                            .into(),
+                    ),
+                }
+            });
+        }
+        if segments.len() > 1 {
+            return Some(GateMatch {
+                kind: "PR creation".into(),
+                params: Vec::new(),
+                note: Some(format!(
+                    "{} `gh pr create` calls in one command — approve as-is or deny",
+                    segments.len()
+                )),
+            });
+        }
+
+        let segment = segments[0];
+        if let Some(reason) = external_source(segment) {
+            return Some(GateMatch {
+                kind: "PR creation".into(),
+                params: Vec::new(),
+                note: Some(reason),
+            });
+        }
+        // A repeated flag means gh would use a value other than the one shown; an
+        // ambiguous one (`--title --body B`) means gh swallows the next flag as text.
+        let (title_count, _, title_ambiguous) =
+            count_flag_detail(segment, "--title", Some("-t"), false);
+        let (body_count, _, body_ambiguous) =
+            count_flag_detail(segment, "--body", Some("-b"), false);
+        if title_count > 1 || body_count > 1 {
+            return Some(GateMatch {
+                kind: "PR creation".into(),
+                params: Vec::new(),
+                note: Some(
+                    "the title or body flag appears more than once — approve as-is or deny".into(),
+                ),
+            });
+        }
+        if title_ambiguous || body_ambiguous {
+            return Some(GateMatch {
+                kind: "PR creation".into(),
+                params: Vec::new(),
+                note: Some(
+                    "a title/body flag is followed by another flag, so gh would use that as the text — approve as-is or deny"
+                        .into(),
+                ),
+            });
+        }
+
         Some(GateMatch {
             kind: "PR creation".into(),
             params: vec![
@@ -607,6 +863,7 @@ impl GateRule for GhPrCreateRule {
                     true,
                 ),
             ],
+            note: None,
         })
     }
 
@@ -645,10 +902,58 @@ impl GateRule for GitCommitRule {
     fn matches(&self, tool: &str, args: &Value) -> Option<GateMatch> {
         let command = bash_command(tool, args)?;
         let tokens = tokenize(command);
-        let segments = split_commands(&tokens);
-        let segment = segments
-            .into_iter()
-            .find(|s| git_subcommand(s).is_some_and(|i| s[i].text == "commit"))?;
+        let segments = top_level_segments(&tokens, &is_git_commit);
+
+        if segments.is_empty() {
+            return any_segment_nested(command, MAX_NESTING, &is_git_commit).then(|| GateMatch {
+                kind: "commit".into(),
+                params: Vec::new(),
+                note: Some(
+                    "the `git commit` call is nested inside another command —                      approve the command as-is or deny it"
+                        .into(),
+                ),
+            });
+        }
+        if segments.len() > 1 {
+            return Some(GateMatch {
+                kind: "commit".into(),
+                params: Vec::new(),
+                note: Some(format!(
+                    "{} commits in one command — approve as-is or deny",
+                    segments.len()
+                )),
+            });
+        }
+
+        let segment = segments[0];
+        if let Some(reason) = external_source(segment) {
+            return Some(GateMatch {
+                kind: "commit".into(),
+                params: Vec::new(),
+                note: Some(reason),
+            });
+        }
+        let (message_count, _, message_ambiguous) =
+            count_flag_detail(segment, "--message", Some("-m"), true);
+        if message_ambiguous {
+            return Some(GateMatch {
+                kind: "commit".into(),
+                params: Vec::new(),
+                note: Some(
+                    "-m is followed by another flag, so git would use that as the message — approve as-is or deny"
+                        .into(),
+                ),
+            });
+        }
+        if message_count > 1 {
+            // git concatenates repeated -m into paragraphs; editing one is misleading.
+            return Some(GateMatch {
+                kind: "commit".into(),
+                params: Vec::new(),
+                note: Some("several -m paragraphs in one commit — approve as-is or deny".into()),
+            });
+        }
+
         Some(GateMatch {
             kind: "commit".into(),
             params: vec![param(
@@ -657,6 +962,7 @@ impl GateRule for GitCommitRule {
                 flag_value(segment, "--message", Some("-m"), true),
                 true,
             )],
+            note: None,
         })
     }
 
@@ -896,10 +1202,150 @@ mod tests {
     }
 
     #[test]
-    fn pr_create_missing_flags_become_empty_params() {
-        let (title, body) = pr_params("gh pr create --fill");
+    fn pr_create_fill_is_gated_but_not_editable() {
+        // --fill takes the title/body from the commits: showing empty fields and
+        // appending edited flags would produce a command gh rejects.
+        let m = GhPrCreateRule
+            .matches(BASH_TOOL, &bash("gh pr create --fill"))
+            .expect("should gate");
+        assert!(m.params.is_empty(), "no editable params for --fill");
+        assert!(m.note.is_some(), "the dialog explains why");
+    }
+
+    #[test]
+    fn pr_create_bare_command_offers_empty_editable_params() {
+        let (title, body) = pr_params("gh pr create");
         assert_eq!(title, "");
         assert_eq!(body, "");
+    }
+
+    /// Regression: a backslash-newline continuation used to fuse the next word into
+    /// the token (`push\n--force`), so no rule matched and the gate opened silently.
+    #[test]
+    fn line_continuations_still_match() {
+        for command in [
+            "git push \\\n  --force-with-lease origin HEAD",
+            "git \\\n  push origin main",
+            "git \\\r\n  push origin main",
+        ] {
+            assert!(
+                GitPushRule.matches(BASH_TOOL, &bash(command)).is_some(),
+                "must gate: {command:?}"
+            );
+        }
+    }
+
+    /// Wrapped, grouped and substituted invocations must all reach the gate; none of
+    /// them is editable, so each carries an explanatory note where params would be.
+    #[test]
+    fn wrapped_invocations_are_gated() {
+        for command in [
+            "sh -c \"git push origin main\"",
+            "bash -c 'git push'",
+            "eval \"git push\"",
+            "command git push",
+            "env git push",
+            "time git push",
+            "/usr/bin/git push",
+            "(git push)",
+            "{ git push; }",
+            "$(git push)",
+            "if true; then git push; fi",
+        ] {
+            assert!(
+                GitPushRule.matches(BASH_TOOL, &bash(command)).is_some(),
+                "must gate: {command}"
+            );
+        }
+        // Nested gh pr create is gated but not editable.
+        let m = GhPrCreateRule
+            .matches(BASH_TOOL, &bash("sh -c \"gh pr create -t A -b B\""))
+            .expect("nested pr create must gate");
+        assert!(m.params.is_empty());
+        assert!(m.note.is_some());
+    }
+
+    #[test]
+    fn unrelated_git_commands_do_not_match() {
+        for command in ["git status", "git log --oneline", "gh pr view 3", "ls -la"] {
+            assert!(
+                GitPushRule.matches(BASH_TOOL, &bash(command)).is_none(),
+                "must not gate: {command}"
+            );
+            assert!(
+                GhPrCreateRule.matches(BASH_TOOL, &bash(command)).is_none(),
+                "must not gate: {command}"
+            );
+        }
+    }
+
+    /// Repeated flags or several matching segments would let the user approve one value
+    /// while a different one executes; the gate drops editing instead.
+    #[test]
+    fn ambiguous_commands_are_not_editable() {
+        let repeated = GhPrCreateRule
+            .matches(
+                BASH_TOOL,
+                &bash("gh pr create --title A --body B --title EVIL"),
+            )
+            .expect("must gate");
+        assert!(repeated.params.is_empty(), "repeated --title is ambiguous");
+        assert!(repeated.note.is_some());
+
+        let two_prs = GhPrCreateRule
+            .matches(
+                BASH_TOOL,
+                &bash("gh pr create -t A -b B; gh pr create -t C -b D"),
+            )
+            .expect("must gate");
+        assert!(two_prs.params.is_empty());
+
+        let two_commits = GitCommitRule
+            .matches(
+                BASH_TOOL,
+                &bash("git commit -m \"a\" && git commit -m \"b\""),
+            )
+            .expect("must gate");
+        assert!(two_commits.params.is_empty(), "two commits are ambiguous");
+        assert!(two_commits.note.as_deref().is_some_and(|n| n.contains("2")));
+    }
+
+    /// `-F file` / `--body-file` hide the real text: gate, but do not offer an empty
+    /// field whose edit would append a mutually exclusive flag.
+    #[test]
+    fn external_message_sources_are_not_editable() {
+        for (rule_kind, command) in [
+            ("commit", "git commit -F msg.txt"),
+            ("commit", "git commit --file=msg.txt"),
+        ] {
+            let m = GitCommitRule
+                .matches(BASH_TOOL, &bash(command))
+                .unwrap_or_else(|| panic!("must gate: {command}"));
+            assert_eq!(m.kind, rule_kind);
+            assert!(m.params.is_empty(), "not editable: {command}");
+            assert!(m.note.is_some(), "note explains why: {command}");
+        }
+        let pr = GhPrCreateRule
+            .matches(BASH_TOOL, &bash("gh pr create -t A --body-file b.md"))
+            .expect("must gate");
+        assert!(pr.params.is_empty());
+    }
+
+    /// A dangling flag used to abort the whole scan, hiding a later real value.
+    #[test]
+    fn dangling_and_ambiguous_flags_are_handled() {
+        // `--title --body B`: gh would take `--body` as the title, so editing is unsafe.
+        let ambiguous = GhPrCreateRule
+            .matches(BASH_TOOL, &bash("gh pr create --title --body B"))
+            .expect("must gate");
+        assert!(ambiguous.params.is_empty());
+        assert!(ambiguous.note.is_some());
+
+        // A trailing `-m` has no value at all: editable with an empty message.
+        let m = GitCommitRule
+            .matches(BASH_TOOL, &bash("git commit -m"))
+            .expect("must gate");
+        assert!(m.params.iter().all(|p| p.value.is_empty()));
     }
 
     #[test]
@@ -960,7 +1406,7 @@ mod tests {
     #[test]
     fn pr_create_apply_appends_missing_flags() {
         let rule = GhPrCreateRule;
-        let args = bash("gh pr create --fill");
+        let args = bash("gh pr create --draft");
         let edited = [
             param("title", "Title", "added title".into(), false),
             param("body", "Body", "".into(), true),

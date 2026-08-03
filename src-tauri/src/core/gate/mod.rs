@@ -44,6 +44,10 @@ pub struct GateMatch {
     /// Human-readable label shown in the dialog ("git push", "PR creation", …).
     pub kind: String,
     pub params: Vec<GateParam>,
+    /// Set when the gate is deliberately not editable (nested command, several
+    /// commits in one line, message read from a file): the dialog then shows the raw
+    /// command with Allow/Deny plus this explanation.
+    pub note: Option<String>,
 }
 
 /// A gated operation: matcher on (tool, args) plus the substitution handler.
@@ -71,10 +75,24 @@ impl GateRegistry {
         self.rules.push(rule);
     }
 
+    /// Best match across all rules. Several rules can match one command line
+    /// (`git push … && gh pr create …`); the one with editable params wins so the user
+    /// still edits the PR title/body, and ties break on registration order.
     pub fn match_tool(&self, tool: &str, args: &Value) -> Option<(&dyn GateRule, GateMatch)> {
-        self.rules
-            .iter()
-            .find_map(|rule| rule.matches(tool, args).map(|m| (rule.as_ref(), m)))
+        let mut best: Option<(&dyn GateRule, GateMatch)> = None;
+        for rule in &self.rules {
+            let Some(candidate) = rule.matches(tool, args) else {
+                continue;
+            };
+            let better = match &best {
+                None => true,
+                Some((_, current)) => candidate.params.len() > current.params.len(),
+            };
+            if better {
+                best = Some((rule.as_ref(), candidate));
+            }
+        }
+        best
     }
 
     fn rule(&self, id: &str) -> Option<&dyn GateRule> {
@@ -111,6 +129,8 @@ pub struct PendingGate {
     pub kind: String,
     pub tool: String,
     pub params: Vec<GateParam>,
+    /// Why this gate is approve-as-is (no editable params); `None` when editable.
+    pub note: Option<String>,
     #[serde(rename = "raw_args")]
     pub original_args: Value,
     pub created_at: DateTime<Utc>,
@@ -160,6 +180,7 @@ impl GateManager {
             kind: gate_match.kind,
             tool: tool.to_string(),
             params: gate_match.params,
+            note: gate_match.note,
             original_args: args.clone(),
             created_at: Utc::now(),
         };
@@ -188,6 +209,7 @@ impl GateManager {
             kind: gate.kind,
             branch: gate.branch,
             params: gate.params,
+            note: gate.note,
             raw_args: gate.original_args,
         });
         true
@@ -234,7 +256,47 @@ impl GateManager {
 
         self.lock_pending()?.remove(gate_id);
         tracing::info!(gate_id, allow, rule = gate.rule_id, "gate resolved");
+        self.bus.publish(Event::GateResolved {
+            gate_id: gate_id.to_string(),
+            reason: if allow { "allowed" } else { "denied" }.into(),
+        });
         Ok(())
+    }
+
+    /// Drop every gate belonging to `session_id`. Called when a session closes,
+    /// crashes, or is swept at startup: its permission request is already resolved
+    /// (or gone) on the sidecar side, so the dialog must not keep blocking the UI
+    /// with a decision that can no longer take effect.
+    pub fn cancel_for_session(&self, session_id: &str, reason: &str) {
+        let cancelled: Vec<String> = match self.lock_pending() {
+            Ok(mut pending) => {
+                let ids: Vec<String> = pending
+                    .values()
+                    .filter(|gate| gate.session_id == session_id)
+                    .map(|gate| gate.gate_id.clone())
+                    .collect();
+                for id in &ids {
+                    pending.remove(id);
+                }
+                ids
+            }
+            Err(err) => {
+                crate::error::report(&self.bus, &err);
+                return;
+            }
+        };
+        for gate_id in cancelled {
+            tracing::info!(
+                gate_id,
+                session_id,
+                reason,
+                "gate cancelled with its session"
+            );
+            self.bus.publish(Event::GateResolved {
+                gate_id,
+                reason: reason.to_string(),
+            });
+        }
     }
 
     fn lock_pending(&self) -> Result<MutexGuard<'_, HashMap<String, PendingGate>>> {

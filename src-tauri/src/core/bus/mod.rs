@@ -73,8 +73,31 @@ pub enum Event {
         kind: String,
         branch: String,
         params: Vec<crate::core::gate::GateParam>,
+        /// Explanation shown when the gate has no editable params.
+        note: Option<String>,
         raw_args: serde_json::Value,
     },
+
+    /// The target session started the turn that answers `question_id` — the UI
+    /// routes `session.stream_delta` for that session into this question until
+    /// `question.answered` arrives.
+    #[serde(rename = "question.answering")]
+    QuestionAnswering {
+        question_id: String,
+        session_id: String,
+    },
+
+    #[serde(rename = "question.answered")]
+    QuestionAnswered {
+        question_id: String,
+        session_id: String,
+        ok: bool,
+    },
+
+    /// A gate left the pending set: answered by the user, cancelled, or its
+    /// session died. The UI drops it from the queue on this event.
+    #[serde(rename = "gate.resolved")]
+    GateResolved { gate_id: String, reason: String },
 
     #[serde(rename = "attention.required")]
     AttentionRequired {
@@ -110,6 +133,9 @@ impl Event {
             Event::SessionModels { .. } => "session.models",
             Event::DiffUpdated { .. } => "diff.updated",
             Event::GatePending { .. } => "gate.pending",
+            Event::QuestionAnswering { .. } => "question.answering",
+            Event::QuestionAnswered { .. } => "question.answered",
+            Event::GateResolved { .. } => "gate.resolved",
             Event::AttentionRequired { .. } => "attention.required",
             Event::ErrorRaised { .. } => "error.raised",
             Event::Test { .. } => "system.test",

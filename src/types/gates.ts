@@ -17,5 +17,7 @@ export interface PendingGate {
   kind: string;
   tool: string;
   params: GateParam[];
+  /** Why the gate is approve-as-is (no editable params); null when editable. */
+  note: string | null;
   raw_args: unknown;
 }

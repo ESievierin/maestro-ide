@@ -48,9 +48,16 @@ export type BusEvent =
         kind: string;
         branch: string;
         params: { key: string; label: string; value: string; multiline: boolean }[];
+        note: string | null;
         raw_args: unknown;
       };
     }
+  | { type: "question.answering"; data: { question_id: string; session_id: string } }
+  | {
+      type: "question.answered";
+      data: { question_id: string; session_id: string; ok: boolean };
+    }
+  | { type: "gate.resolved"; data: { gate_id: string; reason: string } }
   | {
       type: "attention.required";
       data: {

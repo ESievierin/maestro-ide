@@ -19,6 +19,10 @@ interface GatesState {
   clearError: () => void;
 }
 
+function dropGate(gateId: string) {
+  useGates.setState((s) => ({ pending: s.pending.filter((g) => g.gate_id !== gateId) }));
+}
+
 export const useGates = create<GatesState>((set) => ({
   pending: [],
   error: null,
@@ -35,9 +39,17 @@ export const useGates = create<GatesState>((set) => ({
   respond: async (gateId, allow, editedParams, feedback) => {
     try {
       await invoke("respond_gate", { gateId, allow, editedParams, feedback: feedback ?? null });
-      set((s) => ({ pending: s.pending.filter((g) => g.gate_id !== gateId) }));
+      dropGate(gateId);
     } catch (e) {
-      set({ error: String(e) });
+      const message = String(e);
+      // The core no longer knows this gate (session died, already resolved). Keeping it
+      // would leave the blocking dialog up with a decision that cannot take effect.
+      if (message.includes("unknown gate")) {
+        dropGate(gateId);
+        set({ error: "That request is no longer waiting — its session ended." });
+      } else {
+        set({ error: message });
+      }
     }
   },
 
@@ -45,11 +57,20 @@ export const useGates = create<GatesState>((set) => ({
 }));
 
 onBusEvent((event) => {
-  if (event.type !== "gate.pending") return;
-  const gate: PendingGate = event.data;
-  useGates.setState((s) =>
-    s.pending.some((g) => g.gate_id === gate.gate_id) ? s : { pending: [...s.pending, gate] },
-  );
+  switch (event.type) {
+    case "gate.pending": {
+      const gate: PendingGate = event.data;
+      useGates.setState((s) =>
+        s.pending.some((g) => g.gate_id === gate.gate_id) ? s : { pending: [...s.pending, gate] },
+      );
+      break;
+    }
+    case "gate.resolved": {
+      // Answered elsewhere, cancelled, or its session died — either way it is gone.
+      dropGate(event.data.gate_id);
+      break;
+    }
+  }
 });
 
 // Gates pending in the core survive a frontend reload — pick them up at startup.

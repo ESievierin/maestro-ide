@@ -288,6 +288,9 @@ impl SessionManager {
         };
         for session in active {
             tracing::warn!(session_id = session.id, %reason, "failing stale session");
+            if let Some(gates) = &self.gates {
+                gates.cancel_for_session(&session.id, reason);
+            }
             self.transition(&session.id, SessionStatus::Failed);
         }
     }
@@ -381,6 +384,10 @@ impl SessionManager {
                 tracing::info!(session_id, subtype, is_error, "session turn finished");
             }
             SidecarEvent::SessionClosed { session_id, reason } => {
+                // Any gate still waiting on this session can no longer execute.
+                if let Some(gates) = &self.gates {
+                    gates.cancel_for_session(&session_id, "session closed");
+                }
                 let close_requested = self
                     .lock_runtime()
                     .ok()
@@ -417,6 +424,16 @@ impl SessionManager {
 
     fn handle_crash(&self, code: Option<i32>) {
         tracing::error!(?code, "sidecar crashed; failing affected sessions");
+        // Pending gates target permission requests that died with the process.
+        if let Some(gates) = &self.gates {
+            let live: Vec<String> = self
+                .lock_runtime()
+                .map(|r| r.keys().cloned().collect())
+                .unwrap_or_default();
+            for session_id in live {
+                gates.cancel_for_session(&session_id, "sidecar crashed");
+            }
+        }
         self.bus.publish(Event::ErrorRaised {
             severity: Severity::Error,
             code: "agent".into(),

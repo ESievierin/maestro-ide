@@ -13,7 +13,7 @@ export interface LineRange {
 }
 
 /** Dispatched whenever the set of tracked questions for the visible file changes. */
-export const setLineQuestions = StateEffect.define<LineQuestion[]>();
+export const setLineQuestions = StateEffect.define<readonly LineQuestion[]>();
 
 class LineQuestionWidget extends WidgetType {
   constructor(private readonly question: LineQuestion) {
@@ -51,7 +51,7 @@ class LineQuestionWidget extends WidgetType {
   }
 }
 
-function buildDecorations(state: EditorState, questions: LineQuestion[]): DecorationSet {
+function buildDecorations(state: EditorState, questions: readonly LineQuestion[]): DecorationSet {
   const widgets = questions
     .filter((q) => q.lineEnd >= 1 && q.lineEnd <= state.doc.lines)
     .map((q) =>

@@ -6,9 +6,13 @@ import { onBusEvent } from "./events";
 
 const fileKey = (branch: string, path: string) => `${branch}|${path}`;
 
-/// Stable empty array: zustand 5 has no snapshot memoization, so a fresh `[]` from a
-/// selector makes React see a changed store on every render and loop forever.
-const EMPTY: LineQuestion[] = [];
+/**
+ * Stable empty array. zustand 5 reads the selector on every `getSnapshot()` with no
+ * memoization, so a selector that builds a fresh value each call makes React see an
+ * endless stream of "changed" snapshots and blow the update depth. Every selector here
+ * must therefore return a value already stored in state — never a mapped/derived one.
+ */
+const EMPTY: readonly LineQuestion[] = Object.freeze([]);
 
 export interface AskLineQuestionInput {
   branch: string;
@@ -20,10 +24,11 @@ export interface AskLineQuestionInput {
 }
 
 interface QuestionsState {
-  /** Every question by id — the single place its answer is mutated. */
-  byId: Record<string, LineQuestion>;
-  /** Question ids per branch+path, in ask order; persists per file while the app runs. */
-  idsByFile: Record<string, string[]>;
+  /** Questions per branch+path, ask order. The array identity only changes when that
+   *  file's questions change, which is what keeps the selector stable. */
+  byFile: Record<string, readonly LineQuestion[]>;
+  /** question id → file key, so a streamed delta can find its file in one step. */
+  fileOfQuestion: Record<string, string>;
   /** Which question each session is currently answering (core-driven). */
   answeringBySession: Record<string, string>;
   error: string | null;
@@ -33,8 +38,8 @@ interface QuestionsState {
 }
 
 export const useQuestions = create<QuestionsState>((set) => ({
-  byId: {},
-  idsByFile: {},
+  byFile: {},
+  fileOfQuestion: {},
   answeringBySession: {},
   error: null,
 
@@ -60,8 +65,8 @@ export const useQuestions = create<QuestionsState>((set) => ({
       };
       const key = fileKey(branch, path);
       set((s) => ({
-        byId: { ...s.byId, [item.id]: item },
-        idsByFile: { ...s.idsByFile, [key]: [...(s.idsByFile[key] ?? []), item.id] },
+        byFile: { ...s.byFile, [key]: [...(s.byFile[key] ?? []), item] },
+        fileOfQuestion: { ...s.fileOfQuestion, [item.id]: key },
       }));
       return item;
     } catch (e) {
@@ -73,24 +78,20 @@ export const useQuestions = create<QuestionsState>((set) => ({
   clearError: () => set({ error: null }),
 }));
 
-/**
- * Questions of one file, newest last. Returns a cached array so the reference is
- * stable between renders when nothing changed (see `EMPTY`).
- */
+/** Questions of one file, newest last. Returns the stored array as-is. */
 export function selectQuestions(branch: string, path: string) {
   const key = fileKey(branch, path);
-  return (s: QuestionsState): LineQuestion[] => {
-    const ids = s.idsByFile[key];
-    if (!ids || ids.length === 0) return EMPTY;
-    return ids.map((id) => s.byId[id]).filter((q): q is LineQuestion => Boolean(q));
-  };
+  return (s: QuestionsState): readonly LineQuestion[] => s.byFile[key] ?? EMPTY;
 }
 
+/** Replace one question in place; only its file's array gets a new identity. */
 function patch(questionId: string, update: (q: LineQuestion) => LineQuestion) {
   useQuestions.setState((s) => {
-    const current = s.byId[questionId];
-    if (!current) return {};
-    return { byId: { ...s.byId, [questionId]: update(current) } };
+    const key = s.fileOfQuestion[questionId];
+    const list = key ? s.byFile[key] : undefined;
+    if (!key || !list) return {};
+    const next = list.map((q) => (q.id === questionId ? update(q) : q));
+    return { byFile: { ...s.byFile, [key]: next } };
   });
 }
 
@@ -110,10 +111,9 @@ onBusEvent((event) => {
     case "question.answered": {
       const { question_id, session_id, ok } = event.data;
       useQuestions.setState((s) => {
+        if (s.answeringBySession[session_id] !== question_id) return {};
         const answeringBySession = { ...s.answeringBySession };
-        if (answeringBySession[session_id] === question_id) {
-          delete answeringBySession[session_id];
-        }
+        delete answeringBySession[session_id];
         return { answeringBySession };
       });
       patch(question_id, (q) => ({

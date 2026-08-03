@@ -76,7 +76,7 @@ function UnifiedFileDiff({
   path: string;
   oldText: string;
   newText: string;
-  questions: LineQuestion[];
+  questions: readonly LineQuestion[];
   onSelectionChange: (range: LineRange | null) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -138,7 +138,7 @@ function SplitFileDiff({
   path: string;
   oldText: string;
   newText: string;
-  questions: LineQuestion[];
+  questions: readonly LineQuestion[];
   onSelectionChange: (range: LineRange | null) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);

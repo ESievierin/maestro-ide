@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::core::agent::{SidecarConfig, SidecarEngine};
+use crate::core::attention::AttentionManager;
 use crate::core::bus::EventBus;
 use crate::core::diff::DiffManager;
 use crate::core::gate::{self, GateManager};
@@ -108,6 +109,8 @@ pub fn run() {
         bus.clone(),
     ));
 
+    let attention = Arc::new(AttentionManager::new(bus.clone()));
+
     let state = AppState {
         bus: bus.clone(),
         store,
@@ -117,9 +120,11 @@ pub fn run() {
         gates,
         questions: questions.clone(),
         prompts,
+        attention: attention.clone(),
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             ipc::emit_test_event,
@@ -145,13 +150,16 @@ pub fn run() {
             ipc::ask_line_question,
             ipc::list_prompts,
             ipc::save_prompt,
-            ipc::reset_prompt
+            ipc::reset_prompt,
+            ipc::list_attention,
+            ipc::dismiss_attention
         ])
         .setup(move |app| {
             ipc::spawn_event_forwarder(app.handle().clone(), bus.clone());
             tauri::async_runtime::spawn(sessions.clone().run_loop(signal_rx));
             tauri::async_runtime::spawn(diffs.clone().run_invalidation_loop(bus.clone()));
             tauri::async_runtime::spawn(questions.clone().run_loop(bus.clone()));
+            tauri::async_runtime::spawn(attention.clone().run_loop(bus.clone()));
             tracing::info!("event forwarder, session manager, and diff invalidator started");
             Ok(())
         })

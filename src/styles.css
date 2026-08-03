@@ -1083,3 +1083,98 @@ select {
   align-items: center;
   justify-content: space-between;
 }
+
+/* ---------- Attention panel (T9) ---------- */
+
+.attention-alert {
+  color: #e0af68;
+  border-color: #5c4a2d;
+}
+
+.attention-panel {
+  border-bottom: 1px solid #2a2e37;
+  background: #1a1d23;
+  padding: 0.6rem 1.25rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.notify-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  color: #8b93a5;
+  cursor: pointer;
+}
+
+.attention-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.attention-items li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.attention-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  text-align: left;
+  font-size: 0.8rem;
+  padding: 0.35rem 0.6rem;
+}
+
+.attention-message {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attention-branch {
+  color: #666e80;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.attention-kind-gate {
+  color: #e0af68;
+  border-color: #5c4a2d;
+}
+
+.attention-kind-permission_request {
+  color: #7aa2f7;
+  border-color: #33415e;
+}
+
+.attention-kind-session_failed {
+  color: #f7768e;
+  border-color: #5c2d38;
+}
+
+.attention-kind-line_question {
+  color: #9ece6a;
+  border-color: #33502a;
+}
+
+.badge-failed {
+  color: #f7768e;
+  border-color: #5c2d38;
+}
+
+.badge-awaiting {
+  color: #7aa2f7;
+  border-color: #33415e;
+}

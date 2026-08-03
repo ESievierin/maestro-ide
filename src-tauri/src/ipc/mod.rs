@@ -12,6 +12,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::core::attention::{AttentionItem, AttentionManager};
 use crate::core::bus::{Event, EventBus};
 use crate::core::diff::{DiffManager, DiffScope, DiffSnapshot, FileDiff};
 use crate::core::gate::{GateManager, GateParam, PendingGate};
@@ -36,6 +37,7 @@ pub struct AppState {
     pub gates: Arc<GateManager>,
     pub questions: Arc<LineQuestionManager>,
     pub prompts: Arc<PromptManager>,
+    pub attention: Arc<AttentionManager>,
 }
 
 /// Forward every bus event to the frontend over a single Tauri event channel.
@@ -392,4 +394,20 @@ pub async fn save_prompt(
 pub async fn reset_prompt(state: State<'_, AppState>, name: String) -> Result<PromptFile, String> {
     let prompts = state.prompts.clone();
     run_core(state.bus.clone(), move || prompts.reset(&name)).await
+}
+
+// ---------- attention queue ----------
+
+/// Everything waiting on the user, most urgent first (T9).
+#[tauri::command]
+pub async fn list_attention(state: State<'_, AppState>) -> Result<Vec<AttentionItem>, String> {
+    let attention = state.attention.clone();
+    run_core(state.bus.clone(), move || attention.list()).await
+}
+
+/// Acknowledge one item (the user handled it or does not care).
+#[tauri::command]
+pub async fn dismiss_attention(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let attention = state.attention.clone();
+    run_core(state.bus.clone(), move || attention.dismiss(&id)).await
 }

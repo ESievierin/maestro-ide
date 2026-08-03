@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod attention;
 pub mod bus;
 pub mod diff;
 pub mod gate;

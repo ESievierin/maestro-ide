@@ -58,6 +58,7 @@ export type BusEvent =
       data: { question_id: string; session_id: string; ok: boolean };
     }
   | { type: "gate.resolved"; data: { gate_id: string; reason: string } }
+  | { type: "attention.updated"; data: { count: number } }
   | {
       type: "attention.required";
       data: {

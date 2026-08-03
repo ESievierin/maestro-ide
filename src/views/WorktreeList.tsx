@@ -1,14 +1,37 @@
 import { useEffect, useState } from "react";
+import { useDiffs } from "../state/diffs";
 import { activeSessionCount, useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
 import type { WorktreeInfo } from "../types/worktrees";
 import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 
+/**
+ * At-a-glance state of one worktree, in the order that matters when four agents run:
+ * who is blocked (failed / awaiting_input), who is busy (working), and whose diff is
+ * ready to review.
+ */
 function StatusBadges({ wt }: { wt: WorktreeInfo }) {
-  const active = useSessions((s) => (wt.branch ? activeSessionCount(s.byBranch[wt.branch]) : 0));
+  const sessions = useSessions((s) => (wt.branch ? s.byBranch[wt.branch] : undefined));
+  const diffFiles = useDiffs((s) =>
+    wt.branch ? (s.snapshots[`${wt.branch}|worktree`]?.files.length ?? null) : null,
+  );
+
+  const list = sessions ?? [];
+  const working = list.some((s) => s.status === "streaming" || s.status === "spawning");
+  const awaiting = list.some((s) => s.status === "awaiting_input");
+  const failed = list.some((s) => s.status === "failed");
+  const active = activeSessionCount(sessions);
+  // "diff ready" is only interesting once nobody is still writing to the branch.
+  const diffReady = !working && (diffFiles ?? 0) > 0;
+
   return (
     <span className="badges">
-      {active > 0 && <span className="badge badge-active">⚡{active}</span>}
+      {failed && <span className="badge badge-failed">failed</span>}
+      {awaiting && <span className="badge badge-awaiting">awaiting</span>}
+      {working && (
+        <span className="badge badge-active">working{active > 1 ? ` ${active}` : ""}</span>
+      )}
+      {diffReady && <span className="badge badge-info">diff {diffFiles}</span>}
       {wt.is_primary && <span className="badge badge-muted">primary</span>}
       {wt.status?.dirty && <span className="badge badge-warn">dirty</span>}
       {wt.status && wt.status.ahead > 0 && (

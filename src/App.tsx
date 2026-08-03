@@ -4,13 +4,16 @@ import { useWorktrees } from "./state/worktrees";
 import { DiffViewer } from "./views/DiffViewer";
 import { SessionPanel } from "./views/SessionPanel";
 import { WorktreeList } from "./views/WorktreeList";
+import { selectAttentionCount, useAttention } from "./state/attention";
+import { AttentionPanel } from "./views/AttentionPanel";
 import { GateDialog } from "./views/GateDialog";
 import { PromptEditor } from "./views/PromptEditor";
 
 function MainPanel() {
   const selected = useWorktrees((s) => s.selected);
   const worktree = useWorktrees((s) => s.worktrees.find((w) => w.branch === s.selected));
-  const [tab, setTab] = useState<"chat" | "diff">("chat");
+  const tab = useWorktrees((s) => s.tab);
+  const setTab = useWorktrees((s) => s.setTab);
 
   if (!selected || !worktree || !worktree.branch) {
     return (
@@ -54,17 +57,27 @@ function MainPanel() {
 
 export default function App() {
   const [showPrompts, setShowPrompts] = useState(false);
+  const [showAttention, setShowAttention] = useState(false);
+  const attentionCount = useAttention(selectAttentionCount);
 
   return (
     <div className="app">
       <header className="app-header">
         <h1>MaestroIDE</h1>
         <div className="actions">
+          <button
+            className={`small ${attentionCount > 0 ? "attention-alert" : ""}`}
+            onClick={() => setShowAttention((open) => !open)}
+            title="Everything waiting on you"
+          >
+            Needs you{attentionCount > 0 ? ` (${attentionCount})` : ""}
+          </button>
           <button className="small" onClick={() => setShowPrompts(true)}>
             Prompts
           </button>
         </div>
       </header>
+      {showAttention && <AttentionPanel onClose={() => setShowAttention(false)} />}
       <div className="app-body">
         <WorktreeList />
         <main className="main-panel">

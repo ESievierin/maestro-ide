@@ -8,11 +8,16 @@ import type {
 } from "../types/worktrees";
 import { onBusEvent } from "./events";
 
+/** Which panel of the selected worktree is showing. */
+export type MainTab = "chat" | "diff";
+
 interface WorktreesState {
   repo: RepoInfo | null;
   worktrees: WorktreeInfo[];
-  /** Branch selected in the UI; panels (diff, chat) will key off this. */
+  /** Branch selected in the UI; panels (diff, chat) key off this. */
   selected: string | null;
+  /** Active panel; the attention queue navigates by setting it. */
+  tab: MainTab;
   loading: boolean;
   error: string | null;
 
@@ -21,6 +26,7 @@ interface WorktreesState {
   create: (request: CreateWorktreeRequest) => Promise<boolean>;
   remove: (branch: string, force: boolean) => Promise<RemoveOutcome | null>;
   select: (branch: string | null) => void;
+  setTab: (tab: MainTab) => void;
   clearError: () => void;
 }
 
@@ -28,6 +34,7 @@ export const useWorktrees = create<WorktreesState>((set, get) => ({
   repo: null,
   worktrees: [],
   selected: null,
+  tab: "chat",
   loading: false,
   error: null,
 
@@ -89,6 +96,7 @@ export const useWorktrees = create<WorktreesState>((set, get) => ({
   },
 
   select: (branch) => set({ selected: branch }),
+  setTab: (tab) => set({ tab }),
   clearError: () => set({ error: null }),
 }));
 

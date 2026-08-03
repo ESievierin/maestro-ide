@@ -107,6 +107,11 @@ pub enum Event {
         message: String,
     },
 
+    /// The attention queue changed; panels refetch it. `count` lets a badge update
+    /// without a round trip.
+    #[serde(rename = "attention.updated")]
+    AttentionUpdated { count: usize },
+
     #[serde(rename = "error.raised")]
     ErrorRaised {
         severity: Severity,
@@ -137,6 +142,7 @@ impl Event {
             Event::QuestionAnswered { .. } => "question.answered",
             Event::GateResolved { .. } => "gate.resolved",
             Event::AttentionRequired { .. } => "attention.required",
+            Event::AttentionUpdated { .. } => "attention.updated",
             Event::ErrorRaised { .. } => "error.raised",
             Event::Test { .. } => "system.test",
         }

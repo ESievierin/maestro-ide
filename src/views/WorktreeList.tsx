@@ -68,7 +68,8 @@ function RepoPicker() {
 }
 
 export function WorktreeList() {
-  const { repo, worktrees, selected, error, refresh, remove, select, clearError } = useWorktrees();
+  const { repo, worktrees, selected, loading, error, refresh, remove, select, clearError } =
+    useWorktrees();
   const [showCreate, setShowCreate] = useState(false);
 
   useEffect(() => {
@@ -110,6 +111,11 @@ export function WorktreeList() {
           <div className="repo-line" title={repo.path}>
             {repo.path}
           </div>
+          {worktrees.length === 0 && !loading && (
+            <p className="hint">
+              No worktrees yet. Use <strong>+ New</strong> to create one per task.
+            </p>
+          )}
           <ul className="worktree-items">
             {worktrees.map((wt) => (
               <li

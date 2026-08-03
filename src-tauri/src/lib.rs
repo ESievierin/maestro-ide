@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crate::core::agent::{SidecarConfig, SidecarEngine};
 use crate::core::attention::AttentionManager;
 use crate::core::bus::EventBus;
+use crate::core::config::Config;
 use crate::core::diff::DiffManager;
 use crate::core::gate::{self, GateManager};
 use crate::core::prompts::PromptManager;
@@ -51,6 +52,13 @@ pub fn run() {
         }
     };
     tracing::info!(path = %db_path.display(), "store ready");
+
+    // The config file seeds the settings table, so everything downstream keeps
+    // reading settings and knows nothing about the file.
+    let config_path = maestro_home().join("config.toml");
+    if let Err(err) = Config::load_or_create(&config_path).apply(store.as_ref()) {
+        tracing::warn!(error = %err, "could not apply config.toml");
+    }
 
     let git: Arc<GitCli> = Arc::new(GitCli);
     let worktrees = Arc::new(WorktreeManager::new(

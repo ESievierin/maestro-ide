@@ -3,22 +3,22 @@
 Living handoff document: where Stage 1 stands, what the moving parts are, and the
 conventions that are easy to lose between sessions. Update it when a task lands.
 
-Last updated: 2026-08-03 (after T6+T7 merge and fix round).
+Last updated: 2026-08-03 (Stage 1 tasks T1-T10 implemented).
 
 ## Stage 1 progress
 
-| Task                       | State                                                                  |
-| -------------------------- | ---------------------------------------------------------------------- |
-| T1 skeleton                | done — bus, IPC bridge, SQLite+migrations, typed errors, tracing, CI   |
-| T2 GitProvider + worktrees | done — trait + git CLI impl, worktree manager, WorktreeList UI         |
-| T3 sidecar + sessions      | done — NDJSON protocol v1, supervisor, session state machine           |
-| T4 chat panel              | done — markdown, tool-use folding, single-writer, commands, resume     |
-| T5 diff engine + viewer    | done — snapshot cache, CM6 split/unified, worktree & committed scopes  |
-| T6 line questions          | done (agent-built, reviewed, fixed) — see "Fix rounds"                 |
-| T7 commit/PR gate          | done (agent-built, reviewed, fixed) — see "Fix rounds"                 |
-| T8 prompt templates        | next — `core/prompts` exists from T6; needs defaults + PromptEditor UI |
-| T9 attention panel         | not started                                                            |
-| T10 polish / dogfood       | not started                                                            |
+| Task                       | State                                                                 |
+| -------------------------- | --------------------------------------------------------------------- |
+| T1 skeleton                | done — bus, IPC bridge, SQLite+migrations, typed errors, tracing, CI  |
+| T2 GitProvider + worktrees | done — trait + git CLI impl, worktree manager, WorktreeList UI        |
+| T3 sidecar + sessions      | done — NDJSON protocol v1, supervisor, session state machine          |
+| T4 chat panel              | done — markdown, tool-use folding, single-writer, commands, resume    |
+| T5 diff engine + viewer    | done — snapshot cache, CM6 split/unified, worktree & committed scopes |
+| T6 line questions          | done (agent-built, reviewed, fixed) — see "Fix rounds"                |
+| T7 commit/PR gate          | done (agent-built, reviewed, fixed) — see "Fix rounds"                |
+| T8 prompt templates        | done — 4 defaults, list/save/reset, PromptEditor in the header        |
+| T9 attention panel         | done — bus-derived queue, status badges, OS notifications (opt-in)    |
+| T10 polish / dogfood       | done — config.toml, error toasts, hotkeys, empty states               |
 
 Branch `master` holds everything; `impl/T-6-string-questions` and
 `impl/T-7-commit-pr-gate` are merged and can be deleted once their worktrees are gone.
@@ -47,6 +47,10 @@ Branch `master` holds everything; `impl/T-6-string-questions` and
   owns the answer lifecycle (`question.answering` / `question.answered`).
 - `core/gate` — `GateRule` trait + `GateRegistry` + `GateManager`; rules in
   `gate/rules.rs` with a span-tracking shell tokenizer.
+- `core/attention` — the "who needs me?" queue, derived from bus events only; publishes
+  `attention.updated`.
+- `core/config` — `~/.maestro/config.toml`, written with commented defaults on first run
+  and applied into the settings table at startup (one lookup path at runtime).
 - `src/state/*` — zustand stores fed by bus events through `onBusEvent`.
 - `sidecar/src` — `protocol.ts` (mirror of `core/agent/protocol.rs`), `engine.ts`
   (Claude Agent SDK, streaming input mode), `mock.ts` (scripted, no API usage).
@@ -63,6 +67,8 @@ Branch `master` holds everything; `impl/T-6-string-questions` and
 - **Every automated check can pass while the feature is broken.** Both agent branches
   were green on cargo test/clippy/tsc/eslint/build and still crashed on mount. Run the
   app (mock mode) before calling anything done. A CI smoke test is a T10 item.
+- Hotkeys use Alt (not Ctrl): the embedded CodeMirror editors and inputs own the Ctrl
+  combinations. Alt+1…9 select a worktree, Alt+↑/↓ cycle, Alt+C/Alt+D switch panels.
 - Mock sidecar keywords (`MAESTRO_SIDECAR_MOCK=1`): `PERMISSION` → chat permission
   prompt, `GATE` → push+PR command that the gate intercepts, `CRASH` → kills the
   process to exercise supervisor recovery.

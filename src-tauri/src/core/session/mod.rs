@@ -4,7 +4,7 @@
 //! the store. The manager drives the state machine from sidecar events and publishes
 //! every change on the bus.
 
-mod manager;
+pub mod manager;
 
 pub use manager::{SessionManager, SpawnParams};
 

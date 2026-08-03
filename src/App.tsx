@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { EventLog } from "./components/EventLog";
+import { Toasts } from "./components/Toasts";
+import { useHotkeys } from "./hooks/useHotkeys";
 import { useWorktrees } from "./state/worktrees";
 import { DiffViewer } from "./views/DiffViewer";
 import { SessionPanel } from "./views/SessionPanel";
@@ -19,7 +21,10 @@ function MainPanel() {
     return (
       <div className="main-empty">
         <p>Select a worktree to see its details.</p>
-        <p className="hint">Sessions and diffs are per worktree.</p>
+        <p className="hint">
+          Sessions and diffs are per worktree. Alt+1…9 jumps between them, Alt+↑/↓ cycles, Alt+C /
+          Alt+D switch chat and diff.
+        </p>
       </div>
     );
   }
@@ -57,6 +62,7 @@ function MainPanel() {
 
 export default function App() {
   const [showPrompts, setShowPrompts] = useState(false);
+  useHotkeys();
   const [showAttention, setShowAttention] = useState(false);
   const attentionCount = useAttention(selectAttentionCount);
 
@@ -85,6 +91,7 @@ export default function App() {
         </main>
       </div>
       <EventLog />
+      <Toasts />
       <GateDialog />
       {showPrompts && <PromptEditor onClose={() => setShowPrompts(false)} />}
     </div>

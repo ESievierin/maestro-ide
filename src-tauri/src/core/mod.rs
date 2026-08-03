@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod attention;
 pub mod bus;
+pub mod config;
 pub mod diff;
 pub mod gate;
 pub mod prompts;

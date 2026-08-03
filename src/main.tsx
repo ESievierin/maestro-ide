@@ -2,6 +2,9 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { startEventBridge } from "./state/events";
+// Importing these registers their bus subscriptions before the first render.
+import "./state/toasts";
+import "./state/attention";
 import "./styles.css";
 
 // Subscribe to backend events before the first render so no early event is missed.

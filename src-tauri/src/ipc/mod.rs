@@ -14,6 +14,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::bus::{Event, EventBus};
 use crate::core::diff::{DiffManager, DiffScope, DiffSnapshot, FileDiff};
+use crate::core::gate::{GateManager, GateParam, PendingGate};
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
 use crate::core::store::{Branch, Store};
 use crate::core::worktree::{
@@ -30,6 +31,7 @@ pub struct AppState {
     pub worktrees: Arc<WorktreeManager>,
     pub sessions: Arc<SessionManager>,
     pub diffs: Arc<DiffManager>,
+    pub gates: Arc<GateManager>,
 }
 
 /// Forward every bus event to the frontend over a single Tauri event channel.
@@ -302,6 +304,32 @@ pub async fn blame_range(
     let diffs = state.diffs.clone();
     run_core(state.bus.clone(), move || {
         diffs.blame(&branch, &path, start, end)
+    })
+    .await
+}
+
+// ---------- gates ----------
+
+/// Pending gated tool calls, oldest first (dialog restore on UI reload).
+#[tauri::command]
+pub async fn list_pending_gates(state: State<'_, AppState>) -> Result<Vec<PendingGate>, String> {
+    let gates = state.gates.clone();
+    run_core(state.bus.clone(), move || gates.list()).await
+}
+
+/// Resolve a gate: allow executes with the edited params substituted into the
+/// tool args; deny returns the optional feedback text to the agent.
+#[tauri::command]
+pub async fn respond_gate(
+    state: State<'_, AppState>,
+    gate_id: String,
+    allow: bool,
+    edited_params: Vec<GateParam>,
+    feedback: Option<String>,
+) -> Result<(), String> {
+    let gates = state.gates.clone();
+    run_core(state.bus.clone(), move || {
+        gates.respond(&gate_id, allow, &edited_params, feedback)
     })
     .await
 }

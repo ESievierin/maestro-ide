@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crate::core::agent::{SidecarConfig, SidecarEngine};
 use crate::core::bus::EventBus;
 use crate::core::diff::DiffManager;
+use crate::core::gate::{self, GateManager};
 use crate::core::session::SessionManager;
 use crate::core::store::SqliteStore;
 use crate::core::worktree::{GitCli, WorktreeManager};
@@ -63,7 +64,20 @@ pub fn run() {
     // Agent engine: supervised Node sidecar. Signals flow supervisor → manager loop.
     let (signal_tx, signal_rx) = tokio::sync::mpsc::unbounded_channel();
     let engine = Arc::new(SidecarEngine::new(SidecarConfig::resolve(), signal_tx));
-    let sessions = Arc::new(SessionManager::new(store.clone(), bus.clone(), engine));
+
+    // Gate registry: git push / gh pr create (+ git commit behind the
+    // `gate_commit` setting) pause for explicit approval before executing.
+    let gates = Arc::new(GateManager::new(
+        gate::build_registry(store.as_ref()),
+        engine.clone(),
+        bus.clone(),
+    ));
+    let sessions = Arc::new(SessionManager::with_gates(
+        store.clone(),
+        bus.clone(),
+        engine,
+        Some(gates.clone()),
+    ));
 
     // Sessions from a previous app run cannot be reattached (yet) — fail them.
     sessions.fail_stale_sessions("app restart");
@@ -81,6 +95,7 @@ pub fn run() {
         worktrees,
         sessions: sessions.clone(),
         diffs: diffs.clone(),
+        gates,
     };
 
     tauri::Builder::default()
@@ -103,7 +118,9 @@ pub fn run() {
             ipc::get_diff,
             ipc::refresh_diff,
             ipc::get_file_diff,
-            ipc::blame_range
+            ipc::blame_range,
+            ipc::list_pending_gates,
+            ipc::respond_gate
         ])
         .setup(move |app| {
             ipc::spawn_event_forwarder(app.handle().clone(), bus.clone());

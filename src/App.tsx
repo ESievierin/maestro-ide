@@ -4,6 +4,7 @@ import { useWorktrees } from "./state/worktrees";
 import { DiffViewer } from "./views/DiffViewer";
 import { SessionPanel } from "./views/SessionPanel";
 import { WorktreeList } from "./views/WorktreeList";
+import { GateDialog } from "./views/GateDialog";
 
 function MainPanel() {
   const selected = useWorktrees((s) => s.selected);
@@ -63,6 +64,7 @@ export default function App() {
         </main>
       </div>
       <EventLog />
+      <GateDialog />
     </div>
   );
 }

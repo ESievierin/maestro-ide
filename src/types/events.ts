@@ -39,7 +39,18 @@ export type BusEvent =
       };
     }
   | { type: "diff.updated"; data: { branch: string } }
-  | { type: "gate.pending"; data: { gate_id: string; session_id: string; tool: string } }
+  | {
+      type: "gate.pending";
+      data: {
+        gate_id: string;
+        session_id: string;
+        tool: string;
+        kind: string;
+        branch: string;
+        params: { key: string; label: string; value: string; multiline: boolean }[];
+        raw_args: unknown;
+      };
+    }
   | {
       type: "attention.required";
       data: {

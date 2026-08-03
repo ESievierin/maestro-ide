@@ -70,6 +70,10 @@ pub enum Event {
         gate_id: String,
         session_id: String,
         tool: String,
+        kind: String,
+        branch: String,
+        params: Vec<crate::core::gate::GateParam>,
+        raw_args: serde_json::Value,
     },
 
     #[serde(rename = "attention.required")]

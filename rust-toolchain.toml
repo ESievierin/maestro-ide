@@ -1,0 +1,10 @@
+# Single source of truth for the Rust toolchain, so `cargo clippy -D warnings` means the
+# same thing on a laptop and on the CI runner. Two clippy releases disagreed once and CI
+# caught four lints that never fired locally; pinning removes that class of surprise.
+#
+# Bumping: change the version here, run the checks in docs/STATUS.md, commit both.
+# rustup installs this toolchain on demand — the first cargo command after a bump
+# downloads it.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

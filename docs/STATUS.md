@@ -64,6 +64,10 @@ Branch `master` holds everything; `impl/T-6-string-questions` and
   every call (`?? []`, `.map(...)`, object literals) causes an infinite re-render loop.
   Selectors must return values already stored in state. This bit us twice (T6 review
   finding #1 and again in the fix round).
+- **Green local checks are not a green build.** Two failures reached CI that no local
+  command reproduced: a missing `icons/icon.png` (tauri's context generation needs a PNG
+  on non-Windows) and clippy lints from a newer toolchain. The toolchain is pinned now;
+  the icon lesson stands — the Linux build path differs from Windows.
 - **Every automated check can pass while the feature is broken.** Both agent branches
   were green on cargo test/clippy/tsc/eslint/build and still crashed on mount. Run the
   app (mock mode) before calling anything done. A CI smoke test is a T10 item.
@@ -72,8 +76,10 @@ Branch `master` holds everything; `impl/T-6-string-questions` and
 - Mock sidecar keywords (`MAESTRO_SIDECAR_MOCK=1`): `PERMISSION` → chat permission
   prompt, `GATE` → push+PR command that the gate intercepts, `CRASH` → kills the
   process to exercise supervisor recovery.
-- Rust toolchain here is 1.89, so `rusqlite 0.39` + `rusqlite_migration =2.5.0` are
-  pinned (2.6 needs rustc 1.95). Unpin after `rustup update`.
+- The Rust toolchain is pinned in `rust-toolchain.toml` (1.97.1) so `clippy -D warnings`
+  means the same thing locally and on the runner — a version gap once let four lints
+  through to CI. rustup installs it on demand; CI reads the same file via `rustup show`.
+  Bumping the version is a one-line change plus a full check run.
 - `cargo test` needs `MAESTRO_SIDECAR_E2E=1` **and** a built sidecar for the e2e test;
   without the env var it is skipped (CI sets it and builds the sidecar first).
 - Auth: the SDK uses the user's Claude Code OAuth login (no `ANTHROPIC_API_KEY` set), so

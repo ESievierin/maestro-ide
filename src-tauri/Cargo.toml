@@ -22,8 +22,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 uuid = { version = "1", features = ["v4", "serde"] }
-rusqlite = { version = "0.39", features = ["bundled", "chrono"] }
-rusqlite_migration = "=2.5.0"
+rusqlite = { version = "0.40", features = ["bundled", "chrono"] }
+rusqlite_migration = "2.6"
 tauri-plugin-notification = "2.3.3"
 toml = "1.1.4"
 

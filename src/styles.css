@@ -834,6 +834,23 @@ select {
   font-size: 0.82rem;
 }
 
+/* Side-by-side merge view: both panes fill the host and scroll in sync. */
+.cm-host-split {
+  overflow: hidden;
+}
+
+.cm-host-split .cm-mergeView {
+  height: 100%;
+}
+
+.cm-host-split .cm-mergeViewEditors {
+  height: 100%;
+}
+
+.cm-host-split .cm-mergeViewEditor {
+  overflow: auto;
+}
+
 .diff-editor .empty {
   padding: 1rem;
 }

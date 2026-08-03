@@ -1,7 +1,5 @@
 # MaestroIDE
 
-<!-- random comment -->
-
 A Tauri desktop app for orchestrating parallel agentic development on top of git worktrees and
 Claude Code (via the Claude Agent SDK). The central entity is a task/worktree, not a file.
 

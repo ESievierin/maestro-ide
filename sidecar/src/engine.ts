@@ -229,23 +229,6 @@ export class AgentSession implements SessionHandle {
         message: `supportedCommands failed: ${String(err)}`,
       });
     }
-    try {
-      const models = await this.q.supportedModels();
-      this.emit({
-        type: "models",
-        session_id: this.sessionId,
-        models: models.map((m) => ({
-          id: m.value,
-          display_name: m.displayName,
-        })),
-      });
-    } catch (err) {
-      this.emit({
-        type: "error",
-        session_id: this.sessionId,
-        message: `supportedModels failed: ${String(err)}`,
-      });
-    }
   }
 
   private onPermissionRequest(

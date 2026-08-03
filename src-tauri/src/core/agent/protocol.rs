@@ -48,6 +48,11 @@ pub enum SidecarRequest {
         #[serde(skip_serializing_if = "Option::is_none")]
         message: Option<String>,
     },
+    /// Ask the CLI for its model list without starting a session (no tokens spent).
+    ListModels {
+        id: u64,
+        cwd: String,
+    },
     Shutdown {
         id: u64,
     },

@@ -6,6 +6,9 @@ import { onBusEvent } from "./events";
 
 const MODELS_CACHE_KEY = "maestro.models";
 
+/** True once the CLI has answered this app run; until then the list is a cached guess. */
+let modelsRefreshed = false;
+
 function loadCachedModels(): ModelOption[] {
   try {
     const raw = localStorage.getItem(MODELS_CACHE_KEY);
@@ -38,6 +41,8 @@ interface SessionsState {
   commands: Record<string, CommandInfo[]>;
   /** Model options as reported by the CLI (cached across app runs). */
   models: ModelOption[];
+  /** Ask the CLI for the authoritative list; safe to call repeatedly. */
+  refreshModels: () => Promise<void>;
   error: string | null;
 
   fetch: (branch: string) => Promise<void>;
@@ -76,6 +81,19 @@ export const useSessions = create<SessionsState>((set, get) => ({
   commands: {},
   models: loadCachedModels(),
   error: null,
+
+  refreshModels: async () => {
+    if (modelsRefreshed) return;
+    modelsRefreshed = true;
+    try {
+      // Answers arrive as a session.models event; this call only asks.
+      await invoke("refresh_models");
+    } catch (e) {
+      // A stale cached list is better than an empty selector — just report it.
+      modelsRefreshed = false;
+      set({ error: String(e) });
+    }
+  },
 
   fetch: async (branch) => {
     try {
@@ -241,6 +259,7 @@ onBusEvent((event) => {
       break;
     }
     case "session.models": {
+      // An empty session_id means the global list from refresh_models.
       const { models } = event.data;
       if (models.length > 0) {
         useSessions.setState({ models });

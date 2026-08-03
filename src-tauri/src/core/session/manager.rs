@@ -272,6 +272,12 @@ impl SessionManager {
             .respond_permission(request_id, allow, updated_args, message)
     }
 
+    /// Ask the CLI for its model list; the answer arrives as a `session.models` event
+    /// with an empty session id. Costs nothing — no session, no turn.
+    pub fn refresh_models(&self, cwd: &str) -> Result<()> {
+        self.engine.list_models(cwd)
+    }
+
     pub fn list_for_branch(&self, branch: &str) -> Result<Vec<Session>> {
         self.store.list_sessions(branch)
     }
@@ -596,6 +602,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((request_id.to_string(), allow, updated_args, message));
+            Ok(())
+        }
+
+        fn list_models(&self, _cwd: &str) -> Result<()> {
             Ok(())
         }
     }

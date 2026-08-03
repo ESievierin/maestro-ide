@@ -537,6 +537,10 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+
+        fn list_models(&self, _cwd: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     fn spawn_params(branch: &str) -> SpawnParams {

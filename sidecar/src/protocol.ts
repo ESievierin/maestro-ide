@@ -46,12 +46,20 @@ export interface PermissionResponseRequest {
   message?: string;
 }
 
+/** Ask the CLI which models it offers. No session, no turn, no tokens. */
+export interface ListModelsRequest {
+  type: "list_models";
+  id: number;
+  cwd: string;
+}
+
 export interface ShutdownRequest {
   type: "shutdown";
   id: number;
 }
 
 export type SidecarRequest =
+  | ListModelsRequest
   | SpawnRequest
   | SendRequest
   | InterruptRequest
@@ -81,6 +89,7 @@ export type SidecarEvent =
   | { type: "ack"; id: number; ok: boolean; error?: string }
   | { type: "session_init"; session_id: string; sdk_session_id: string; model?: string }
   | { type: "commands"; session_id: string; commands: CommandInfo[] }
+  /** `session_id` is empty for the global list from `list_models`. */
   | { type: "models"; session_id: string; models: ModelOption[] }
   | { type: "stream_delta"; session_id: string; text: string }
   | { type: "tool_use"; session_id: string; name: string; summary: string }

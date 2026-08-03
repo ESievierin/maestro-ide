@@ -253,11 +253,17 @@ function NewSessionForm({
 }) {
   const spawn = useSessions((s) => s.spawn);
   const models = useSessions((s) => s.models);
+  const refreshModels = useSessions((s) => s.refreshModels);
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<string>("");
   const [permissionMode, setPermissionMode] = useState<string>("");
   const [busy, setBusy] = useState(false);
+
+  // The cached list can be stale (e.g. left over from mock mode); ask the CLI once.
+  useEffect(() => {
+    void refreshModels();
+  }, [refreshModels]);
 
   const submit = async () => {
     setBusy(true);

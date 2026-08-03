@@ -160,7 +160,8 @@ pub fn run() {
             ipc::save_prompt,
             ipc::reset_prompt,
             ipc::list_attention,
-            ipc::dismiss_attention
+            ipc::dismiss_attention,
+            ipc::refresh_models
         ])
         .setup(move |app| {
             ipc::spawn_event_forwarder(app.handle().clone(), bus.clone());

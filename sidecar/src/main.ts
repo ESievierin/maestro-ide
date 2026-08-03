@@ -6,6 +6,7 @@
 import * as readline from "node:readline";
 
 import { AgentSession } from "./engine.js";
+import { reportModels } from "./models.js";
 import { MockSession } from "./mock.js";
 import {
   PROTOCOL_VERSION,
@@ -96,6 +97,22 @@ async function dispatch(request: SidecarRequest): Promise<void> {
       ack(request.id, false, `unknown permission request: ${request.request_id}`);
       return;
     }
+    case "list_models": {
+      if (useMock) {
+        writeEvent({
+          type: "models",
+          session_id: "",
+          models: [
+            { id: "mock-model", display_name: "Mock Model" },
+            { id: "claude-fable-5", display_name: "Fable (mock)" },
+          ],
+        });
+      } else {
+        await reportModels(request.cwd);
+      }
+      ack(request.id, true);
+      return;
+    }
     case "shutdown": {
       for (const session of sessions.values()) {
         session.close();
@@ -109,6 +126,19 @@ async function dispatch(request: SidecarRequest): Promise<void> {
 
 const rl = readline.createInterface({ input: process.stdin, terminal: false });
 
+/** In-flight dispatches, so a closing stdin does not kill work mid-answer. */
+let inFlight = 0;
+let stdinClosed = false;
+
+function exitWhenIdle(): void {
+  if (stdinClosed && inFlight === 0) {
+    for (const session of sessions.values()) {
+      session.close();
+    }
+    process.exit(0);
+  }
+}
+
 rl.on("line", (line) => {
   const trimmed = line.trim();
   if (trimmed.length === 0) return;
@@ -121,17 +151,21 @@ rl.on("line", (line) => {
     return;
   }
 
-  dispatch(request).catch((err) => {
-    writeEvent({ type: "error", message: `dispatch failed: ${String(err)}` });
-  });
+  inFlight += 1;
+  dispatch(request)
+    .catch((err) => {
+      writeEvent({ type: "error", message: `dispatch failed: ${String(err)}` });
+    })
+    .finally(() => {
+      inFlight -= 1;
+      exitWhenIdle();
+    });
 });
 
 rl.on("close", () => {
-  // Core closed our stdin: shut down cleanly.
-  for (const session of sessions.values()) {
-    session.close();
-  }
-  process.exit(0);
+  // Core closed our stdin: finish what is in flight, then shut down cleanly.
+  stdinClosed = true;
+  exitWhenIdle();
 });
 
 writeEvent({ type: "ready", protocol_version: PROTOCOL_VERSION });

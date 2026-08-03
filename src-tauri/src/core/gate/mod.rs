@@ -348,6 +348,10 @@ mod tests {
                 .push((request_id.to_string(), allow, updated_args, message));
             Ok(())
         }
+
+        fn list_models(&self, _cwd: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     fn manager_with(rules: Vec<Box<dyn GateRule>>) -> (GateManager, Arc<MockEngine>, EventBus) {

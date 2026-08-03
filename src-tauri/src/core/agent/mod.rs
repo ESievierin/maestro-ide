@@ -56,6 +56,9 @@ pub trait AgentEngine: Send + Sync {
         updated_args: Option<Value>,
         message: Option<String>,
     ) -> Result<()>;
+
+    /// Ask the CLI which models it offers; the answer arrives as a `models` event.
+    fn list_models(&self, cwd: &str) -> Result<()>;
 }
 
 /// How to launch the sidecar process.
@@ -174,6 +177,7 @@ fn request_id(request: &SidecarRequest) -> Option<u64> {
         | SidecarRequest::Interrupt { id, .. }
         | SidecarRequest::Close { id, .. }
         | SidecarRequest::PermissionResponse { id, .. }
+        | SidecarRequest::ListModels { id, .. }
         | SidecarRequest::Shutdown { id } => Some(*id),
     }
 }
@@ -380,6 +384,14 @@ impl AgentEngine for SidecarEngine {
             allow,
             updated_args,
             message,
+        };
+        self.write(&request, None)
+    }
+
+    fn list_models(&self, cwd: &str) -> Result<()> {
+        let request = SidecarRequest::ListModels {
+            id: self.next_request_id(),
+            cwd: cwd.to_string(),
         };
         self.write(&request, None)
     }

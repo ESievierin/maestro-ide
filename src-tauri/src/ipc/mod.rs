@@ -411,3 +411,21 @@ pub async fn dismiss_attention(state: State<'_, AppState>, id: String) -> Result
     let attention = state.attention.clone();
     run_core(state.bus.clone(), move || attention.dismiss(&id)).await
 }
+
+/// Refresh the model list from the CLI (no session, no tokens). The answer arrives as a
+/// `session.models` event, so the selector is never stale after switching sidecar modes.
+#[tauri::command]
+pub async fn refresh_models(state: State<'_, AppState>) -> Result<(), String> {
+    let sessions = state.sessions.clone();
+    let worktrees = state.worktrees.clone();
+    run_core(state.bus.clone(), move || {
+        // Any repo path works; the CLI reports the same models. Fall back to the
+        // process cwd when no repository has been selected yet.
+        let cwd = match worktrees.repo_info()? {
+            Some(info) => info.path.to_string_lossy().into_owned(),
+            None => ".".to_string(),
+        };
+        sessions.refresh_models(&cwd)
+    })
+    .await
+}

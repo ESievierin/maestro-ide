@@ -13,10 +13,11 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::bus::{Event, EventBus};
+use crate::core::diff::{DiffManager, DiffSnapshot, FileDiff};
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
 use crate::core::store::{Branch, Store};
 use crate::core::worktree::{
-    CreateWorktreeRequest, RemoveOutcome, RepoInfo, WorktreeInfo, WorktreeManager,
+    BlameLine, CreateWorktreeRequest, RemoveOutcome, RepoInfo, WorktreeInfo, WorktreeManager,
 };
 use crate::error::MaestroError;
 
@@ -28,6 +29,7 @@ pub struct AppState {
     pub store: Arc<dyn Store>,
     pub worktrees: Arc<WorktreeManager>,
     pub sessions: Arc<SessionManager>,
+    pub diffs: Arc<DiffManager>,
 }
 
 /// Forward every bus event to the frontend over a single Tauri event channel.
@@ -237,4 +239,56 @@ pub async fn list_sessions(
 pub async fn delete_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     let sessions = state.sessions.clone();
     run_core(state.bus.clone(), move || sessions.delete(&session_id)).await
+}
+
+// ---------- diffs ----------
+
+/// Cached diff snapshot for a branch (computed on first access).
+#[tauri::command]
+pub async fn get_diff(state: State<'_, AppState>, branch: String) -> Result<DiffSnapshot, String> {
+    let diffs = state.diffs.clone();
+    run_core(state.bus.clone(), move || {
+        diffs.get(&branch).map(|s| (*s).clone())
+    })
+    .await
+}
+
+/// Force recompute of a branch's diff; publishes `diff.updated`.
+#[tauri::command]
+pub async fn refresh_diff(
+    state: State<'_, AppState>,
+    branch: String,
+) -> Result<DiffSnapshot, String> {
+    let diffs = state.diffs.clone();
+    run_core(state.bus.clone(), move || {
+        diffs.refresh(&branch).map(|s| (*s).clone())
+    })
+    .await
+}
+
+/// Old/new contents of one changed file (for the unified editor view).
+#[tauri::command]
+pub async fn get_file_diff(
+    state: State<'_, AppState>,
+    branch: String,
+    path: String,
+) -> Result<FileDiff, String> {
+    let diffs = state.diffs.clone();
+    run_core(state.bus.clone(), move || diffs.file_diff(&branch, &path)).await
+}
+
+/// Blame for a line range in the branch's worktree (line-question context in T6).
+#[tauri::command]
+pub async fn blame_range(
+    state: State<'_, AppState>,
+    branch: String,
+    path: String,
+    start: u32,
+    end: u32,
+) -> Result<Vec<BlameLine>, String> {
+    let diffs = state.diffs.clone();
+    run_core(state.bus.clone(), move || {
+        diffs.blame(&branch, &path, start, end)
+    })
+    .await
 }

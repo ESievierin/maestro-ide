@@ -8,7 +8,7 @@ mod git_cli;
 mod provider;
 
 pub use git_cli::GitCli;
-pub use provider::{BranchStatus, GitProvider, WorktreeEntry};
+pub use provider::{BlameLine, BranchStatus, ChangedFile, GitProvider, WorktreeEntry};
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -502,6 +502,29 @@ mod tests {
         }
         fn merge_base_diff(&self, _repo: &Path, _branch: &str, _base: &str) -> Result<String> {
             Ok(String::new())
+        }
+        fn merge_base(&self, _repo: &Path, _base: &str, _branch: &str) -> Result<String> {
+            Ok("0000000000000000000000000000000000000000".into())
+        }
+        fn changed_files(
+            &self,
+            _repo: &Path,
+            _branch: &str,
+            _base: &str,
+        ) -> Result<Vec<provider::ChangedFile>> {
+            Ok(Vec::new())
+        }
+        fn show_file(&self, _repo: &Path, _rev: &str, _path: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        fn blame_range(
+            &self,
+            _worktree: &Path,
+            _path: &str,
+            _start: u32,
+            _end: u32,
+        ) -> Result<Vec<provider::BlameLine>> {
+            Ok(Vec::new())
         }
     }
 

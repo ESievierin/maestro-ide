@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
@@ -27,6 +27,27 @@ pub struct BranchStatus {
     pub ahead: u32,
     /// Commits behind upstream (0 when no upstream).
     pub behind: u32,
+}
+
+/// One file changed between a branch and its merge-base with the base branch.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChangedFile {
+    pub path: String,
+    /// Single-letter git status: A(dded), M(odified), D(eleted), R(enamed), …
+    pub status: String,
+    /// Original path for renames/copies.
+    pub old_path: Option<String>,
+}
+
+/// One line of `git blame` output for a requested range.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct BlameLine {
+    pub sha: String,
+    pub author: String,
+    pub summary: String,
+    /// 1-based line number in the current file.
+    pub line: u32,
+    pub content: String,
 }
 
 /// External git boundary. Synchronous by design — the git CLI is a blocking
@@ -68,4 +89,23 @@ pub trait GitProvider: Send + Sync {
     /// Raw unified diff of `branch` against its merge-base with `base`
     /// (`git diff base...branch`). Consumed by the diff engine in T5.
     fn merge_base_diff(&self, repo: &Path, branch: &str, base: &str) -> Result<String>;
+
+    /// The merge-base commit of `base` and `branch`.
+    fn merge_base(&self, repo: &Path, base: &str, branch: &str) -> Result<String>;
+
+    /// Files changed between the merge-base and `branch` (rename detection on).
+    fn changed_files(&self, repo: &Path, branch: &str, base: &str) -> Result<Vec<ChangedFile>>;
+
+    /// Contents of `path` at `rev`; `None` when the file does not exist there.
+    fn show_file(&self, repo: &Path, rev: &str, path: &str) -> Result<Option<String>>;
+
+    /// Blame for lines `start..=end` of `path` in the given worktree (working tree
+    /// state, so uncommitted lines blame to the "not committed" placeholder).
+    fn blame_range(
+        &self,
+        worktree: &Path,
+        path: &str,
+        start: u32,
+        end: u32,
+    ) -> Result<Vec<BlameLine>>;
 }

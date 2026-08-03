@@ -704,6 +704,134 @@ select {
   border-color: #33502a;
 }
 
+/* ---------- Diff viewer ---------- */
+
+.worktree-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.main-tabs {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.main-tabs .selected {
+  border-color: #7aa2f7;
+  background: #1c2230;
+}
+
+.diff-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  flex: 1;
+  min-height: 0;
+}
+
+.diff-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.diff-body {
+  display: flex;
+  gap: 0.75rem;
+  flex: 1;
+  min-height: 0;
+}
+
+.diff-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 260px;
+  min-width: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.diff-files li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  border: 1px solid transparent;
+}
+
+.diff-files li:hover {
+  background: #1c1f26;
+}
+
+.diff-files li.selected {
+  border-color: #7aa2f7;
+  background: #1c2230;
+}
+
+.file-status {
+  width: 1.1rem;
+  text-align: center;
+  font-weight: 600;
+  flex-shrink: 0;
+  font-size: 0.72rem;
+}
+
+.file-status-A {
+  color: #9ece6a;
+}
+
+.file-status-M {
+  color: #e0af68;
+}
+
+.file-status-D {
+  color: #f7768e;
+}
+
+.file-status-R,
+.file-status-C {
+  color: #7aa2f7;
+}
+
+.file-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-editor {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #2a2e37;
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.cm-host {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.cm-host .cm-editor {
+  height: 100%;
+  font-size: 0.82rem;
+}
+
+.diff-editor .empty {
+  padding: 1rem;
+}
+
 /* ---------- Modal ---------- */
 
 .modal-backdrop {

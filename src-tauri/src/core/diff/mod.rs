@@ -1,0 +1,427 @@
+//! Diff engine (strictly scoped per the brief): unified diff of a branch against the
+//! merge-base with its base branch, changed-file list, and on-demand blame.
+//!
+//! Snapshots are cached per branch; the cache is invalidated when a session on that
+//! branch finishes (`session.status_changed` → done) or on manual refresh. Every
+//! invalidation publishes `diff.updated` — panels refetch, nothing is pushed.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use chrono::{DateTime, Utc};
+use serde::Serialize;
+use tokio::sync::broadcast::error::RecvError;
+
+use crate::core::bus::{Event, EventBus};
+use crate::core::session::SessionStatus;
+use crate::core::store::Store;
+use crate::core::worktree::{BlameLine, ChangedFile, GitProvider, WorktreeManager};
+use crate::error::{MaestroError, Result};
+
+/// Computed diff state for one branch.
+#[derive(Clone, Debug, Serialize)]
+pub struct DiffSnapshot {
+    pub branch: String,
+    pub base: String,
+    pub merge_base: String,
+    pub files: Vec<ChangedFile>,
+    /// Raw unified diff (`git diff base...branch`).
+    pub unified: String,
+    pub computed_at: DateTime<Utc>,
+}
+
+/// Old/new contents of one changed file, for the unified editor view.
+#[derive(Clone, Debug, Serialize)]
+pub struct FileDiff {
+    pub path: String,
+    /// Contents at the merge-base; `None` for added files.
+    pub old: Option<String>,
+    /// Contents at the branch head; `None` for deleted files.
+    pub new: Option<String>,
+}
+
+pub struct DiffManager {
+    git: Arc<dyn GitProvider>,
+    store: Arc<dyn Store>,
+    worktrees: Arc<WorktreeManager>,
+    bus: EventBus,
+    cache: Mutex<HashMap<String, Arc<DiffSnapshot>>>,
+}
+
+impl DiffManager {
+    pub fn new(
+        git: Arc<dyn GitProvider>,
+        store: Arc<dyn Store>,
+        worktrees: Arc<WorktreeManager>,
+        bus: EventBus,
+    ) -> Self {
+        Self {
+            git,
+            store,
+            worktrees,
+            bus,
+            cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Cached snapshot for `branch`, computing it on first access.
+    pub fn get(&self, branch: &str) -> Result<Arc<DiffSnapshot>> {
+        if let Some(snapshot) = self.lock_cache()?.get(branch).cloned() {
+            return Ok(snapshot);
+        }
+        self.compute_and_cache(branch)
+    }
+
+    /// Force recompute and publish `diff.updated`.
+    pub fn refresh(&self, branch: &str) -> Result<Arc<DiffSnapshot>> {
+        let snapshot = self.compute_and_cache(branch)?;
+        self.bus.publish(Event::DiffUpdated {
+            branch: branch.to_string(),
+        });
+        Ok(snapshot)
+    }
+
+    /// Drop the cached snapshot (recomputed lazily) and publish `diff.updated`.
+    pub fn invalidate(&self, branch: &str) {
+        if let Ok(mut cache) = self.lock_cache() {
+            cache.remove(branch);
+        }
+        self.bus.publish(Event::DiffUpdated {
+            branch: branch.to_string(),
+        });
+    }
+
+    /// Old/new contents for one file of the branch's diff.
+    pub fn file_diff(&self, branch: &str, path: &str) -> Result<FileDiff> {
+        let repo = self.require_repo()?;
+        let snapshot = self.get(branch)?;
+        let entry = snapshot.files.iter().find(|f| f.path == path);
+        // Renames read the old side from the original path.
+        let old_path = entry.and_then(|f| f.old_path.as_deref()).unwrap_or(path);
+        let old = self.git.show_file(&repo, &snapshot.merge_base, old_path)?;
+        let new = self.git.show_file(&repo, branch, path)?;
+        Ok(FileDiff {
+            path: path.to_string(),
+            old,
+            new,
+        })
+    }
+
+    /// Blame for a line range of `path` in the branch's worktree (T6 uses this to
+    /// build line-question context).
+    pub fn blame(&self, branch: &str, path: &str, start: u32, end: u32) -> Result<Vec<BlameLine>> {
+        let worktree = self
+            .worktrees
+            .list()?
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some(branch))
+            .ok_or_else(|| MaestroError::InvalidData {
+                message: format!("no worktree for branch: {branch}"),
+            })?;
+        self.git.blame_range(&worktree.path, path, start, end)
+    }
+
+    /// Bus subscriber: invalidate a branch's diff whenever a session on it finishes.
+    pub async fn run_invalidation_loop(self: Arc<Self>, bus: EventBus) {
+        let mut rx = bus.subscribe();
+        loop {
+            match rx.recv().await {
+                Ok(Event::SessionStatusChanged {
+                    branch,
+                    status: SessionStatus::Done,
+                    ..
+                }) => {
+                    tracing::debug!(branch, "session done; invalidating diff cache");
+                    self.invalidate(&branch);
+                }
+                Ok(_) => {}
+                Err(RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "diff invalidator lagged; clearing whole cache");
+                    if let Ok(mut cache) = self.lock_cache() {
+                        cache.clear();
+                    }
+                }
+                Err(RecvError::Closed) => break,
+            }
+        }
+    }
+
+    fn compute_and_cache(&self, branch: &str) -> Result<Arc<DiffSnapshot>> {
+        let repo = self.require_repo()?;
+        let base = self.base_for(branch)?;
+        let snapshot = Arc::new(DiffSnapshot {
+            branch: branch.to_string(),
+            base: base.clone(),
+            merge_base: self.git.merge_base(&repo, &base, branch)?,
+            files: self.git.changed_files(&repo, branch, &base)?,
+            unified: self.git.merge_base_diff(&repo, branch, &base)?,
+            computed_at: Utc::now(),
+        });
+        self.lock_cache()?
+            .insert(branch.to_string(), snapshot.clone());
+        tracing::debug!(branch, files = snapshot.files.len(), "diff computed");
+        Ok(snapshot)
+    }
+
+    /// The branch's stored base branch, falling back to the repo default.
+    fn base_for(&self, branch: &str) -> Result<String> {
+        if let Some(stored) = self.store.get_branch(branch)? {
+            if let Some(base) = stored.base_branch {
+                return Ok(base);
+            }
+        }
+        let repo = self.require_repo()?;
+        self.git.default_branch(&repo)
+    }
+
+    fn require_repo(&self) -> Result<std::path::PathBuf> {
+        self.worktrees
+            .repo_info()?
+            .map(|info| info.path)
+            .ok_or_else(|| MaestroError::Config {
+                message: "no repository selected".into(),
+            })
+    }
+}
+
+impl DiffManager {
+    fn lock_cache(&self) -> Result<std::sync::MutexGuard<'_, HashMap<String, Arc<DiffSnapshot>>>> {
+        self.cache.lock().map_err(|_| MaestroError::InvalidData {
+            message: "diff cache lock poisoned".into(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::store::SqliteStore;
+    use crate::core::worktree::{BranchStatus, WorktreeEntry};
+    use std::path::{Path, PathBuf};
+
+    #[derive(Default)]
+    struct MockGit {
+        diff_calls: Mutex<u32>,
+        last_base: Mutex<Option<String>>,
+        shown_paths: Mutex<Vec<String>>,
+    }
+
+    impl GitProvider for MockGit {
+        fn is_git_repo(&self, path: &Path) -> Result<bool> {
+            Ok(path == Path::new("/repo"))
+        }
+        fn default_branch(&self, _repo: &Path) -> Result<String> {
+            Ok("main".into())
+        }
+        fn list_branches(&self, _repo: &Path) -> Result<Vec<String>> {
+            Ok(vec!["main".into()])
+        }
+        fn list_remote_branches(&self, _repo: &Path) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn branch_exists(&self, _repo: &Path, _branch: &str) -> Result<bool> {
+            Ok(true)
+        }
+        fn list_worktrees(&self, _repo: &Path) -> Result<Vec<WorktreeEntry>> {
+            Ok(vec![
+                WorktreeEntry {
+                    path: PathBuf::from("/repo"),
+                    head: "abc".into(),
+                    branch: Some("main".into()),
+                    is_primary: true,
+                },
+                WorktreeEntry {
+                    path: PathBuf::from("/repo.worktrees/impl-T-1-x"),
+                    head: "def".into(),
+                    branch: Some("impl/T-1-x".into()),
+                    is_primary: false,
+                },
+            ])
+        }
+        fn create_worktree(
+            &self,
+            _repo: &Path,
+            _path: &Path,
+            _branch: &str,
+            _base: Option<&str>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn remove_worktree(&self, _repo: &Path, _path: &Path, _force: bool) -> Result<()> {
+            Ok(())
+        }
+        fn branch_status(&self, _worktree: &Path) -> Result<BranchStatus> {
+            Ok(BranchStatus::default())
+        }
+        fn merge_base_diff(&self, _repo: &Path, _branch: &str, base: &str) -> Result<String> {
+            *self.diff_calls.lock().unwrap() += 1;
+            *self.last_base.lock().unwrap() = Some(base.to_string());
+            Ok("diff --git a/src/lib.rs b/src/lib.rs\n".into())
+        }
+        fn merge_base(&self, _repo: &Path, _base: &str, _branch: &str) -> Result<String> {
+            Ok("mb00000000000000000000000000000000000000".into())
+        }
+        fn changed_files(
+            &self,
+            _repo: &Path,
+            _branch: &str,
+            _base: &str,
+        ) -> Result<Vec<ChangedFile>> {
+            Ok(vec![
+                ChangedFile {
+                    path: "src/lib.rs".into(),
+                    status: "M".into(),
+                    old_path: None,
+                },
+                ChangedFile {
+                    path: "src/renamed.rs".into(),
+                    status: "R".into(),
+                    old_path: Some("src/original.rs".into()),
+                },
+            ])
+        }
+        fn show_file(&self, _repo: &Path, rev: &str, path: &str) -> Result<Option<String>> {
+            self.shown_paths
+                .lock()
+                .unwrap()
+                .push(format!("{rev}:{path}"));
+            Ok(Some(format!("contents of {path} at {rev}")))
+        }
+        fn blame_range(
+            &self,
+            _worktree: &Path,
+            _path: &str,
+            start: u32,
+            end: u32,
+        ) -> Result<Vec<BlameLine>> {
+            Ok((start..=end)
+                .map(|line| BlameLine {
+                    sha: "abcd1234".into(),
+                    author: "Mock".into(),
+                    summary: "mock commit".into(),
+                    line,
+                    content: format!("line {line}"),
+                })
+                .collect())
+        }
+    }
+
+    fn setup() -> (Arc<DiffManager>, Arc<MockGit>, EventBus, Arc<SqliteStore>) {
+        let bus = EventBus::new();
+        let git = Arc::new(MockGit::default());
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let worktrees = Arc::new(WorktreeManager::new(
+            git.clone(),
+            store.clone(),
+            bus.clone(),
+        ));
+        worktrees.set_repo(Path::new("/repo")).unwrap();
+        let manager = Arc::new(DiffManager::new(
+            git.clone(),
+            store.clone(),
+            worktrees,
+            bus.clone(),
+        ));
+        (manager, git, bus, store)
+    }
+
+    #[tokio::test]
+    async fn get_is_cached_refresh_recomputes() {
+        let (manager, git, bus, _store) = setup();
+        let mut rx = bus.subscribe();
+
+        let first = manager.get("impl/T-1-x").unwrap();
+        let second = manager.get("impl/T-1-x").unwrap();
+        assert_eq!(*git.diff_calls.lock().unwrap(), 1, "second get was cached");
+        assert_eq!(first.merge_base, second.merge_base);
+
+        manager.refresh("impl/T-1-x").unwrap();
+        assert_eq!(*git.diff_calls.lock().unwrap(), 2);
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.name(), "diff.updated");
+    }
+
+    #[tokio::test]
+    async fn invalidate_drops_cache_and_publishes() {
+        let (manager, git, bus, _store) = setup();
+        manager.get("impl/T-1-x").unwrap();
+
+        let mut rx = bus.subscribe();
+        manager.invalidate("impl/T-1-x");
+        assert_eq!(rx.recv().await.unwrap().name(), "diff.updated");
+
+        manager.get("impl/T-1-x").unwrap();
+        assert_eq!(
+            *git.diff_calls.lock().unwrap(),
+            2,
+            "recomputed after invalidate"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_done_invalidates_via_bus() {
+        let (manager, _git, bus, _store) = setup();
+        manager.get("impl/T-1-x").unwrap();
+
+        tokio::spawn(manager.clone().run_invalidation_loop(bus.clone()));
+        // Give the loop a moment to subscribe.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut rx = bus.subscribe();
+        bus.publish(Event::SessionStatusChanged {
+            session_id: "s1".into(),
+            branch: "impl/T-1-x".into(),
+            status: SessionStatus::Done,
+        });
+
+        // Expect a diff.updated to follow.
+        let deadline = std::time::Duration::from_secs(2);
+        let got = tokio::time::timeout(deadline, async {
+            loop {
+                if let Ok(event) = rx.recv().await {
+                    if event.name() == "diff.updated" {
+                        return true;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(got, "session done must trigger diff.updated");
+    }
+
+    #[tokio::test]
+    async fn file_diff_reads_old_side_of_renames() {
+        let (manager, git, _bus, _store) = setup();
+        let diff = manager.file_diff("impl/T-1-x", "src/renamed.rs").unwrap();
+        assert!(diff.old.is_some() && diff.new.is_some());
+        let shown = git.shown_paths.lock().unwrap();
+        assert!(
+            shown.iter().any(|s| s.ends_with(":src/original.rs")),
+            "old side must come from the pre-rename path: {shown:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn base_falls_back_to_default_branch_and_respects_stored_base() {
+        let (manager, git, _bus, store) = setup();
+
+        manager.get("impl/T-1-x").unwrap();
+        assert_eq!(git.last_base.lock().unwrap().as_deref(), Some("main"));
+
+        store
+            .upsert_branch("impl/T-2-y", None, Some("develop"))
+            .unwrap();
+        manager.get("impl/T-2-y").unwrap();
+        assert_eq!(git.last_base.lock().unwrap().as_deref(), Some("develop"));
+    }
+
+    #[tokio::test]
+    async fn blame_resolves_worktree_path() {
+        let (manager, _git, _bus, _store) = setup();
+        let lines = manager.blame("impl/T-1-x", "src/lib.rs", 3, 5).unwrap();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].line, 3);
+        assert!(manager.blame("no-such-branch", "x", 1, 1).is_err());
+    }
+}

@@ -6,7 +6,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::core::worktree::provider::{BranchStatus, GitProvider, WorktreeEntry};
+use crate::core::worktree::provider::{
+    BlameLine, BranchStatus, ChangedFile, GitProvider, WorktreeEntry,
+};
 use crate::error::{GitErrorKind, MaestroError, Result};
 
 pub struct GitCli;
@@ -153,6 +155,107 @@ impl GitProvider for GitCli {
         let range = format!("{base}...{branch}");
         self.run(repo, &["diff", &range])
     }
+
+    fn merge_base(&self, repo: &Path, base: &str, branch: &str) -> Result<String> {
+        Ok(self
+            .run(repo, &["merge-base", base, branch])?
+            .trim()
+            .to_string())
+    }
+
+    fn changed_files(&self, repo: &Path, branch: &str, base: &str) -> Result<Vec<ChangedFile>> {
+        let range = format!("{base}...{branch}");
+        let out = self.run(repo, &["diff", "--name-status", "-M", &range])?;
+        Ok(parse_name_status(&out))
+    }
+
+    fn show_file(&self, repo: &Path, rev: &str, path: &str) -> Result<Option<String>> {
+        let spec = format!("{rev}:{path}");
+        if !self.succeeds(repo, &["cat-file", "-e", &spec])? {
+            return Ok(None);
+        }
+        Ok(Some(self.run(repo, &["show", &spec])?))
+    }
+
+    fn blame_range(
+        &self,
+        worktree: &Path,
+        path: &str,
+        start: u32,
+        end: u32,
+    ) -> Result<Vec<BlameLine>> {
+        let range = format!("{start},{end}");
+        let out = self.run(
+            worktree,
+            &["blame", "--line-porcelain", "-L", &range, "--", path],
+        )?;
+        Ok(parse_blame(&out))
+    }
+}
+
+/// Parse `git diff --name-status -M` output: `M\tpath` or `R100\told\tnew`.
+fn parse_name_status(out: &str) -> Vec<ChangedFile> {
+    out.lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let status_raw = parts.next()?.trim();
+            if status_raw.is_empty() {
+                return None;
+            }
+            let status: String = status_raw.chars().take(1).collect();
+            let first = parts.next()?.to_string();
+            match parts.next() {
+                // Rename/copy: "R100\told\tnew" — the file now lives at `new`.
+                Some(new_path) => Some(ChangedFile {
+                    path: new_path.to_string(),
+                    status,
+                    old_path: Some(first),
+                }),
+                None => Some(ChangedFile {
+                    path: first,
+                    status,
+                    old_path: None,
+                }),
+            }
+        })
+        .collect()
+}
+
+/// Parse `git blame --line-porcelain` output.
+fn parse_blame(out: &str) -> Vec<BlameLine> {
+    let mut lines = Vec::new();
+    let mut sha = String::new();
+    let mut line_no = 0u32;
+    let mut author = String::new();
+    let mut summary = String::new();
+
+    for raw in out.lines() {
+        if let Some(content) = raw.strip_prefix('\t') {
+            lines.push(BlameLine {
+                sha: sha.chars().take(8).collect(),
+                author: author.clone(),
+                summary: summary.clone(),
+                line: line_no,
+                content: content.to_string(),
+            });
+        } else if let Some(rest) = raw.strip_prefix("author ") {
+            author = rest.to_string();
+        } else if let Some(rest) = raw.strip_prefix("summary ") {
+            summary = rest.to_string();
+        } else if !raw.starts_with(char::is_whitespace) {
+            // Header line: "<sha> <orig-line> <final-line> [<group-size>]".
+            let mut parts = raw.split_whitespace();
+            if let (Some(first), Some(_), Some(final_line)) =
+                (parts.next(), parts.next(), parts.next())
+            {
+                if first.len() >= 8 && first.chars().all(|c| c.is_ascii_hexdigit()) {
+                    sha = first.to_string();
+                    line_no = final_line.parse().unwrap_or(0);
+                }
+            }
+        }
+    }
+    lines
 }
 
 /// Parse `git worktree list --porcelain` output. The first entry is the primary
@@ -250,6 +353,41 @@ mod tests {
     }
 
     #[test]
+    fn parses_name_status_with_renames() {
+        let out = "M\tsrc/lib.rs\nA\tsrc/new.rs\nD\told.txt\nR087\tsrc/a.rs\tsrc/b.rs\n";
+        let files = parse_name_status(out);
+        assert_eq!(files.len(), 4);
+        assert_eq!(files[0].status, "M");
+        assert_eq!(files[0].path, "src/lib.rs");
+        assert_eq!(files[3].status, "R");
+        assert_eq!(files[3].path, "src/b.rs");
+        assert_eq!(files[3].old_path.as_deref(), Some("src/a.rs"));
+    }
+
+    #[test]
+    fn parses_line_porcelain_blame() {
+        let out = "abcdef1234567890abcdef1234567890abcdef12 3 5 2\n\
+                   author Alice\n\
+                   author-mail <a@x>\n\
+                   summary add feature\n\
+                   filename src/lib.rs\n\
+                   \tlet x = 1;\n\
+                   abcdef1234567890abcdef1234567890abcdef12 4 6\n\
+                   author Alice\n\
+                   summary add feature\n\
+                   filename src/lib.rs\n\
+                   \tlet y = 2;\n";
+        let lines = parse_blame(out);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].sha, "abcdef12");
+        assert_eq!(lines[0].author, "Alice");
+        assert_eq!(lines[0].summary, "add feature");
+        assert_eq!(lines[0].line, 5);
+        assert_eq!(lines[0].content, "let x = 1;");
+        assert_eq!(lines[1].line, 6);
+    }
+
+    #[test]
     fn parses_dirty_status() {
         let out = "# branch.oid 1234\n# branch.head main\n\
                    1 .M N... 100644 100644 100644 abc def src/lib.rs\n\
@@ -327,6 +465,31 @@ mod tests {
                 .merge_base_diff(&repo, "impl/T-1-x", "main")
                 .expect("diff");
             assert!(diff.contains("new.txt"), "diff should mention new.txt");
+
+            // T5 surface: merge-base, changed files, file contents at revs, blame.
+            let mb = cli.merge_base(&repo, "main", "impl/T-1-x").expect("mb");
+            assert_eq!(mb.len(), 40, "full commit oid");
+            let files = cli
+                .changed_files(&repo, "impl/T-1-x", "main")
+                .expect("changed files");
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].status, "A");
+            assert_eq!(files[0].path, "new.txt");
+            assert_eq!(
+                cli.show_file(&repo, &mb, "new.txt").expect("show old"),
+                None,
+                "file did not exist at merge-base"
+            );
+            assert_eq!(
+                cli.show_file(&repo, "impl/T-1-x", "new.txt")
+                    .expect("show new")
+                    .as_deref(),
+                Some("x\n")
+            );
+            let blame = cli.blame_range(&wt, "new.txt", 1, 1).expect("blame");
+            assert_eq!(blame.len(), 1);
+            assert_eq!(blame[0].author, "Maestro Test");
+            assert_eq!(blame[0].line, 1);
 
             // Removal (clean tree, no force needed).
             cli.remove_worktree(&repo, &wt, false).expect("remove");

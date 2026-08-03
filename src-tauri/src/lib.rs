@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::core::agent::{SidecarConfig, SidecarEngine};
 use crate::core::bus::EventBus;
+use crate::core::diff::DiffManager;
 use crate::core::session::SessionManager;
 use crate::core::store::SqliteStore;
 use crate::core::worktree::{GitCli, WorktreeManager};
@@ -47,8 +48,9 @@ pub fn run() {
     };
     tracing::info!(path = %db_path.display(), "store ready");
 
+    let git: Arc<GitCli> = Arc::new(GitCli);
     let worktrees = Arc::new(WorktreeManager::new(
-        Arc::new(GitCli),
+        git.clone(),
         store.clone(),
         bus.clone(),
     ));
@@ -66,11 +68,19 @@ pub fn run() {
     // Sessions from a previous app run cannot be reattached (yet) — fail them.
     sessions.fail_stale_sessions("app restart");
 
+    let diffs = Arc::new(DiffManager::new(
+        git,
+        store.clone(),
+        worktrees.clone(),
+        bus.clone(),
+    ));
+
     let state = AppState {
         bus: bus.clone(),
         store,
         worktrees,
         sessions: sessions.clone(),
+        diffs: diffs.clone(),
     };
 
     tauri::Builder::default()
@@ -89,12 +99,17 @@ pub fn run() {
             ipc::close_session,
             ipc::respond_permission,
             ipc::list_sessions,
-            ipc::delete_session
+            ipc::delete_session,
+            ipc::get_diff,
+            ipc::refresh_diff,
+            ipc::get_file_diff,
+            ipc::blame_range
         ])
         .setup(move |app| {
             ipc::spawn_event_forwarder(app.handle().clone(), bus.clone());
             tauri::async_runtime::spawn(sessions.clone().run_loop(signal_rx));
-            tracing::info!("event forwarder and session manager loop started");
+            tauri::async_runtime::spawn(diffs.clone().run_invalidation_loop(bus.clone()));
+            tracing::info!("event forwarder, session manager, and diff invalidator started");
             Ok(())
         })
         .run(tauri::generate_context!())

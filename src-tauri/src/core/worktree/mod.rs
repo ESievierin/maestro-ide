@@ -517,6 +517,16 @@ mod tests {
         fn show_file(&self, _repo: &Path, _rev: &str, _path: &str) -> Result<Option<String>> {
             Ok(None)
         }
+        fn worktree_diff(&self, _worktree: &Path, _merge_base: &str) -> Result<String> {
+            Ok(String::new())
+        }
+        fn worktree_changed_files(
+            &self,
+            _worktree: &Path,
+            _merge_base: &str,
+        ) -> Result<Vec<provider::ChangedFile>> {
+            Ok(Vec::new())
+        }
         fn blame_range(
             &self,
             _worktree: &Path,

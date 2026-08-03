@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::bus::{Event, EventBus};
-use crate::core::diff::{DiffManager, DiffSnapshot, FileDiff};
+use crate::core::diff::{DiffManager, DiffScope, DiffSnapshot, FileDiff};
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
 use crate::core::store::{Branch, Store};
 use crate::core::worktree::{
@@ -245,10 +245,16 @@ pub async fn delete_session(state: State<'_, AppState>, session_id: String) -> R
 
 /// Cached diff snapshot for a branch (computed on first access).
 #[tauri::command]
-pub async fn get_diff(state: State<'_, AppState>, branch: String) -> Result<DiffSnapshot, String> {
+pub async fn get_diff(
+    state: State<'_, AppState>,
+    branch: String,
+    scope: Option<DiffScope>,
+) -> Result<DiffSnapshot, String> {
     let diffs = state.diffs.clone();
     run_core(state.bus.clone(), move || {
-        diffs.get(&branch).map(|s| (*s).clone())
+        diffs
+            .get(&branch, scope.unwrap_or_default())
+            .map(|s| (*s).clone())
     })
     .await
 }
@@ -258,10 +264,13 @@ pub async fn get_diff(state: State<'_, AppState>, branch: String) -> Result<Diff
 pub async fn refresh_diff(
     state: State<'_, AppState>,
     branch: String,
+    scope: Option<DiffScope>,
 ) -> Result<DiffSnapshot, String> {
     let diffs = state.diffs.clone();
     run_core(state.bus.clone(), move || {
-        diffs.refresh(&branch).map(|s| (*s).clone())
+        diffs
+            .refresh(&branch, scope.unwrap_or_default())
+            .map(|s| (*s).clone())
     })
     .await
 }
@@ -272,9 +281,13 @@ pub async fn get_file_diff(
     state: State<'_, AppState>,
     branch: String,
     path: String,
+    scope: Option<DiffScope>,
 ) -> Result<FileDiff, String> {
     let diffs = state.diffs.clone();
-    run_core(state.bus.clone(), move || diffs.file_diff(&branch, &path)).await
+    run_core(state.bus.clone(), move || {
+        diffs.file_diff(&branch, &path, scope.unwrap_or_default())
+    })
+    .await
 }
 
 /// Blame for a line range in the branch's worktree (line-question context in T6).

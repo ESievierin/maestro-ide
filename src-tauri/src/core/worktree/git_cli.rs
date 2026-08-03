@@ -191,6 +191,32 @@ impl GitProvider for GitCli {
         )?;
         Ok(parse_blame(&out))
     }
+
+    fn worktree_diff(&self, worktree: &Path, merge_base: &str) -> Result<String> {
+        self.run(worktree, &["diff", merge_base])
+    }
+
+    fn worktree_changed_files(
+        &self,
+        worktree: &Path,
+        merge_base: &str,
+    ) -> Result<Vec<ChangedFile>> {
+        let out = self.run(worktree, &["diff", "--name-status", "-M", merge_base])?;
+        let mut files = parse_name_status(&out);
+
+        // Untracked files don't appear in `git diff` — pull them from status.
+        let status = self.run(worktree, &["status", "--porcelain=v2"])?;
+        for line in status.lines() {
+            if let Some(path) = line.strip_prefix("? ") {
+                files.push(ChangedFile {
+                    path: path.to_string(),
+                    status: "A".into(),
+                    old_path: None,
+                });
+            }
+        }
+        Ok(files)
+    }
 }
 
 /// Parse `git diff --name-status -M` output: `M\tpath` or `R100\told\tnew`.
@@ -490,6 +516,30 @@ mod tests {
             assert_eq!(blame.len(), 1);
             assert_eq!(blame[0].author, "Maestro Test");
             assert_eq!(blame[0].line, 1);
+
+            // Working-tree scope: uncommitted edit + untracked file both visible.
+            fs::write(wt.join("new.txt"), "x\nedited\n").expect("edit");
+            fs::write(wt.join("untracked.txt"), "u\n").expect("untracked");
+            let mb = cli.merge_base(&repo, "main", "impl/T-1-x").expect("mb");
+            let wt_files = cli
+                .worktree_changed_files(&wt, &mb)
+                .expect("worktree files");
+            assert!(
+                wt_files
+                    .iter()
+                    .any(|f| f.path == "new.txt" && f.status == "A"),
+                "committed+edited file present: {wt_files:?}"
+            );
+            assert!(
+                wt_files
+                    .iter()
+                    .any(|f| f.path == "untracked.txt" && f.status == "A"),
+                "untracked file reported as added: {wt_files:?}"
+            );
+            let wt_diff = cli.worktree_diff(&wt, &mb).expect("worktree diff");
+            assert!(wt_diff.contains("edited"), "uncommitted change in diff");
+            fs::remove_file(wt.join("untracked.txt")).expect("cleanup");
+            fs::write(wt.join("new.txt"), "x\n").expect("restore");
 
             // Removal (clean tree, no force needed).
             cli.remove_worktree(&repo, &wt, false).expect("remove");

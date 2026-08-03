@@ -5,8 +5,8 @@ import { unifiedMergeView } from "@codemirror/merge";
 import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { useDiffs } from "../state/diffs";
-import type { ChangedFile } from "../types/diffs";
+import { selectSnapshot, useDiffs } from "../state/diffs";
+import type { ChangedFile, DiffScope } from "../types/diffs";
 import type { WorktreeInfo } from "../types/worktrees";
 
 function FileRow({
@@ -92,17 +92,18 @@ function UnifiedFileDiff({
 
 export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
   const branch = worktree.branch as string;
-  const snapshot = useDiffs((s) => s.snapshots[branch]);
+  const [scope, setScope] = useState<DiffScope>("worktree");
+  const snapshot = useDiffs(selectSnapshot(branch, scope));
   const { fetch, refresh, loadFile, loading, error, clearError } = useDiffs();
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [filePair, setFilePair] = useState<{ path: string; old: string; new: string } | null>(null);
 
   useEffect(() => {
     // fetch is a stable zustand action; snapshot comes from the core cache.
-    void fetch(branch);
+    void fetch(branch, scope);
     setSelectedPath(null);
     setFilePair(null);
-  }, [branch, fetch]);
+  }, [branch, scope, fetch]);
 
   // Keep the selection valid and auto-select the first file.
   useEffect(() => {
@@ -120,7 +121,7 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
   useEffect(() => {
     if (!selectedPath) return;
     let stale = false;
-    void loadFile(branch, selectedPath).then((diff) => {
+    void loadFile(branch, scope, selectedPath).then((diff) => {
       if (!stale && diff) {
         setFilePair({ path: diff.path, old: diff.old ?? "", new: diff.new ?? "" });
       }
@@ -128,11 +129,27 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
     return () => {
       stale = true;
     };
-  }, [branch, selectedPath, loadFile, snapshot]);
+  }, [branch, scope, selectedPath, loadFile, snapshot]);
 
   return (
     <div className="diff-viewer">
       <div className="diff-toolbar">
+        <div className="actions">
+          <button
+            className={`small ${scope === "worktree" ? "selected" : ""}`}
+            onClick={() => setScope("worktree")}
+            title="Merge-base → files on disk, including uncommitted and untracked"
+          >
+            Working tree
+          </button>
+          <button
+            className={`small ${scope === "branch" ? "selected" : ""}`}
+            onClick={() => setScope("branch")}
+            title="Merge-base → branch head (committed only)"
+          >
+            Committed
+          </button>
+        </div>
         <span className="session-meta">
           {snapshot
             ? `vs ${snapshot.base} (merge-base ${snapshot.merge_base.slice(0, 8)}) · ${snapshot.files.length} files`
@@ -140,7 +157,7 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
               ? "computing…"
               : ""}
         </span>
-        <button className="small" onClick={() => void refresh(branch)} disabled={loading}>
+        <button className="small" onClick={() => void refresh(branch, scope)} disabled={loading}>
           Refresh
         </button>
       </div>

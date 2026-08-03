@@ -7,8 +7,11 @@ export interface ChangedFile {
   old_path: string | null;
 }
 
+export type DiffScope = "branch" | "worktree";
+
 export interface DiffSnapshot {
   branch: string;
+  scope: DiffScope;
   base: string;
   merge_base: string;
   files: ChangedFile[];

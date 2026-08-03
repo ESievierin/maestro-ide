@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::bus::{Event, EventBus};
@@ -18,14 +18,28 @@ use crate::core::store::Store;
 use crate::core::worktree::{BlameLine, ChangedFile, GitProvider, WorktreeManager};
 use crate::error::{MaestroError, Result};
 
+/// What the diff is computed against.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffScope {
+    /// Committed changes only: merge-base → branch head.
+    Branch,
+    /// Everything in the working tree: merge-base → files on disk, including
+    /// uncommitted edits and untracked files. The default: this is what you want
+    /// to see while an agent is still working.
+    #[default]
+    Worktree,
+}
+
 /// Computed diff state for one branch.
 #[derive(Clone, Debug, Serialize)]
 pub struct DiffSnapshot {
     pub branch: String,
+    pub scope: DiffScope,
     pub base: String,
     pub merge_base: String,
     pub files: Vec<ChangedFile>,
-    /// Raw unified diff (`git diff base...branch`).
+    /// Raw unified diff.
     pub unified: String,
     pub computed_at: DateTime<Utc>,
 }
@@ -45,7 +59,7 @@ pub struct DiffManager {
     store: Arc<dyn Store>,
     worktrees: Arc<WorktreeManager>,
     bus: EventBus,
-    cache: Mutex<HashMap<String, Arc<DiffSnapshot>>>,
+    cache: Mutex<HashMap<(String, DiffScope), Arc<DiffSnapshot>>>,
 }
 
 impl DiffManager {
@@ -64,27 +78,29 @@ impl DiffManager {
         }
     }
 
-    /// Cached snapshot for `branch`, computing it on first access.
-    pub fn get(&self, branch: &str) -> Result<Arc<DiffSnapshot>> {
-        if let Some(snapshot) = self.lock_cache()?.get(branch).cloned() {
+    /// Cached snapshot for `branch` in `scope`, computing it on first access.
+    pub fn get(&self, branch: &str, scope: DiffScope) -> Result<Arc<DiffSnapshot>> {
+        let key = (branch.to_string(), scope);
+        if let Some(snapshot) = self.lock_cache()?.get(&key).cloned() {
             return Ok(snapshot);
         }
-        self.compute_and_cache(branch)
+        self.compute_and_cache(branch, scope)
     }
 
     /// Force recompute and publish `diff.updated`.
-    pub fn refresh(&self, branch: &str) -> Result<Arc<DiffSnapshot>> {
-        let snapshot = self.compute_and_cache(branch)?;
+    pub fn refresh(&self, branch: &str, scope: DiffScope) -> Result<Arc<DiffSnapshot>> {
+        let snapshot = self.compute_and_cache(branch, scope)?;
         self.bus.publish(Event::DiffUpdated {
             branch: branch.to_string(),
         });
         Ok(snapshot)
     }
 
-    /// Drop the cached snapshot (recomputed lazily) and publish `diff.updated`.
+    /// Drop cached snapshots for both scopes and publish `diff.updated`.
     pub fn invalidate(&self, branch: &str) {
         if let Ok(mut cache) = self.lock_cache() {
-            cache.remove(branch);
+            cache.remove(&(branch.to_string(), DiffScope::Branch));
+            cache.remove(&(branch.to_string(), DiffScope::Worktree));
         }
         self.bus.publish(Event::DiffUpdated {
             branch: branch.to_string(),
@@ -92,14 +108,20 @@ impl DiffManager {
     }
 
     /// Old/new contents for one file of the branch's diff.
-    pub fn file_diff(&self, branch: &str, path: &str) -> Result<FileDiff> {
+    pub fn file_diff(&self, branch: &str, path: &str, scope: DiffScope) -> Result<FileDiff> {
         let repo = self.require_repo()?;
-        let snapshot = self.get(branch)?;
+        let snapshot = self.get(branch, scope)?;
         let entry = snapshot.files.iter().find(|f| f.path == path);
         // Renames read the old side from the original path.
         let old_path = entry.and_then(|f| f.old_path.as_deref()).unwrap_or(path);
         let old = self.git.show_file(&repo, &snapshot.merge_base, old_path)?;
-        let new = self.git.show_file(&repo, branch, path)?;
+        let new = match scope {
+            DiffScope::Branch => self.git.show_file(&repo, branch, path)?,
+            DiffScope::Worktree => {
+                let worktree = self.worktree_path(branch)?;
+                std::fs::read_to_string(worktree.join(path)).ok()
+            }
+        };
         Ok(FileDiff {
             path: path.to_string(),
             old,
@@ -110,15 +132,19 @@ impl DiffManager {
     /// Blame for a line range of `path` in the branch's worktree (T6 uses this to
     /// build line-question context).
     pub fn blame(&self, branch: &str, path: &str, start: u32, end: u32) -> Result<Vec<BlameLine>> {
-        let worktree = self
-            .worktrees
+        let worktree = self.worktree_path(branch)?;
+        self.git.blame_range(&worktree, path, start, end)
+    }
+
+    fn worktree_path(&self, branch: &str) -> Result<std::path::PathBuf> {
+        self.worktrees
             .list()?
             .into_iter()
             .find(|w| w.branch.as_deref() == Some(branch))
+            .map(|w| w.path)
             .ok_or_else(|| MaestroError::InvalidData {
                 message: format!("no worktree for branch: {branch}"),
-            })?;
-        self.git.blame_range(&worktree.path, path, start, end)
+            })
     }
 
     /// Bus subscriber: invalidate a branch's diff whenever a session on it finishes.
@@ -146,20 +172,40 @@ impl DiffManager {
         }
     }
 
-    fn compute_and_cache(&self, branch: &str) -> Result<Arc<DiffSnapshot>> {
+    fn compute_and_cache(&self, branch: &str, scope: DiffScope) -> Result<Arc<DiffSnapshot>> {
         let repo = self.require_repo()?;
         let base = self.base_for(branch)?;
+        let merge_base = self.git.merge_base(&repo, &base, branch)?;
+        let (files, unified) = match scope {
+            DiffScope::Branch => (
+                self.git.changed_files(&repo, branch, &base)?,
+                self.git.merge_base_diff(&repo, branch, &base)?,
+            ),
+            DiffScope::Worktree => {
+                let worktree = self.worktree_path(branch)?;
+                (
+                    self.git.worktree_changed_files(&worktree, &merge_base)?,
+                    self.git.worktree_diff(&worktree, &merge_base)?,
+                )
+            }
+        };
         let snapshot = Arc::new(DiffSnapshot {
             branch: branch.to_string(),
-            base: base.clone(),
-            merge_base: self.git.merge_base(&repo, &base, branch)?,
-            files: self.git.changed_files(&repo, branch, &base)?,
-            unified: self.git.merge_base_diff(&repo, branch, &base)?,
+            scope,
+            base,
+            merge_base,
+            files,
+            unified,
             computed_at: Utc::now(),
         });
         self.lock_cache()?
-            .insert(branch.to_string(), snapshot.clone());
-        tracing::debug!(branch, files = snapshot.files.len(), "diff computed");
+            .insert((branch.to_string(), scope), snapshot.clone());
+        tracing::debug!(
+            branch,
+            ?scope,
+            files = snapshot.files.len(),
+            "diff computed"
+        );
         Ok(snapshot)
     }
 
@@ -185,7 +231,10 @@ impl DiffManager {
 }
 
 impl DiffManager {
-    fn lock_cache(&self) -> Result<std::sync::MutexGuard<'_, HashMap<String, Arc<DiffSnapshot>>>> {
+    #[allow(clippy::type_complexity)]
+    fn lock_cache(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, HashMap<(String, DiffScope), Arc<DiffSnapshot>>>> {
         self.cache.lock().map_err(|_| MaestroError::InvalidData {
             message: "diff cache lock poisoned".into(),
         })
@@ -287,6 +336,21 @@ mod tests {
                 .push(format!("{rev}:{path}"));
             Ok(Some(format!("contents of {path} at {rev}")))
         }
+        fn worktree_diff(&self, _worktree: &Path, _merge_base: &str) -> Result<String> {
+            *self.diff_calls.lock().unwrap() += 1;
+            Ok("wt diff".into())
+        }
+        fn worktree_changed_files(
+            &self,
+            _worktree: &Path,
+            _merge_base: &str,
+        ) -> Result<Vec<ChangedFile>> {
+            Ok(vec![ChangedFile {
+                path: "untracked.txt".into(),
+                status: "A".into(),
+                old_path: None,
+            }])
+        }
         fn blame_range(
             &self,
             _worktree: &Path,
@@ -330,12 +394,12 @@ mod tests {
         let (manager, git, bus, _store) = setup();
         let mut rx = bus.subscribe();
 
-        let first = manager.get("impl/T-1-x").unwrap();
-        let second = manager.get("impl/T-1-x").unwrap();
+        let first = manager.get("impl/T-1-x", DiffScope::Branch).unwrap();
+        let second = manager.get("impl/T-1-x", DiffScope::Branch).unwrap();
         assert_eq!(*git.diff_calls.lock().unwrap(), 1, "second get was cached");
         assert_eq!(first.merge_base, second.merge_base);
 
-        manager.refresh("impl/T-1-x").unwrap();
+        manager.refresh("impl/T-1-x", DiffScope::Branch).unwrap();
         assert_eq!(*git.diff_calls.lock().unwrap(), 2);
         let event = rx.recv().await.unwrap();
         assert_eq!(event.name(), "diff.updated");
@@ -344,13 +408,13 @@ mod tests {
     #[tokio::test]
     async fn invalidate_drops_cache_and_publishes() {
         let (manager, git, bus, _store) = setup();
-        manager.get("impl/T-1-x").unwrap();
+        manager.get("impl/T-1-x", DiffScope::Branch).unwrap();
 
         let mut rx = bus.subscribe();
         manager.invalidate("impl/T-1-x");
         assert_eq!(rx.recv().await.unwrap().name(), "diff.updated");
 
-        manager.get("impl/T-1-x").unwrap();
+        manager.get("impl/T-1-x", DiffScope::Branch).unwrap();
         assert_eq!(
             *git.diff_calls.lock().unwrap(),
             2,
@@ -361,7 +425,7 @@ mod tests {
     #[tokio::test]
     async fn session_done_invalidates_via_bus() {
         let (manager, _git, bus, _store) = setup();
-        manager.get("impl/T-1-x").unwrap();
+        manager.get("impl/T-1-x", DiffScope::Branch).unwrap();
 
         tokio::spawn(manager.clone().run_invalidation_loop(bus.clone()));
         // Give the loop a moment to subscribe.
@@ -393,7 +457,9 @@ mod tests {
     #[tokio::test]
     async fn file_diff_reads_old_side_of_renames() {
         let (manager, git, _bus, _store) = setup();
-        let diff = manager.file_diff("impl/T-1-x", "src/renamed.rs").unwrap();
+        let diff = manager
+            .file_diff("impl/T-1-x", "src/renamed.rs", DiffScope::Branch)
+            .unwrap();
         assert!(diff.old.is_some() && diff.new.is_some());
         let shown = git.shown_paths.lock().unwrap();
         assert!(
@@ -406,13 +472,13 @@ mod tests {
     async fn base_falls_back_to_default_branch_and_respects_stored_base() {
         let (manager, git, _bus, store) = setup();
 
-        manager.get("impl/T-1-x").unwrap();
+        manager.get("impl/T-1-x", DiffScope::Branch).unwrap();
         assert_eq!(git.last_base.lock().unwrap().as_deref(), Some("main"));
 
         store
             .upsert_branch("impl/T-2-y", None, Some("develop"))
             .unwrap();
-        manager.get("impl/T-2-y").unwrap();
+        manager.get("impl/T-2-y", DiffScope::Branch).unwrap();
         assert_eq!(git.last_base.lock().unwrap().as_deref(), Some("develop"));
     }
 

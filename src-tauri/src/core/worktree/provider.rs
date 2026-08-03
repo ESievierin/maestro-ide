@@ -108,4 +108,13 @@ pub trait GitProvider: Send + Sync {
         start: u32,
         end: u32,
     ) -> Result<Vec<BlameLine>>;
+
+    /// Unified diff from `merge_base` to the **working tree** of `worktree`
+    /// (includes uncommitted changes to tracked files).
+    fn worktree_diff(&self, worktree: &Path, merge_base: &str) -> Result<String>;
+
+    /// Files changed from `merge_base` to the working tree, plus untracked files
+    /// (reported with status `A`).
+    fn worktree_changed_files(&self, worktree: &Path, merge_base: &str)
+        -> Result<Vec<ChangedFile>>;
 }

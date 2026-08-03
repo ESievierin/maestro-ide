@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "vitest run"
   },
   "dependencies": {
     "@codemirror/language": "^6.12.4",
@@ -41,6 +42,7 @@
     "prettier": "^3",
     "typescript": "^5",
     "typescript-eslint": "^8",
-    "vite": "^7"
+    "vite": "^7",
+    "vitest": "^4.1.10"
   }
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Icon, StatusDot } from "../components/Icon";
 import { useDiffs } from "../state/diffs";
 import { activeSessionCount, useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
@@ -26,12 +27,26 @@ function StatusBadges({ wt }: { wt: WorktreeInfo }) {
 
   return (
     <span className="badges">
-      {failed && <span className="badge badge-failed">failed</span>}
-      {awaiting && <span className="badge badge-awaiting">awaiting</span>}
-      {working && (
-        <span className="badge badge-active">working{active > 1 ? ` ${active}` : ""}</span>
+      {failed && (
+        <span className="badge badge-failed">
+          <Icon name="alert" size={11} /> failed
+        </span>
       )}
-      {diffReady && <span className="badge badge-info">diff {diffFiles}</span>}
+      {awaiting && (
+        <span className="badge badge-awaiting">
+          <Icon name="question" size={11} /> awaiting
+        </span>
+      )}
+      {working && (
+        <span className="badge badge-active">
+          <StatusDot tone="active" pulse /> working{active > 1 ? ` ${active}` : ""}
+        </span>
+      )}
+      {diffReady && (
+        <span className="badge badge-info">
+          <Icon name="diff" size={11} /> {diffFiles}
+        </span>
+      )}
       {wt.is_primary && <span className="badge badge-muted">primary</span>}
       {wt.status?.dirty && <span className="badge badge-warn">dirty</span>}
       {wt.status && wt.status.ahead > 0 && (
@@ -92,8 +107,8 @@ export function WorktreeList() {
       <div className="panel-header">
         <h2>Worktrees</h2>
         {repo && (
-          <button className="small" onClick={() => setShowCreate(true)}>
-            + New
+          <button className="small" onClick={() => setShowCreate(true)} title="New worktree">
+            <Icon name="plus" /> New
           </button>
         )}
       </div>
@@ -124,20 +139,23 @@ export function WorktreeList() {
                 onClick={() => select(wt.branch)}
               >
                 <div className="wt-row">
-                  <span className="wt-branch">{wt.branch ?? "(detached)"}</span>
+                  <span className="wt-branch">
+                    <Icon name="branch" size={12} /> {wt.branch ?? "(detached)"}
+                  </span>
                   <StatusBadges wt={wt} />
                 </div>
                 <div className="wt-meta">
                   {wt.task_id && <span className="wt-task">{wt.task_id}</span>}
                   {!wt.is_primary && wt.branch && (
                     <button
-                      className="small danger"
+                      className="small danger icon-only"
+                      title="Remove worktree"
                       onClick={(e) => {
                         e.stopPropagation();
                         void onRemove(wt.branch as string);
                       }}
                     >
-                      remove
+                      <Icon name="trash" />
                     </button>
                   )}
                 </div>

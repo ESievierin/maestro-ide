@@ -1239,3 +1239,234 @@ select {
 .toast-critical .toast-code {
   color: #f7768e;
 }
+
+/* ==================================================================
+   Visual system: icons, motion, live state
+   One weight for icons, one easing for motion, and a single pulse for
+   "something is happening". Everything here honours reduced-motion.
+   ================================================================== */
+
+:root {
+  --ease: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --fast: 130ms;
+  --medium: 200ms;
+}
+
+/* ---------- Icons ---------- */
+
+.icon {
+  flex-shrink: 0;
+  vertical-align: -0.12em;
+}
+
+.icon-spin {
+  animation: spin 900ms linear infinite;
+}
+
+/* Buttons and badges lay their icon next to the label. */
+button,
+.badge,
+.pill,
+.attention-main,
+.wt-branch,
+.autocomplete-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+button.icon-only {
+  padding: 0.2rem 0.3rem;
+  line-height: 1;
+}
+
+.count-pill {
+  min-width: 1.15rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: #e0af68;
+  color: #16181d;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* ---------- Live state ---------- */
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.status-dot-active,
+.status-dot-streaming {
+  color: #9ece6a;
+}
+
+.status-dot-spawning {
+  color: #e0af68;
+}
+
+.status-dot-awaiting_input {
+  color: #7aa2f7;
+}
+
+.status-dot-failed {
+  color: #f7768e;
+}
+
+.status-dot-done,
+.status-dot-cancelled {
+  color: #666e80;
+}
+
+.status-dot.pulsing {
+  animation: pulse 1.6s var(--ease) infinite;
+}
+
+/* ---------- Motion ---------- */
+
+button {
+  transition:
+    background var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    transform var(--fast) var(--ease);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.worktree-items li,
+.diff-files li,
+.prompt-list li,
+.session-tab,
+.autocomplete-item {
+  transition:
+    background var(--fast) var(--ease),
+    border-color var(--fast) var(--ease);
+}
+
+.worktree-items li {
+  animation: rise var(--medium) var(--ease) both;
+}
+
+/* Panels and dialogs arrive instead of appearing. */
+.modal-backdrop {
+  animation: fade var(--fast) var(--ease) both;
+}
+
+.modal {
+  animation: pop var(--medium) var(--ease) both;
+}
+
+.attention-panel {
+  animation: drop var(--medium) var(--ease) both;
+}
+
+.toast {
+  animation: slide-in var(--medium) var(--ease) both;
+}
+
+.toast-icon {
+  margin-top: 0.1rem;
+}
+
+.toast-info .toast-icon {
+  color: #9ece6a;
+}
+
+.toast-warning .toast-icon {
+  color: #e0af68;
+}
+
+.toast-error .toast-icon,
+.toast-critical .toast-icon {
+  color: #f7768e;
+}
+
+/* A streaming answer block reads as in-progress. */
+.line-question-block .line-question-answer:empty::after,
+.transcript .t-status {
+  animation: fade var(--medium) var(--ease) both;
+}
+
+.attention-alert {
+  animation: attention-glow 2.4s var(--ease) infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  50% {
+    opacity: 0.65;
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06);
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+}
+
+@keyframes drop {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes attention-glow {
+  0%,
+  100% {
+    border-color: #5c4a2d;
+  }
+  50% {
+    border-color: #e0af68;
+  }
+}
+
+/* Motion is decoration; never make it a requirement. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}

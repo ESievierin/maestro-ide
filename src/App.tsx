@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { EventLog } from "./components/EventLog";
+import { Icon } from "./components/Icon";
 import { Toasts } from "./components/Toasts";
 import { useHotkeys } from "./hooks/useHotkeys";
 import { useWorktrees } from "./state/worktrees";
@@ -38,14 +39,16 @@ function MainPanel() {
             <button
               className={`small ${tab === "chat" ? "selected" : ""}`}
               onClick={() => setTab("chat")}
+              title="Chat (Alt+C)"
             >
-              Chat
+              <Icon name="chat" /> Chat
             </button>
             <button
               className={`small ${tab === "diff" ? "selected" : ""}`}
               onClick={() => setTab("diff")}
+              title="Diff (Alt+D)"
             >
-              Diff
+              <Icon name="diff" /> Diff
             </button>
           </div>
         </div>
@@ -76,10 +79,11 @@ export default function App() {
             onClick={() => setShowAttention((open) => !open)}
             title="Everything waiting on you"
           >
-            Needs you{attentionCount > 0 ? ` (${attentionCount})` : ""}
+            <Icon name="bell" /> Needs you
+            {attentionCount > 0 && <span className="count-pill">{attentionCount}</span>}
           </button>
-          <button className="small" onClick={() => setShowPrompts(true)}>
-            Prompts
+          <button className="small" onClick={() => setShowPrompts(true)} title="Prompt templates">
+            <Icon name="file-text" /> Prompts
           </button>
         </div>
       </header>

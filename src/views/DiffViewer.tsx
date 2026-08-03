@@ -5,6 +5,7 @@ import { MergeView, unifiedMergeView } from "@codemirror/merge";
 import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { oneDark } from "@codemirror/theme-one-dark";
+import { Icon } from "../components/Icon";
 import { selectSnapshot, useDiffs } from "../state/diffs";
 import { selectQuestions, useQuestions } from "../state/questions";
 import type { ChangedFile, DiffScope } from "../types/diffs";
@@ -307,8 +308,13 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
           >
             Unified
           </button>
-          <button className="small" onClick={() => void refresh(branch, scope)} disabled={loading}>
-            Refresh
+          <button
+            className="small"
+            onClick={() => void refresh(branch, scope)}
+            disabled={loading}
+            title="Recompute this diff"
+          >
+            <Icon name={loading ? "spinner" : "refresh"} spin={loading} /> Refresh
           </button>
           {selection && !asking && (
             <button className="small" onClick={() => setAsking(true)}>

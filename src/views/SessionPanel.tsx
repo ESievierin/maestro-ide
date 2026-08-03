@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { Icon, StatusDot } from "../components/Icon";
 import remarkGfm from "remark-gfm";
 import { activeSessionCount, useSessions } from "../state/sessions";
 import type { CommandInfo, Session, TranscriptItem } from "../types/sessions";
@@ -17,7 +18,13 @@ const LOCAL_COMMANDS: (CommandInfo & { local: true })[] = [
 ];
 
 function StatusPill({ status }: { status: Session["status"] }) {
-  return <span className={`pill pill-${status}`}>{status.replace("_", " ")}</span>;
+  const live = status === "streaming" || status === "spawning";
+  return (
+    <span className={`pill pill-${status}`}>
+      <StatusDot tone={status} pulse={live} />
+      {status.replace("_", " ")}
+    </span>
+  );
 }
 
 function Markdown({ text }: { text: string }) {
@@ -429,8 +436,12 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
               {isTerminalStatus(selected.status) ? (
                 <>
                   {selected.sdk_session_id && (
-                    <button className="small" onClick={() => void resume(selected)}>
-                      Resume
+                    <button
+                      className="small"
+                      onClick={() => void resume(selected)}
+                      title="Continue this session's context"
+                    >
+                      <Icon name="play" /> Resume
                     </button>
                   )}
                   <button
@@ -450,11 +461,12 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
                     className="small"
                     disabled={selected.status !== "streaming"}
                     onClick={() => void interrupt(selected.id)}
+                    title="Stop the current turn"
                   >
-                    Interrupt
+                    <Icon name="stop" /> Interrupt
                   </button>
                   <button className="small danger" onClick={() => void close(selected.id)}>
-                    Close
+                    <Icon name="close" /> Close
                   </button>
                 </>
               )}

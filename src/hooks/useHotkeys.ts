@@ -3,7 +3,7 @@ import { useWorktrees } from "../state/worktrees";
 
 /**
  * Fleet navigation without the mouse (T10):
- *   Alt+1…9        select the nth worktree
+ *   Alt+1…9        ююselect the nth worktree
  *   Alt+↑ / Alt+↓  previous / next worktree
  *   Alt+C / Alt+D  chat / diff panel
  *

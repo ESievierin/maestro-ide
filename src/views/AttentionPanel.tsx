@@ -1,3 +1,4 @@
+import { Icon, type IconName } from "../components/Icon";
 import { useAttention } from "../state/attention";
 import { useWorktrees } from "../state/worktrees";
 import type { AttentionItem } from "../types/attention";
@@ -9,6 +10,13 @@ import { KIND_LABEL } from "../types/attention";
  * it can be handled — the gate dialog is modal and already on screen, so a gate item
  * just needs acknowledging there.
  */
+const KIND_ICON: Record<AttentionItem["kind"], IconName> = {
+  gate: "shield",
+  permission_request: "question",
+  session_failed: "alert",
+  line_question: "chat",
+};
+
 export function AttentionPanel({ onClose }: { onClose: () => void }) {
   const { items, notificationsEnabled, error, dismiss, setNotificationsEnabled, clearError } =
     useAttention();
@@ -42,8 +50,8 @@ export function AttentionPanel({ onClose }: { onClose: () => void }) {
             />
             notify
           </label>
-          <button className="small" onClick={onClose}>
-            Close
+          <button className="small icon-only" onClick={onClose} title="Close">
+            <Icon name="close" />
           </button>
         </div>
       </div>
@@ -61,18 +69,20 @@ export function AttentionPanel({ onClose }: { onClose: () => void }) {
           {items.map((item) => (
             <li key={item.id} className={`attention-${item.kind}`}>
               <button className="attention-main" onClick={() => navigate(item)}>
-                <span className={`badge attention-kind-${item.kind}`}>{KIND_LABEL[item.kind]}</span>
+                <span className={`badge attention-kind-${item.kind}`}>
+                  <Icon name={KIND_ICON[item.kind]} size={11} /> {KIND_LABEL[item.kind]}
+                </span>
                 <span className="attention-message" title={item.message}>
                   {item.message}
                 </span>
                 <span className="attention-branch">{item.branch ?? ""}</span>
               </button>
               <button
-                className="small"
+                className="small icon-only"
                 title="Dismiss without navigating"
                 onClick={() => void dismiss(item.id)}
               >
-                ✕
+                <Icon name="close" />
               </button>
             </li>
           ))}

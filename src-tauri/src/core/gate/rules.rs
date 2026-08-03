@@ -644,7 +644,7 @@ fn flag_edit(
 
 /// Apply span edits right-to-left so earlier spans stay valid.
 fn splice(command: &str, mut edits: Vec<(usize, usize, String)>) -> String {
-    edits.sort_by(|a, b| b.0.cmp(&a.0));
+    edits.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
     let mut out = command.to_string();
     for (start, end, replacement) in edits {
         out.replace_range(start..end, &replacement);

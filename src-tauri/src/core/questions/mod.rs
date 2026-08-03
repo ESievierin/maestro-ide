@@ -325,7 +325,7 @@ impl LineQuestionManager {
     /// Most recently updated non-terminal session on `branch`, if any.
     fn active_session(&self, branch: &str) -> Result<Option<String>> {
         let mut sessions = self.sessions.list_for_branch(branch)?;
-        sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
         Ok(sessions
             .into_iter()
             .find(|s| !s.status.is_terminal())

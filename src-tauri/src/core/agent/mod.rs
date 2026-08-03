@@ -456,10 +456,8 @@ mod tests {
                             deltas_2 += 1;
                         }
                     }
-                    SidecarEvent::Status { session_id, status } => {
-                        if status == "awaiting_input" {
-                            awaiting.insert(session_id);
-                        }
+                    SidecarEvent::Status { session_id, status } if status == "awaiting_input" => {
+                        awaiting.insert(session_id);
                     }
                     _ => {}
                 },

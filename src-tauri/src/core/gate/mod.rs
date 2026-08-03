@@ -219,7 +219,7 @@ impl GateManager {
     pub fn list(&self) -> Result<Vec<PendingGate>> {
         let pending = self.lock_pending()?;
         let mut gates: Vec<PendingGate> = pending.values().cloned().collect();
-        gates.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        gates.sort_by_key(|gate| gate.created_at);
         Ok(gates)
     }
 

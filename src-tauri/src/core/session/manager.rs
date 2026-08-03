@@ -13,6 +13,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::core::agent::protocol::SidecarEvent;
 use crate::core::agent::{AgentEngine, EngineSignal, SpawnSessionRequest};
 use crate::core::bus::{Event, EventBus};
+use crate::core::gate::GateManager;
 use crate::core::session::{is_writer_mode, Session, SessionStatus, SessionType, READ_ONLY_MODE};
 use crate::core::store::Store;
 use crate::error::{MaestroError, Result, Severity};
@@ -49,15 +50,27 @@ pub struct SessionManager {
     store: Arc<dyn Store>,
     bus: EventBus,
     engine: Arc<dyn AgentEngine>,
+    /// Gate for dangerous tool calls (T7); `None` skips gating entirely.
+    gates: Option<Arc<GateManager>>,
     runtime: Mutex<HashMap<String, RuntimeSession>>,
 }
 
 impl SessionManager {
     pub fn new(store: Arc<dyn Store>, bus: EventBus, engine: Arc<dyn AgentEngine>) -> Self {
+        Self::with_gates(store, bus, engine, None)
+    }
+
+    pub fn with_gates(
+        store: Arc<dyn Store>,
+        bus: EventBus,
+        engine: Arc<dyn AgentEngine>,
+        gates: Option<Arc<GateManager>>,
+    ) -> Self {
         Self {
             store,
             bus,
             engine,
+            gates,
             runtime: Mutex::new(HashMap::new()),
         }
     }
@@ -326,6 +339,18 @@ impl SessionManager {
                 args,
                 title,
             } => {
+                // Gated operations pause here (gate.pending) instead of the
+                // plain permission prompt; everything else is unchanged.
+                if let Some(gates) = &self.gates {
+                    let branch = self
+                        .lock_runtime()
+                        .ok()
+                        .and_then(|r| r.get(&session_id).map(|s| s.branch.clone()))
+                        .unwrap_or_default();
+                    if gates.intercept(&session_id, &branch, &request_id, &tool, &args) {
+                        return;
+                    }
+                }
                 self.bus.publish(Event::SessionPermissionRequest {
                     session_id,
                     request_id,
@@ -498,11 +523,15 @@ mod tests {
     use crate::core::store::SqliteStore;
     use std::sync::Mutex as StdMutex;
 
+    /// `(request_id, allow, updated_args, message)` as passed to the engine.
+    type PermissionCall = (String, bool, Option<Value>, Option<String>);
+
     /// Engine double that records calls.
     #[derive(Default)]
     struct MockEngine {
         calls: StdMutex<Vec<String>>,
         spawns: StdMutex<Vec<SpawnSessionRequest>>,
+        perms: StdMutex<Vec<PermissionCall>>,
     }
 
     impl AgentEngine for MockEngine {
@@ -538,14 +567,18 @@ mod tests {
         fn respond_permission(
             &self,
             request_id: &str,
-            _allow: bool,
-            _updated_args: Option<Value>,
-            _message: Option<String>,
+            allow: bool,
+            updated_args: Option<Value>,
+            message: Option<String>,
         ) -> Result<()> {
             self.calls
                 .lock()
                 .unwrap()
                 .push(format!("perm:{request_id}"));
+            self.perms
+                .lock()
+                .unwrap()
+                .push((request_id.to_string(), allow, updated_args, message));
             Ok(())
         }
     }
@@ -801,6 +834,96 @@ mod tests {
             manager.send(&s2.id, "hi").is_err(),
             "dead sessions reject sends"
         );
+    }
+
+    fn setup_with_gates(
+        rules: Vec<Box<dyn crate::core::gate::GateRule>>,
+    ) -> (
+        Arc<SessionManager>,
+        Arc<crate::core::gate::GateManager>,
+        EventBus,
+        Arc<MockEngine>,
+    ) {
+        let bus = EventBus::new();
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let engine = Arc::new(MockEngine::default());
+        let mut registry = crate::core::gate::GateRegistry::new();
+        for rule in rules {
+            registry.register(rule);
+        }
+        let gates = Arc::new(crate::core::gate::GateManager::new(
+            registry,
+            engine.clone(),
+            bus.clone(),
+        ));
+        let manager = Arc::new(SessionManager::with_gates(
+            store,
+            bus.clone(),
+            engine.clone(),
+            Some(gates.clone()),
+        ));
+        (manager, gates, bus, engine)
+    }
+
+    #[tokio::test]
+    async fn gated_permission_pauses_as_gate_pending() {
+        let (manager, gates, bus, engine) =
+            setup_with_gates(vec![Box::new(crate::core::gate::GitPushRule)]);
+        let session = manager.spawn(spawn_params("impl/T-7-gate")).unwrap();
+
+        let mut rx = bus.subscribe();
+        manager.handle_event(SidecarEvent::PermissionRequest {
+            session_id: session.id.clone(),
+            request_id: "req-push".into(),
+            tool: "Bash".into(),
+            args: serde_json::json!({ "command": "git push origin main" }),
+            title: None,
+        });
+
+        // The gate event replaces the plain permission request entirely.
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.name(), "gate.pending");
+
+        let pending = gates.list().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].branch, "impl/T-7-gate",
+            "branch from runtime map"
+        );
+        assert_eq!(pending[0].session_id, session.id);
+
+        // Approving executes with the (unedited) args passed back to the engine.
+        gates.respond(&pending[0].gate_id, true, &[], None).unwrap();
+        let perms = engine.perms.lock().unwrap();
+        let (request_id, allow, updated_args, _) = &perms[0];
+        assert_eq!(request_id, "req-push");
+        assert!(*allow);
+        assert_eq!(
+            updated_args.as_ref().unwrap()["command"],
+            "git push origin main"
+        );
+        drop(perms);
+        assert!(gates.list().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_gated_permission_falls_through_unchanged() {
+        let (manager, gates, bus, _engine) =
+            setup_with_gates(vec![Box::new(crate::core::gate::GitPushRule)]);
+        let session = manager.spawn(spawn_params("impl/T-7-plain")).unwrap();
+
+        let mut rx = bus.subscribe();
+        manager.handle_event(SidecarEvent::PermissionRequest {
+            session_id: session.id.clone(),
+            request_id: "req-ls".into(),
+            tool: "Bash".into(),
+            args: serde_json::json!({ "command": "ls -la" }),
+            title: Some("List files".into()),
+        });
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.name(), "session.permission_request");
+        assert!(gates.list().unwrap().is_empty());
     }
 
     #[tokio::test]

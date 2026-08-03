@@ -1,8 +1,9 @@
 // Mock session runner (MAESTRO_SIDECAR_MOCK=1): scripted events, no SDK, no API usage.
 // Used by Rust integration tests and for manual UI testing of the whole pipeline.
 //
-// Prompt keywords: "PERMISSION" pauses on a permission request; "CRASH" kills the
-// whole sidecar process (supervisor recovery testing).
+// Prompt keywords: "PERMISSION" pauses on a chat permission request; "GATE" asks to run
+// a push+PR command (exercises the T7 approval dialog); "CRASH" kills the whole sidecar
+// process (supervisor recovery testing).
 
 import type { SessionHandle, SidecarEvent, SpawnRequest } from "./protocol.js";
 
@@ -66,8 +67,13 @@ export class MockSession implements SessionHandle {
       process.exit(13);
     }
 
-    if (prompt.includes("PERMISSION")) {
+    if (prompt.includes("PERMISSION") || prompt.includes("GATE")) {
       const requestId = `mock-perm-${this.sessionId}-${++this.permissionCounter}`;
+      // "GATE" exercises the T7 approval path: a push+PR command the gate must
+      // intercept with editable PR fields. Plain "PERMISSION" stays a chat prompt.
+      const command = prompt.includes("GATE")
+        ? 'git push -u origin HEAD && gh pr create --title "Mock PR" --body "Body from the agent"'
+        : "echo mock";
       const allowed = await new Promise<boolean>((resolve) => {
         this.pending.set(requestId, resolve);
         this.emit({
@@ -75,15 +81,15 @@ export class MockSession implements SessionHandle {
           session_id: this.sessionId,
           request_id: requestId,
           tool: "Bash",
-          args: { command: "echo mock" },
-          title: "Mock wants to run: echo mock",
+          args: { command },
+          title: `Mock wants to run: ${command}`,
         });
       });
       this.emit({
         type: "tool_use",
         session_id: this.sessionId,
         name: "Bash",
-        summary: allowed ? '{"command":"echo mock"}' : "(denied)",
+        summary: allowed ? JSON.stringify({ command }) : "(denied)",
       });
     }
 

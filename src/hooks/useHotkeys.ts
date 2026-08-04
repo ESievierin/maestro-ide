@@ -5,7 +5,7 @@ import { useWorktrees } from "../state/worktrees";
  * Fleet navigation without the mouse (T10):
  *   Alt+1…9        ююselect the nth worktree
  *   Alt+↑ / Alt+↓  previous / next worktree
- *   Alt+C / Alt+D  chat / diff panel
+ *   Alt+C / Alt+D / Alt+N  chat / diff / notes panel
  *
  * Alt is used because Ctrl+number and Ctrl+D belong to the editors and inputs the app
  * embeds. Keystrokes are ignored while typing so a prompt can contain any character.
@@ -24,6 +24,8 @@ export function useHotkeys(): void {
       const branches = worktrees.flatMap((w) => (w.branch ? [w.branch] : []));
       if (event.key === "c" || event.key === "C") {
         setTab("chat");
+      } else if (event.key === "n" || event.key === "N") {
+        setTab("notes");
       } else if (event.key === "d" || event.key === "D") {
         setTab("diff");
       } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {

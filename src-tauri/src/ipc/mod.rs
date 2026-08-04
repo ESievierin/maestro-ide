@@ -17,6 +17,7 @@ use crate::core::attention::{AttentionItem, AttentionManager};
 use crate::core::bus::{Event, EventBus};
 use crate::core::diff::{DiffManager, DiffScope, DiffSnapshot, FileDiff};
 use crate::core::gate::{GateManager, GateParam, PendingGate};
+use crate::core::notes::{Notes, NotesManager};
 use crate::core::prompts::{PromptFile, PromptManager};
 use crate::core::questions::{LineQuestionInfo, LineQuestionManager};
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
@@ -38,6 +39,7 @@ pub struct AppState {
     pub gates: Arc<GateManager>,
     pub questions: Arc<LineQuestionManager>,
     pub prompts: Arc<PromptManager>,
+    pub notes: Arc<NotesManager>,
     pub attention: Arc<AttentionManager>,
 }
 
@@ -491,6 +493,24 @@ pub async fn set_session_thinking(
         sessions.set_thinking(&session_id, &thinking)
     })
     .await
+}
+
+// ---------- task notes ----------
+
+/// `TASK_NOTES.md` of a branch, read from its worktree. Missing notes are a state, not an
+/// error: the panel renders an empty state instead of a toast.
+#[tauri::command]
+pub async fn get_notes(state: State<'_, AppState>, branch: String) -> Result<Notes, String> {
+    let notes = state.notes.clone();
+    run_core(state.bus.clone(), move || notes.read(&branch)).await
+}
+
+/// Same as [`get_notes`]; a separate command so the UI's Refresh button reads as an
+/// explicit user action in logs, and so a future cache has a place to be invalidated.
+#[tauri::command]
+pub async fn refresh_notes(state: State<'_, AppState>, branch: String) -> Result<Notes, String> {
+    let notes = state.notes.clone();
+    run_core(state.bus.clone(), move || notes.read(&branch)).await
 }
 
 /// Reconnect or enable/disable one MCP server of a live session.

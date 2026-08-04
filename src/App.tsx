@@ -5,6 +5,7 @@ import { Toasts } from "./components/Toasts";
 import { useHotkeys } from "./hooks/useHotkeys";
 import { useWorktrees } from "./state/worktrees";
 import { DiffViewer } from "./views/DiffViewer";
+import { NotesPanel } from "./views/NotesPanel";
 import { SessionPanel } from "./views/SessionPanel";
 import { WorktreeList } from "./views/WorktreeList";
 import { selectAttentionCount, useAttention } from "./state/attention";
@@ -23,8 +24,8 @@ function MainPanel() {
       <div className="main-empty">
         <p>Select a worktree to see its details.</p>
         <p className="hint">
-          Sessions and diffs are per worktree. Alt+1…9 jumps between them, Alt+↑/↓ cycles, Alt+C /
-          Alt+D switch chat and diff.
+          Sessions, diffs and notes are per worktree. Alt+1…9 jumps between them, Alt+↑/↓ cycles,
+          Alt+C / Alt+D / Alt+N switch chat, diff and notes.
         </p>
       </div>
     );
@@ -50,6 +51,13 @@ function MainPanel() {
             >
               <Icon name="diff" /> Diff
             </button>
+            <button
+              className={`small ${tab === "notes" ? "selected" : ""}`}
+              onClick={() => setTab("notes")}
+              title="Task notes (Alt+N)"
+            >
+              <Icon name="file-text" /> Notes
+            </button>
           </div>
         </div>
         <span className="repo-line" title={worktree.path}>
@@ -58,7 +66,9 @@ function MainPanel() {
           {worktree.base_branch ? ` · base: ${worktree.base_branch}` : ""}
         </span>
       </div>
-      {tab === "chat" ? <SessionPanel worktree={worktree} /> : <DiffViewer worktree={worktree} />}
+      {tab === "chat" && <SessionPanel worktree={worktree} />}
+      {tab === "diff" && <DiffViewer worktree={worktree} />}
+      {tab === "notes" && <NotesPanel worktree={worktree} />}
     </div>
   );
 }

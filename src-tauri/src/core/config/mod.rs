@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::core::attention::SETTING_OS_NOTIFICATIONS;
 use crate::core::gate::SETTING_GATE_COMMIT;
 use crate::core::questions::SETTING_LINE_QUESTION_TARGET;
-use crate::core::session::manager::SETTING_SINGLE_WRITER_POLICY;
+use crate::core::session::manager::{SETTING_NOTES_FINALIZE_TIMEOUT, SETTING_SINGLE_WRITER_POLICY};
 use crate::core::store::Store;
 use crate::core::worktree::SETTING_BRANCH_TEMPLATE;
 use crate::error::Result;
@@ -43,6 +43,10 @@ const DEFAULT_CONFIG: &str = r#"# MaestroIDE configuration (~/.maestro/config.to
 
 # OS notifications when an agent needs you (also toggleable in the app).
 # os_notifications = false
+
+# How long to wait for an implementation session's last turn to write TASK_NOTES.md
+# when it is closed. 0 disables the finalize step entirely.
+# notes_finalize_timeout_secs = 120
 "#;
 
 /// Parsed config file. Every field is optional: absent means "leave the current setting".
@@ -53,6 +57,7 @@ pub struct Config {
     pub line_question_target: Option<String>,
     pub gate_commit: Option<bool>,
     pub os_notifications: Option<bool>,
+    pub notes_finalize_timeout_secs: Option<u64>,
 }
 
 impl Config {
@@ -107,6 +112,10 @@ impl Config {
                 SETTING_OS_NOTIFICATIONS,
                 self.os_notifications.map(|b| b.to_string()),
             ),
+            (
+                SETTING_NOTES_FINALIZE_TIMEOUT,
+                self.notes_finalize_timeout_secs.map(|s| s.to_string()),
+            ),
         ] {
             if let Some(value) = value {
                 store.set_setting(key, &value)?;
@@ -153,6 +162,7 @@ mod tests {
             line_question_target: None,
             gate_commit: Some(true),
             os_notifications: Some(false),
+            notes_finalize_timeout_secs: Some(30),
         };
         config.apply(&store).expect("apply");
 

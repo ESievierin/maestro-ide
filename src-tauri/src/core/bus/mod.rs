@@ -215,6 +215,11 @@ pub enum Event {
 
     /// The attention queue changed; panels refetch it. `count` lets a badge update
     /// without a round trip.
+    /// A branch's `TASK_NOTES.md` changed (written by the core; external edits are seen
+    /// on the next read).
+    #[serde(rename = "notes.updated")]
+    NotesUpdated { branch: String },
+
     #[serde(rename = "attention.updated")]
     AttentionUpdated { count: usize },
 
@@ -259,6 +264,7 @@ impl Event {
             Event::QuestionAnswered { .. } => "question.answered",
             Event::GateResolved { .. } => "gate.resolved",
             Event::AttentionRequired { .. } => "attention.required",
+            Event::NotesUpdated { .. } => "notes.updated",
             Event::AttentionUpdated { .. } => "attention.updated",
             Event::ErrorRaised { .. } => "error.raised",
             Event::Test { .. } => "system.test",

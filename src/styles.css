@@ -1992,3 +1992,23 @@ button:active:not(:disabled) {
   word-break: break-all;
   user-select: all;
 }
+
+/* ---------- Task notes panel ---------- */
+
+.notes-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-height: 0;
+  flex: 1;
+}
+
+.notes-body {
+  flex: 1;
+  overflow: auto;
+  padding: 0.7rem 0.9rem;
+  background: #1c1f26;
+  border: 1px solid #2a2e37;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}

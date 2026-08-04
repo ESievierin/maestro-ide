@@ -9,7 +9,7 @@ import type {
 import { onBusEvent } from "./events";
 
 /** Which panel of the selected worktree is showing. */
-export type MainTab = "chat" | "diff";
+export type MainTab = "chat" | "diff" | "notes";
 
 interface WorktreesState {
   repo: RepoInfo | null;

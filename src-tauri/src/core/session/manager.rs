@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use chrono::{DateTime, Utc};
+
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -14,6 +16,8 @@ use crate::core::agent::protocol::{Attachment, SidecarEvent};
 use crate::core::agent::{AgentEngine, EngineSignal, SpawnSessionRequest};
 use crate::core::bus::{Event, EventBus};
 use crate::core::gate::GateManager;
+use crate::core::notes::NotesManager;
+use crate::core::prompts::PromptManager;
 use crate::core::session::{
     is_known_effort, is_known_permission_mode, is_known_thinking, is_writer_mode, Session,
     SessionStatus, SessionType, EFFORT_LEVELS, READ_ONLY_MODE, THINKING_OPTIONS,
@@ -23,6 +27,15 @@ use crate::error::{MaestroError, Result, Severity};
 
 /// Setting key for what happens when a second writer is requested on a branch.
 pub const SETTING_SINGLE_WRITER_POLICY: &str = "single_writer_policy";
+
+/// How long an implementation session gets, on close, to write its `TASK_NOTES.md`.
+pub const SETTING_NOTES_FINALIZE_TIMEOUT: &str = "notes_finalize_timeout_secs";
+
+/// Default for [`SETTING_NOTES_FINALIZE_TIMEOUT`]. `0` disables the finalize step.
+const DEFAULT_FINALIZE_TIMEOUT_SECS: u64 = 120;
+
+/// Template rendered as the finalize prompt.
+const NOTES_TEMPLATE: &str = "task-notes";
 
 /// Dialog kind for the plan review. Approving it lets the agent start writing, so the
 /// answer goes through the single-writer rule before it reaches the CLI.
@@ -64,10 +77,16 @@ pub struct SessionManager {
     engine: Arc<dyn AgentEngine>,
     /// Gate for dangerous tool calls (T7); `None` skips gating entirely.
     gates: Option<Arc<GateManager>>,
+    /// Notes + templates for the finalize step; `None` skips it entirely.
+    notes: Option<Arc<NotesManager>>,
+    prompts: Option<Arc<PromptManager>>,
     runtime: Mutex<HashMap<String, RuntimeSession>>,
     /// Dialogs the agents are blocked on: request id → (session id, dialog kind). The
     /// engine keys dialogs by request id alone, and everything downstream needs both.
     dialogs: Mutex<HashMap<String, (String, String)>>,
+    /// Sessions writing their notes before closing: session id → deadline. The close
+    /// happens when their turn ends, or when the deadline passes.
+    finalizing: Mutex<HashMap<String, DateTime<Utc>>>,
 }
 
 impl SessionManager {
@@ -86,9 +105,20 @@ impl SessionManager {
             bus,
             engine,
             gates,
+            notes: None,
+            prompts: None,
             runtime: Mutex::new(HashMap::new()),
             dialogs: Mutex::new(HashMap::new()),
+            finalizing: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Give the manager what it needs to ask a closing implementation session for its
+    /// notes. Additive: without it, `close()` behaves exactly as it did before.
+    pub fn with_notes(mut self, notes: Arc<NotesManager>, prompts: Arc<PromptManager>) -> Self {
+        self.notes = Some(notes);
+        self.prompts = Some(prompts);
+        self
     }
 
     /// Consume engine signals until the channel closes. Run as a background task.
@@ -98,6 +128,7 @@ impl SessionManager {
                 EngineSignal::Event(event) => self.handle_event(event),
                 EngineSignal::Crashed { code } => self.handle_crash(code),
             }
+            self.sweep_finalize_deadlines();
         }
         tracing::info!("engine signal channel closed; session manager loop ending");
     }
@@ -263,7 +294,152 @@ impl SessionManager {
                 }
             }
         }
+        // An implementation session gets one last turn to write down what it decided.
+        if self.start_finalize(session_id) {
+            return Ok(());
+        }
         self.engine.close_session(session_id)
+    }
+
+    /// Ask a closing implementation session to write its `TASK_NOTES.md`, and defer the
+    /// actual close until that turn ends. Returns false when there is nothing to ask —
+    /// wrong session type, not idle, notes disabled, or the send failed — in which case the
+    /// caller closes as usual. Notes are best-effort: they never block or fail a close.
+    fn start_finalize(&self, session_id: &str) -> bool {
+        let (notes, prompts) = match (&self.notes, &self.prompts) {
+            (Some(notes), Some(prompts)) => (notes, prompts),
+            _ => return false,
+        };
+        let timeout = self.finalize_timeout();
+        if timeout.is_zero() {
+            return false;
+        }
+
+        // Only a session that is idle can take another turn; a streaming one would queue
+        // the prompt behind work the user just asked to stop.
+        let branch = match self.lock_runtime() {
+            Ok(runtime) => match runtime.get(session_id) {
+                Some(entry) if entry.status == SessionStatus::AwaitingInput => entry.branch.clone(),
+                _ => return false,
+            },
+            Err(_) => return false,
+        };
+        match self.store.get_session(session_id) {
+            Ok(Some(session)) if session.session_type == SessionType::Implementation => {}
+            _ => return false,
+        }
+        if self
+            .finalizing
+            .lock()
+            .map(|f| f.contains_key(session_id))
+            .unwrap_or(true)
+        {
+            return false;
+        }
+
+        let branch_row = self.store.get_branch(&branch).ok().flatten();
+        let mut vars = HashMap::new();
+        vars.insert("branch".to_string(), branch.clone());
+        vars.insert(
+            "task_id".to_string(),
+            branch_row
+                .as_ref()
+                .and_then(|b| b.task_id.clone())
+                .unwrap_or_else(|| "(none)".to_string()),
+        );
+        vars.insert(
+            "base".to_string(),
+            branch_row
+                .and_then(|b| b.base_branch)
+                .unwrap_or_else(|| "(unknown)".to_string()),
+        );
+        vars.insert(
+            "notes".to_string(),
+            notes
+                .current_text(&branch)
+                .unwrap_or_else(|| "none yet".to_string()),
+        );
+
+        let prompt = match prompts.render(NOTES_TEMPLATE, &vars) {
+            Ok(prompt) => prompt,
+            Err(err) => {
+                tracing::warn!(session_id, error = %err, "notes template unavailable; closing without notes");
+                return false;
+            }
+        };
+        if let Err(err) = self.engine.send_prompt(session_id, &prompt, &[]) {
+            tracing::warn!(session_id, error = %err, "finalize prompt failed; closing without notes");
+            return false;
+        }
+
+        let deadline = Utc::now() + chrono::Duration::from_std(timeout).unwrap_or_default();
+        if let Ok(mut finalizing) = self.finalizing.lock() {
+            finalizing.insert(session_id.to_string(), deadline);
+        }
+        tracing::info!(
+            session_id,
+            branch,
+            "asked session to write TASK_NOTES.md before closing"
+        );
+        self.transition(session_id, SessionStatus::Streaming);
+        true
+    }
+
+    /// The finalize turn ended (or ran out of time): close for real, and let the notes
+    /// panel know there may be something new to read.
+    fn finish_finalize(&self, session_id: &str, branch: &str) {
+        let was_finalizing = self
+            .finalizing
+            .lock()
+            .map(|mut f| f.remove(session_id).is_some())
+            .unwrap_or(false);
+        if !was_finalizing {
+            return;
+        }
+        tracing::info!(session_id, "finalize turn done; closing session");
+        self.bus.publish(Event::NotesUpdated {
+            branch: branch.to_string(),
+        });
+        if let Err(err) = self.engine.close_session(session_id) {
+            crate::error::report(&self.bus, &err);
+        }
+    }
+
+    /// Deadline sweep for finalize turns that never end. Called on every engine signal, so
+    /// no timer task is needed: a stuck session is closed on the next event, and at the
+    /// latest when the user acts again.
+    fn sweep_finalize_deadlines(&self) {
+        let expired: Vec<String> = match self.finalizing.lock() {
+            Ok(finalizing) => {
+                let now = Utc::now();
+                finalizing
+                    .iter()
+                    .filter(|(_, deadline)| **deadline <= now)
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            }
+            Err(_) => return,
+        };
+        for session_id in expired {
+            tracing::warn!(session_id, "notes finalize timed out; closing anyway");
+            let branch = self
+                .lock_runtime()
+                .ok()
+                .and_then(|r| r.get(&session_id).map(|s| s.branch.clone()))
+                .unwrap_or_default();
+            self.finish_finalize(&session_id, &branch);
+        }
+    }
+
+    fn finalize_timeout(&self) -> std::time::Duration {
+        let secs = self
+            .store
+            .get_setting(SETTING_NOTES_FINALIZE_TIMEOUT)
+            .ok()
+            .flatten()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_FINALIZE_TIMEOUT_SECS);
+        std::time::Duration::from_secs(secs)
     }
 
     /// Delete a **finished** session from the store (list cleanup). Deleting an
@@ -535,6 +711,15 @@ impl SessionManager {
                     return;
                 };
                 self.transition(&session_id, status);
+                // A session that was writing its notes has finished that turn: close it.
+                if status == SessionStatus::AwaitingInput {
+                    let branch = self
+                        .lock_runtime()
+                        .ok()
+                        .and_then(|r| r.get(&session_id).map(|s| s.branch.clone()))
+                        .unwrap_or_default();
+                    self.finish_finalize(&session_id, &branch);
+                }
             }
             SidecarEvent::StreamDelta {
                 session_id,
@@ -737,6 +922,9 @@ impl SessionManager {
                 tracing::info!(session_id, subtype, is_error, "session turn finished");
             }
             SidecarEvent::SessionClosed { session_id, reason } => {
+                if let Ok(mut finalizing) = self.finalizing.lock() {
+                    finalizing.remove(&session_id);
+                }
                 // Any gate still waiting on this session can no longer execute.
                 if let Some(gates) = &self.gates {
                     gates.cancel_for_session(&session_id, "session closed");
@@ -1027,6 +1215,47 @@ mod tests {
         let engine = Arc::new(MockEngine::default());
         let manager = Arc::new(SessionManager::new(store, bus.clone(), engine.clone()));
         (manager, bus, engine)
+    }
+
+    /// Manager with the notes finalize step armed, plus a temp repo so a worktree exists.
+    fn setup_with_notes(
+        timeout_secs: &str,
+    ) -> (
+        Arc<SessionManager>,
+        EventBus,
+        Arc<MockEngine>,
+        tempfile::TempDir,
+    ) {
+        let bus = EventBus::new();
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        store
+            .set_setting(SETTING_NOTES_FINALIZE_TIMEOUT, timeout_secs)
+            .unwrap();
+        let engine = Arc::new(MockEngine::default());
+        let dir = tempfile::tempdir().unwrap();
+        let worktrees = Arc::new(crate::core::worktree::WorktreeManager::new(
+            Arc::new(crate::core::worktree::GitCli),
+            store.clone(),
+            bus.clone(),
+        ));
+        let notes = Arc::new(crate::core::notes::NotesManager::new(
+            worktrees,
+            bus.clone(),
+        ));
+        let prompts =
+            Arc::new(crate::core::prompts::PromptManager::new(dir.path().join("prompts")).unwrap());
+        let manager = Arc::new(
+            SessionManager::new(store, bus.clone(), engine.clone()).with_notes(notes, prompts),
+        );
+        (manager, bus, engine, dir)
+    }
+
+    /// Drive a spawned session to `awaiting_input`, which is where a close can finalize.
+    fn make_idle(manager: &SessionManager, session_id: &str) {
+        manager.handle_event(SidecarEvent::Status {
+            session_id: session_id.to_string(),
+            status: "awaiting_input".into(),
+        });
     }
 
     fn spawn_params(branch: &str) -> SpawnParams {
@@ -1363,6 +1592,129 @@ mod tests {
         let event = rx.recv().await.unwrap();
         assert_eq!(event.name(), "session.permission_request");
         assert!(gates.list().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn closing_an_implementation_session_asks_for_notes_first() {
+        let (manager, _bus, engine, _dir) = setup_with_notes("120");
+        let mut params = spawn_params("impl/S2-1");
+        params.session_type = SessionType::Implementation;
+        let session = manager.spawn(params).unwrap();
+        make_idle(&manager, &session.id);
+
+        manager.close(&session.id).unwrap();
+
+        // The finalize prompt went out and the session is *not* closed yet.
+        let calls = engine.calls.lock().unwrap().clone();
+        assert!(
+            calls.contains(&format!("send:{}", session.id)),
+            "expected a finalize prompt, got {calls:?}"
+        );
+        assert!(!calls.contains(&format!("close:{}", session.id)));
+
+        // When that turn ends, the close happens for real.
+        make_idle(&manager, &session.id);
+        let calls = engine.calls.lock().unwrap().clone();
+        assert!(calls.contains(&format!("close:{}", session.id)));
+    }
+
+    #[tokio::test]
+    async fn other_session_types_close_untouched() {
+        let (manager, _bus, engine, _dir) = setup_with_notes("120");
+        for session_type in [SessionType::Manual, SessionType::Research] {
+            let mut params = spawn_params("impl/S2-2");
+            params.session_type = session_type;
+            params.permission_mode = Some(READ_ONLY_MODE.to_string());
+            let session = manager.spawn(params).unwrap();
+            make_idle(&manager, &session.id);
+            manager.close(&session.id).unwrap();
+
+            let calls = engine.calls.lock().unwrap().clone();
+            assert!(
+                calls.contains(&format!("close:{}", session.id)),
+                "{session_type:?} must close immediately"
+            );
+            assert!(
+                !calls.contains(&format!("send:{}", session.id)),
+                "{session_type:?} must not be asked for notes"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_streaming_or_terminal_session_closes_immediately() {
+        let (manager, _bus, engine, _dir) = setup_with_notes("120");
+
+        // Streaming: the user asked it to stop, so do not queue another turn behind that.
+        let mut params = spawn_params("impl/S2-3");
+        params.session_type = SessionType::Implementation;
+        let streaming = manager.spawn(params).unwrap();
+        manager.handle_event(SidecarEvent::Status {
+            session_id: streaming.id.clone(),
+            status: "streaming".into(),
+        });
+        manager.close(&streaming.id).unwrap();
+        assert!(engine
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&format!("close:{}", streaming.id)));
+
+        // Terminal: close is an idempotent no-op, notes or not.
+        let mut params = spawn_params("impl/S2-3b");
+        params.session_type = SessionType::Implementation;
+        let done = manager.spawn(params).unwrap();
+        make_idle(&manager, &done.id);
+        manager.handle_event(SidecarEvent::SessionClosed {
+            session_id: done.id.clone(),
+            reason: "closed".into(),
+        });
+        let before = engine.calls.lock().unwrap().len();
+        manager.close(&done.id).unwrap();
+        assert_eq!(engine.calls.lock().unwrap().len(), before);
+    }
+
+    #[tokio::test]
+    async fn a_finalize_turn_that_never_ends_still_closes() {
+        // Zero-second timeout: the deadline is already past when the sweep runs, which is
+        // the same path a stuck agent takes 120 seconds later.
+        let (manager, _bus, engine, _dir) = setup_with_notes("1");
+        let mut params = spawn_params("impl/S2-4");
+        params.session_type = SessionType::Implementation;
+        let session = manager.spawn(params).unwrap();
+        make_idle(&manager, &session.id);
+        manager.close(&session.id).unwrap();
+        assert!(!engine
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&format!("close:{}", session.id)));
+
+        // Move the deadline into the past and sweep, as the signal loop does.
+        manager.finalizing.lock().unwrap().insert(
+            session.id.clone(),
+            Utc::now() - chrono::Duration::seconds(1),
+        );
+        manager.sweep_finalize_deadlines();
+        assert!(engine
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&format!("close:{}", session.id)));
+    }
+
+    #[tokio::test]
+    async fn the_finalize_step_can_be_switched_off() {
+        let (manager, _bus, engine, _dir) = setup_with_notes("0");
+        let mut params = spawn_params("impl/S2-5");
+        params.session_type = SessionType::Implementation;
+        let session = manager.spawn(params).unwrap();
+        make_idle(&manager, &session.id);
+        manager.close(&session.id).unwrap();
+
+        let calls = engine.calls.lock().unwrap().clone();
+        assert!(calls.contains(&format!("close:{}", session.id)));
+        assert!(!calls.contains(&format!("send:{}", session.id)));
     }
 
     #[tokio::test]

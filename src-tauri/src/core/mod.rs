@@ -4,6 +4,7 @@ pub mod bus;
 pub mod config;
 pub mod diff;
 pub mod gate;
+pub mod notes;
 pub mod prompts;
 pub mod questions;
 pub mod session;

@@ -11,6 +11,7 @@ use crate::core::bus::EventBus;
 use crate::core::config::Config;
 use crate::core::diff::DiffManager;
 use crate::core::gate::{self, GateManager};
+use crate::core::notes::NotesManager;
 use crate::core::prompts::PromptManager;
 use crate::core::questions::LineQuestionManager;
 use crate::core::session::SessionManager;
@@ -83,16 +84,6 @@ pub fn run() {
         engine.clone(),
         bus.clone(),
     ));
-    let sessions = Arc::new(SessionManager::with_gates(
-        store.clone(),
-        bus.clone(),
-        engine,
-        Some(gates.clone()),
-    ));
-
-    // Sessions from a previous app run cannot be reattached (yet) — fail them.
-    sessions.fail_stale_sessions("app restart");
-
     let diffs = Arc::new(DiffManager::new(
         git,
         store.clone(),
@@ -108,6 +99,17 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+
+    // TASK_NOTES.md: the record a task leaves for the next agent. The session manager
+    // needs it (and the templates) to ask a closing implementation session for its notes.
+    let notes = Arc::new(NotesManager::new(worktrees.clone(), bus.clone()));
+    let sessions = Arc::new(
+        SessionManager::with_gates(store.clone(), bus.clone(), engine, Some(gates.clone()))
+            .with_notes(notes.clone(), prompts.clone()),
+    );
+
+    // Sessions from a previous app run cannot be reattached (yet) — fail them.
+    sessions.fail_stale_sessions("app restart");
     let questions = Arc::new(LineQuestionManager::new(
         diffs.clone(),
         sessions.clone(),
@@ -128,6 +130,7 @@ pub fn run() {
         gates,
         questions: questions.clone(),
         prompts,
+        notes,
         attention: attention.clone(),
     };
 
@@ -168,6 +171,8 @@ pub fn run() {
             ipc::set_session_permission_mode,
             ipc::set_session_thinking,
             ipc::mcp_server_action,
+            ipc::get_notes,
+            ipc::refresh_notes,
             ipc::respond_user_dialog
         ])
         .setup(move |app| {

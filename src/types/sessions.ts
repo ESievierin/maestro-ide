@@ -34,6 +34,57 @@ export const FALLBACK_MODELS: ModelOption[] = [
   { id: "claude-haiku-4-5", display_name: "Claude Haiku 4.5" },
 ];
 
+/** The one dialog kind Maestro renders today (see the sidecar's `ASK_USER_QUESTION`). */
+export const DIALOG_ASK_USER_QUESTION = "ask_user_question";
+
+export interface QuestionOption {
+  label: string;
+  description: string;
+  preview?: string;
+}
+
+export interface DialogQuestion {
+  question: string;
+  header: string;
+  options: QuestionOption[];
+  multiSelect: boolean;
+}
+
+/** Payload of an `ask_user_question` dialog: the `AskUserQuestion` tool's own input. */
+export interface AskUserQuestionPayload {
+  questions: DialogQuestion[];
+}
+
+/** A dialog waiting on the user, as tracked in the frontend store. */
+export interface UserDialog {
+  sessionId: string;
+  requestId: string;
+  dialogKind: string;
+  payload: unknown;
+}
+
+/** Maestro's answer to a dialog; the sidecar maps it to the CLI's result shape. */
+export interface DialogAnswer {
+  answers?: Record<string, string>;
+  annotations?: Record<string, { preview?: string; notes?: string }>;
+  feedback?: string;
+}
+
+/** Narrow an unknown dialog payload to the ask-user-question shape, or null. */
+export function asQuestionPayload(payload: unknown): AskUserQuestionPayload | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const questions = (payload as { questions?: unknown }).questions;
+  if (!Array.isArray(questions) || questions.length === 0) return null;
+  const valid = questions.every(
+    (q) =>
+      typeof q === "object" &&
+      q !== null &&
+      typeof (q as DialogQuestion).question === "string" &&
+      Array.isArray((q as DialogQuestion).options),
+  );
+  return valid ? { questions: questions as DialogQuestion[] } : null;
+}
+
 export type TranscriptItem =
   | { kind: "user"; text: string }
   | { kind: "text"; text: string }
@@ -46,7 +97,11 @@ export type TranscriptItem =
       title: string | null;
       resolved: "pending" | "allowed" | "denied";
     }
-  | { kind: "status"; status: SessionStatus };
+  | { kind: "status"; status: SessionStatus }
+  /** What the user answered in a dialog, kept so the transcript tells the whole story. */
+  | { kind: "dialog"; title: string; lines: string[] }
+  /** A runtime switch (model/effort/permissions) applied mid-session. */
+  | { kind: "settings"; text: string };
 
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 // `bypassPermissions` is deliberately absent: with it the SDK never calls canUseTool,

@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Requests sent to the sidecar. Every request carries an `id`; the sidecar
 /// answers with an `ack` event carrying the same id.
@@ -47,6 +47,32 @@ pub enum SidecarRequest {
         updated_args: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         message: Option<String>,
+    },
+    SetModel {
+        id: u64,
+        session_id: String,
+        /// Empty string clears the override.
+        model: String,
+    },
+    SetEffort {
+        id: u64,
+        session_id: String,
+        /// Empty string clears the override.
+        effort: String,
+    },
+    SetPermissionMode {
+        id: u64,
+        session_id: String,
+        permission_mode: String,
+    },
+    /// Answer a dialog the CLI asked the host to render.
+    UserDialogResponse {
+        id: u64,
+        request_id: String,
+        /// `completed` carries a dialog-specific result; `cancelled` applies the CLI default.
+        behavior: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<Value>,
     },
     /// Ask the CLI for its model list without starting a session (no tokens spent).
     ListModels {
@@ -118,6 +144,16 @@ pub enum SidecarEvent {
         args: Value,
         #[serde(default)]
         title: Option<String>,
+    },
+    /// The CLI wants a blocking dialog rendered (AskUserQuestion and friends). The kind is
+    /// an open union: unknown kinds must be answered `cancelled` or the agent's turn parks.
+    UserDialogRequest {
+        session_id: String,
+        request_id: String,
+        dialog_kind: String,
+        payload: Value,
+        #[serde(default)]
+        tool_use_id: Option<String>,
     },
     Status {
         session_id: String,

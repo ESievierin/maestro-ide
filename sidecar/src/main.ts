@@ -97,6 +97,34 @@ async function dispatch(request: SidecarRequest): Promise<void> {
       ack(request.id, false, `unknown permission request: ${request.request_id}`);
       return;
     }
+    case "set_model":
+    case "set_effort":
+    case "set_permission_mode": {
+      const session = sessions.get(request.session_id);
+      if (!session) {
+        ack(request.id, false, `unknown session: ${request.session_id}`);
+        return;
+      }
+      try {
+        if (request.type === "set_model") await session.setModel(request.model);
+        else if (request.type === "set_effort") await session.setEffort(request.effort);
+        else await session.setPermissionMode(request.permission_mode);
+        ack(request.id, true);
+      } catch (err) {
+        ack(request.id, false, String(err));
+      }
+      return;
+    }
+    case "user_dialog_response": {
+      for (const session of sessions.values()) {
+        if (session.respondUserDialog(request.request_id, request.behavior, request.result)) {
+          ack(request.id, true);
+          return;
+        }
+      }
+      ack(request.id, false, `unknown dialog request: ${request.request_id}`);
+      return;
+    }
     case "list_models": {
       if (useMock) {
         writeEvent({

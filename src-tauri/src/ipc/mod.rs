@@ -429,3 +429,61 @@ pub async fn refresh_models(state: State<'_, AppState>) -> Result<(), String> {
     })
     .await
 }
+
+// ---------- runtime session controls (S3) ----------
+
+/// Change a live session's model. Empty string restores the default.
+#[tauri::command]
+pub async fn set_session_model(
+    state: State<'_, AppState>,
+    session_id: String,
+    model: String,
+) -> Result<(), String> {
+    let sessions = state.sessions.clone();
+    run_core(state.bus.clone(), move || {
+        sessions.set_model(&session_id, &model)
+    })
+    .await
+}
+
+/// Change a live session's effort. Empty string restores the default.
+#[tauri::command]
+pub async fn set_session_effort(
+    state: State<'_, AppState>,
+    session_id: String,
+    effort: String,
+) -> Result<(), String> {
+    let sessions = state.sessions.clone();
+    run_core(state.bus.clone(), move || {
+        sessions.set_effort(&session_id, &effort)
+    })
+    .await
+}
+
+/// Change a live session's permission mode (respects the single-writer rule).
+#[tauri::command]
+pub async fn set_session_permission_mode(
+    state: State<'_, AppState>,
+    session_id: String,
+    mode: String,
+) -> Result<(), String> {
+    let sessions = state.sessions.clone();
+    run_core(state.bus.clone(), move || {
+        sessions.set_permission_mode(&session_id, &mode)
+    })
+    .await
+}
+
+/// Answer a blocking dialog the agent raised. `result` omitted means cancelled.
+#[tauri::command]
+pub async fn respond_user_dialog(
+    state: State<'_, AppState>,
+    request_id: String,
+    result: Option<Value>,
+) -> Result<(), String> {
+    let sessions = state.sessions.clone();
+    run_core(state.bus.clone(), move || {
+        sessions.respond_user_dialog(&request_id, result)
+    })
+    .await
+}

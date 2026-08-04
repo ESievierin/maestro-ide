@@ -14,7 +14,10 @@ use crate::core::agent::protocol::SidecarEvent;
 use crate::core::agent::{AgentEngine, EngineSignal, SpawnSessionRequest};
 use crate::core::bus::{Event, EventBus};
 use crate::core::gate::GateManager;
-use crate::core::session::{is_writer_mode, Session, SessionStatus, SessionType, READ_ONLY_MODE};
+use crate::core::session::{
+    is_known_effort, is_known_permission_mode, is_writer_mode, Session, SessionStatus, SessionType,
+    EFFORT_LEVELS, READ_ONLY_MODE,
+};
 use crate::core::store::Store;
 use crate::error::{MaestroError, Result, Severity};
 
@@ -53,6 +56,9 @@ pub struct SessionManager {
     /// Gate for dangerous tool calls (T7); `None` skips gating entirely.
     gates: Option<Arc<GateManager>>,
     runtime: Mutex<HashMap<String, RuntimeSession>>,
+    /// Dialogs the agents are blocked on: request id → session id. The engine keys
+    /// dialogs by request id alone, and everything downstream needs the session.
+    dialogs: Mutex<HashMap<String, String>>,
 }
 
 impl SessionManager {
@@ -72,6 +78,7 @@ impl SessionManager {
             engine,
             gates,
             runtime: Mutex::new(HashMap::new()),
+            dialogs: Mutex::new(HashMap::new()),
         }
     }
 
@@ -272,6 +279,135 @@ impl SessionManager {
             .respond_permission(request_id, allow, updated_args, message)
     }
 
+    /// Change the model of a live session and persist it, so the transcript, the
+    /// selector and the history agree afterwards. An empty string clears the override.
+    pub fn set_model(&self, session_id: &str, model: &str) -> Result<()> {
+        self.ensure_live(session_id)?;
+        self.engine.set_model(session_id, model)?;
+        self.store
+            .set_session_runtime(session_id, Some(model), None, None)?;
+        tracing::info!(session_id, model, "session model changed");
+        self.bus.publish(Event::SessionSettingsChanged {
+            session_id: session_id.to_string(),
+            model: Some(model.to_string()),
+            effort: None,
+            permission_mode: None,
+        });
+        Ok(())
+    }
+
+    /// Change the effort of a live session; an empty string clears the override.
+    pub fn set_effort(&self, session_id: &str, effort: &str) -> Result<()> {
+        if !is_known_effort(effort) {
+            return Err(MaestroError::InvalidData {
+                message: format!(
+                    "unknown effort \"{effort}\" — expected one of: {}",
+                    EFFORT_LEVELS.join(", ")
+                ),
+            });
+        }
+        self.ensure_live(session_id)?;
+        self.engine.set_effort(session_id, effort)?;
+        self.store
+            .set_session_runtime(session_id, None, Some(effort), None)?;
+        tracing::info!(session_id, effort, "session effort changed");
+        self.bus.publish(Event::SessionSettingsChanged {
+            session_id: session_id.to_string(),
+            model: None,
+            effort: Some(effort.to_string()),
+            permission_mode: None,
+        });
+        Ok(())
+    }
+
+    /// Change the permission mode of a live session. This can flip the session between
+    /// writer and read-only, so the single-writer bookkeeping is updated too.
+    pub fn set_permission_mode(&self, session_id: &str, mode: &str) -> Result<()> {
+        if !is_known_permission_mode(mode) {
+            return Err(MaestroError::InvalidData {
+                message: format!(
+                    "unknown permission mode \"{mode}\" — expected one of: {}",
+                    crate::core::session::PERMISSION_MODES.join(", ")
+                ),
+            });
+        }
+        self.ensure_live(session_id)?;
+
+        // Switching to a writer mode must respect the branch's single writer.
+        let becomes_writer = is_writer_mode(Some(mode));
+        let branch = {
+            let runtime = self.lock_runtime()?;
+            runtime.get(session_id).map(|s| s.branch.clone())
+        };
+        if becomes_writer {
+            if let Some(branch) = &branch {
+                let taken = {
+                    let runtime = self.lock_runtime()?;
+                    runtime.iter().any(|(id, s)| {
+                        id != session_id
+                            && s.branch == *branch
+                            && s.is_writer
+                            && !s.status.is_terminal()
+                    })
+                };
+                if taken {
+                    return Err(MaestroError::InvalidData {
+                        message: format!(
+                            "another writer session is active on {branch} — close it first"
+                        ),
+                    });
+                }
+            }
+        }
+
+        self.engine.set_permission_mode(session_id, mode)?;
+        self.store
+            .set_session_runtime(session_id, None, None, Some(mode))?;
+        if let Ok(mut runtime) = self.lock_runtime() {
+            if let Some(entry) = runtime.get_mut(session_id) {
+                entry.is_writer = becomes_writer;
+            }
+        }
+        tracing::info!(
+            session_id,
+            mode,
+            writer = becomes_writer,
+            "session permission mode changed"
+        );
+        self.bus.publish(Event::SessionSettingsChanged {
+            session_id: session_id.to_string(),
+            model: None,
+            effort: None,
+            permission_mode: Some(mode.to_string()),
+        });
+        Ok(())
+    }
+
+    /// Answer a dialog the agent is blocked on. `result` is dialog-specific; `None`
+    /// cancels, which makes the CLI apply the dialog's own default.
+    pub fn respond_user_dialog(&self, request_id: &str, result: Option<Value>) -> Result<()> {
+        let behavior = if result.is_some() {
+            "completed"
+        } else {
+            "cancelled"
+        };
+        tracing::info!(request_id, behavior, "user dialog answered");
+        self.engine
+            .respond_user_dialog(request_id, behavior, result)?;
+        // Announce the resolution so the attention queue and any other view stand down.
+        let session_id = self
+            .dialogs
+            .lock()
+            .ok()
+            .and_then(|mut d| d.remove(request_id))
+            .unwrap_or_default();
+        self.bus.publish(Event::SessionUserDialogResolved {
+            session_id,
+            request_id: request_id.to_string(),
+        });
+        Ok(())
+    }
+
     /// Ask the CLI for its model list; the answer arrives as a `session.models` event
     /// with an empty session id. Costs nothing — no session, no turn.
     pub fn refresh_models(&self, cwd: &str) -> Result<()> {
@@ -366,6 +502,23 @@ impl SessionManager {
                     tool,
                     args,
                     title,
+                });
+            }
+            SidecarEvent::UserDialogRequest {
+                session_id,
+                request_id,
+                dialog_kind,
+                payload,
+                ..
+            } => {
+                if let Ok(mut dialogs) = self.dialogs.lock() {
+                    dialogs.insert(request_id.clone(), session_id.clone());
+                }
+                self.bus.publish(Event::SessionUserDialog {
+                    session_id,
+                    request_id,
+                    dialog_kind,
+                    payload,
                 });
             }
             SidecarEvent::Commands {
@@ -606,6 +759,40 @@ mod tests {
         }
 
         fn list_models(&self, _cwd: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn set_model(&self, session_id: &str, model: &str) -> Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("set_model:{session_id}:{model}"));
+            Ok(())
+        }
+        fn set_effort(&self, session_id: &str, effort: &str) -> Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("set_effort:{session_id}:{effort}"));
+            Ok(())
+        }
+        fn set_permission_mode(&self, session_id: &str, mode: &str) -> Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("set_permission_mode:{session_id}:{mode}"));
+            Ok(())
+        }
+        fn respond_user_dialog(
+            &self,
+            request_id: &str,
+            behavior: &str,
+            _result: Option<Value>,
+        ) -> Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("dialog:{request_id}:{behavior}"));
             Ok(())
         }
     }
@@ -966,5 +1153,101 @@ mod tests {
 
         let stored = store.list_sessions("impl/T-6-x").unwrap();
         assert_eq!(stored[0].status, SessionStatus::Failed);
+    }
+    #[tokio::test]
+    async fn runtime_model_and_effort_reach_engine_store_and_bus() {
+        let (manager, bus, engine) = setup();
+        let session = manager.spawn(spawn_params("impl/S3-a")).unwrap();
+        let mut rx = bus.subscribe();
+
+        manager.set_model(&session.id, "claude-opus-5").unwrap();
+        manager.set_effort(&session.id, "high").unwrap();
+
+        let calls = engine.calls.lock().unwrap().clone();
+        assert!(calls.contains(&format!("set_model:{}:claude-opus-5", session.id)));
+        assert!(calls.contains(&format!("set_effort:{}:high", session.id)));
+
+        // Persisted, so history and a later resume agree with the UI.
+        let stored = manager.store.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(stored.model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(stored.effort.as_deref(), Some("high"));
+
+        let first = rx.recv().await.unwrap();
+        assert_eq!(first.name(), "session.settings_changed");
+    }
+
+    #[tokio::test]
+    async fn runtime_settings_rejected_for_unknown_session() {
+        let (manager, _bus, _engine) = setup();
+        assert!(manager.set_model("nope", "claude-opus-5").is_err());
+        assert!(manager.set_effort("nope", "high").is_err());
+        assert!(manager.set_permission_mode("nope", "acceptEdits").is_err());
+    }
+
+    #[tokio::test]
+    async fn permission_mode_switch_respects_single_writer() {
+        let (manager, _bus, engine) = setup();
+        let writer = manager.spawn(spawn_params("impl/S3-b")).unwrap();
+        let reader = manager.spawn(spawn_params("impl/S3-b")).unwrap();
+        assert!(writer.is_writer());
+        assert!(!reader.is_writer());
+
+        // The reader cannot grab the write slot while the writer is alive.
+        let err = manager
+            .set_permission_mode(&reader.id, "acceptEdits")
+            .expect_err("second writer must be refused");
+        assert_eq!(err.code(), "invalid_data");
+        assert!(!engine
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.starts_with("set_permission_mode:")));
+
+        // Going read-only is always allowed, and frees the slot when the writer does it.
+        manager
+            .set_permission_mode(&writer.id, READ_ONLY_MODE)
+            .unwrap();
+        manager
+            .set_permission_mode(&reader.id, "acceptEdits")
+            .unwrap();
+        let stored = manager.store.get_session(&reader.id).unwrap().unwrap();
+        assert_eq!(stored.permission_mode.as_deref(), Some("acceptEdits"));
+    }
+
+    #[tokio::test]
+    async fn user_dialog_request_is_published_and_answered() {
+        let (manager, bus, engine) = setup();
+        let session = manager.spawn(spawn_params("impl/S3-c")).unwrap();
+        let mut rx = bus.subscribe();
+
+        manager.handle_event(SidecarEvent::UserDialogRequest {
+            session_id: session.id.clone(),
+            request_id: "dlg-1".into(),
+            dialog_kind: "ask_user_question".into(),
+            payload: serde_json::json!({ "questions": [] }),
+            tool_use_id: None,
+        });
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.name(), "session.user_dialog");
+
+        manager
+            .respond_user_dialog("dlg-1", Some(serde_json::json!({ "answers": ["a"] })))
+            .unwrap();
+        // The resolution names the session, so the attention queue can clear its entry.
+        match rx.recv().await.unwrap() {
+            Event::SessionUserDialogResolved {
+                session_id,
+                request_id,
+            } => {
+                assert_eq!(session_id, session.id);
+                assert_eq!(request_id, "dlg-1");
+            }
+            other => panic!("expected a resolved event, got {}", other.name()),
+        }
+        manager.respond_user_dialog("dlg-2", None).unwrap();
+        let calls = engine.calls.lock().unwrap().clone();
+        assert!(calls.contains(&"dialog:dlg-1:completed".to_string()));
+        assert!(calls.contains(&"dialog:dlg-2:cancelled".to_string()));
     }
 }

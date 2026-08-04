@@ -26,7 +26,10 @@ export type IconName =
   | "arrow-down"
   | "question"
   | "folder"
-  | "chevron-down";
+  | "chevron-down"
+  | "circle"
+  | "square"
+  | "sliders";
 
 /** Path data per icon, drawn on a 24×24 grid. */
 const PATHS: Record<IconName, ReactElement> = {
@@ -57,6 +60,9 @@ const PATHS: Record<IconName, ReactElement> = {
   folder: <path d="M3.5 6.5h5l2 2.5h10v9.5h-17V6.5Z" />,
   "chevron-down": <path d="M6 10l6 6 6-6" />,
   question: <path d="M9 9a3 3 0 1 1 4.5 2.6c-1 .6-1.5 1.2-1.5 2.4M12 17.5v.5" />,
+  circle: <circle cx="12" cy="12" r="7" />,
+  square: <rect x="5.5" y="5.5" width="13" height="13" rx="2.5" />,
+  sliders: <path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 4.5v5M9 14.5v5" />,
 };
 
 interface Props {

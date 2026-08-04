@@ -15,19 +15,33 @@ names the SDK surface it needs, so implementation is mechanical rather than expl
     is the effort knob; the mapped-flag type calls it out explicitly).
   - `setPermissionMode(mode)` — change permission mode mid-session.
   - `setMaxThinkingTokens(n)` — thinking budget (deprecated in favour of `thinking`, ignore).
-- **Interactive dialogs (this is why `AskUserQuestion` looks broken).** The CLI asks the host
-  to render a blocking dialog via a `request_user_dialog` control request, delivered to the
-  `onUserDialog?: (request, {signal}) => Promise<UserDialogResult>` option.
-  `UserDialogRequest = { dialogKind: string, payload: Record<string, unknown>, toolUseID? }`;
-  the answer is `{behavior: "completed", result}` or `{behavior: "cancelled"}`.
-  `dialogKind` is an **open union** — hosts must answer unknown kinds with `cancelled`.
-  We do not pass `onUserDialog` at all, and the SDK bundle then, in its own words, stays
-  "silent so a capable client (or the worker's park deadline) settles it" — i.e. the tool
-  call hangs forever. That is exactly the observed "permission granted, then nothing".
-  For the question dialog the result shape mirrors `AskUserQuestionOutput`:
-  `{ questions, answers: { [question]: string }, response?: string, annotations? }`
-  (multi-select answers are comma-separated; `response` is freeform text the user typed
-  instead of picking an option).
+- **Interactive dialogs, and why `AskUserQuestion` looked broken.** Two mechanisms exist
+  and it matters which one a flow uses. Both were checked against the installed CLI, not
+  just the typings — the typings alone point at the wrong one.
+  - `Options.onUserDialog` + `Options.supportedDialogKinds` handle `request_user_dialog`
+    control requests: `UserDialogRequest = {dialogKind, payload, toolUseID?}` answered with
+    `{behavior:"completed", result}` or `{behavior:"cancelled"}`. The CLI **fails closed** on
+    `supportedDialogKinds` — a kind that is not declared is never emitted and the flow
+    behind it degrades to its no-dialog behaviour. Kinds in the CLI's registry:
+    `permission_bash`, `permission_file`, `permission_powershell`, `permission_browser`,
+    `permission_webfetch`, `permission_skill`, `permission_workflow`, `permission_monitor`,
+    `permission_prompt`, `permission_enter_plan_mode`, `permission_exit_plan_mode_v2`
+    (**plan approval, with the plan in the payload — the most valuable next one**),
+    `permission_ask_user_question`, `refusal_fallback_prompt`, `auto_mode_flagged_allow`,
+    `auto_mode_setup_review`, `fable_overage_consent_prompt`, `computer_use_approval`,
+    `mcp_url_elicitation`, `chrome_install_setup`, `chrome_install_upsell`.
+  - **`AskUserQuestion` does not use that path when `canUseTool` is set.** Verified twice
+    with the real CLI (a minimal SDK probe and our own sidecar): declaring
+    `permission_ask_user_question` changes nothing; the questions arrive as an ordinary
+    `canUseTool` request for tool `AskUserQuestion` with the questions in the input, and the
+    answers ride back **on the permission decision**:
+    - answer → `{behavior:"allow", updatedInput:{...input, answers, annotations}}`
+    - "wrong question, ask me differently" → `{behavior:"deny", message:"<text>"}`
+      `answers` maps question text → chosen option label, comma-separated for multi-select;
+      `annotations[question] = {preview?, notes?}`. Allowing **without** filling in `answers`
+      is what produced the original symptom: the agent reported the question as dismissed.
+      That is exactly what Maestro used to do (allow, empty input) — the permission dialog
+      was the whole interaction the user ever saw.
 - **Read-only session facts we never surface:** `getContextUsage()`, session cost,
   `accountInfo()`, `supportedModels()` (already used), `supportedCommands()` (already used),
   `supportedAgents()`, `mcpServerStatus()`.
@@ -35,7 +49,7 @@ names the SDK surface it needs, so implementation is mechanical rather than expl
   deltas, tool _results_, subagent activity (we filter `parent_tool_use_id !== null`),
   `SDKPermissionDeniedMessage`, `SDKRateLimitEvent`, plan-mode output, task notifications.
 
-## Tier 1 — blocking, implement first
+## Tier 1 — DONE (2026-08-05)
 
 1. **Runtime model / effort / permission-mode switching.** New sidecar requests
    (`set_model`, `set_effort`, `set_permission_mode`) → the `Query` setters above; core
@@ -54,6 +68,39 @@ names the SDK surface it needs, so implementation is mechanical rather than expl
    toolbar for switching, and add `/model <name>` handling to the local-command layer so the
    chat input can switch models too (the CLI's own `/model` is interactive and does not work
    through the SDK path).
+
+### What shipped in Tier 1
+
+- Protocol v2: `set_model` / `set_effort` / `set_permission_mode` / `user_dialog_response`
+  requests, `user_dialog_request` event, and a `DialogAnswer` wire type
+  (`{answers, annotations, feedback}`) that says nothing about how the CLI is answered.
+- `SessionManager::{set_model, set_effort, set_permission_mode, respond_user_dialog}` —
+  effort and mode validated against `EFFORT_LEVELS` / `PERMISSION_MODES`, a switch _into_ a
+  writer mode re-checks the single-writer rule, every change persisted via
+  `Store::set_session_runtime` and announced as `session.settings_changed`.
+- Question bridge in the sidecar: a `canUseTool` request for `AskUserQuestion` becomes a
+  `user_dialog_request` of kind `ask_user_question` (payload = the tool input), and the
+  answer becomes the permission decision — allow with `answers`/`annotations` merged into
+  `updatedInput`, deny with the user's own text when they reply instead. Resolution is
+  published as `session.user_dialog_resolved`, which clears the attention entry
+  (`AttentionKind::Question`).
+- `onUserDialog` is wired for CLI-raised dialogs as well, with a 5-minute auto-cancel and a
+  fail-closed kind check; `SUPPORTED_DIALOG_KINDS` is empty until a kind has a renderer, so
+  no flow can hang waiting for a dialog Maestro would not draw.
+- UI: `RuntimeControls` in the session toolbar (model list shows `display_name — id`),
+  `QuestionDialog` (multi-question, multi-select, per-option preview, "Other" free text,
+  per-question notes, "reply instead" → deny-with-message), answers and switches recorded
+  in the transcript, and `/model`, `/effort`, `/permissions` local commands whose
+  **argument** is autocompleted — which is where model ids become discoverable in the chat.
+- Mock mode: `ASK` raises an `ask_user_question` payload with a single-select and a
+  multi-select question; runtime switches are echoed into the next reply.
+- Verified end to end against the real SDK (not only mock): the dialog is raised, the
+  answer reaches the agent ("You chose **Blue**"), and all three setters are accepted
+  mid-session.
+
+Known limits carried forward: `SUPPORTED_DIALOG_KINDS` is empty, so plan approval
+(`permission_exit_plan_mode_v2`) still degrades to its no-dialog behaviour; image
+attachments in answers (`contentBlocks`) are not supported.
 
 ## Tier 2 — visible gaps in the transcript
 

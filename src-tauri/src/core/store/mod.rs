@@ -43,6 +43,15 @@ pub trait Store: Send + Sync {
     fn insert_session(&self, session: &Session) -> Result<()>;
     fn update_session_status(&self, id: &str, status: SessionStatus) -> Result<()>;
     fn set_session_sdk_id(&self, id: &str, sdk_session_id: &str) -> Result<()>;
+    /// Persist a runtime change so history and the UI keep telling the truth. `None`
+    /// leaves a column untouched.
+    fn set_session_runtime(
+        &self,
+        id: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+        permission_mode: Option<&str>,
+    ) -> Result<()>;
     fn get_session(&self, id: &str) -> Result<Option<Session>>;
     fn list_sessions(&self, branch: &str) -> Result<Vec<Session>>;
     /// Sessions in a non-terminal status (spawning/streaming/awaiting_input).
@@ -222,6 +231,32 @@ impl Store for SqliteStore {
             let changed = conn.execute(
                 "UPDATE sessions SET sdk_session_id = ?1, updated_at = ?2 WHERE id = ?3",
                 params![sdk_session_id, Utc::now(), id],
+            )?;
+            if changed == 0 {
+                return Err(MaestroError::InvalidData {
+                    message: format!("session not found: {id}"),
+                });
+            }
+            Ok(())
+        })
+    }
+
+    fn set_session_runtime(
+        &self,
+        id: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+        permission_mode: Option<&str>,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            let changed = conn.execute(
+                "UPDATE sessions SET
+                    model = COALESCE(?1, model),
+                    effort = COALESCE(?2, effort),
+                    permission_mode = COALESCE(?3, permission_mode),
+                    updated_at = ?4
+                 WHERE id = ?5",
+                params![model, effort, permission_mode, Utc::now(), id],
             )?;
             if changed == 0 {
                 return Err(MaestroError::InvalidData {

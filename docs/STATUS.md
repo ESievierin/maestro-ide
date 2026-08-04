@@ -3,7 +3,7 @@
 Living handoff document: where Stage 1 stands, what the moving parts are, and the
 conventions that are easy to lose between sessions. Update it when a task lands.
 
-Last updated: 2026-08-03 (Stage 1 tasks T1-T10 implemented).
+Last updated: 2026-08-05 (Stage 1 complete; Stage S3 Tier 1 — session parity — landed).
 
 ## Stage 1 progress
 
@@ -20,8 +20,29 @@ Last updated: 2026-08-03 (Stage 1 tasks T1-T10 implemented).
 | T9 attention panel         | done — bus-derived queue, status badges, OS notifications (opt-in)    |
 | T10 polish / dogfood       | done — config.toml, error toasts, hotkeys, empty states               |
 
-Branch `master` holds everything; `impl/T-6-string-questions` and
-`impl/T-7-commit-pr-gate` are merged and can be deleted once their worktrees are gone.
+Branch `main` holds everything; the T6/T7 agent branches are merged. The remote is
+`ESievierin/maestro-ide` (private, separate account — see "Git identity" below).
+
+## Stage S3 progress (Claude Code parity in sessions)
+
+Inventory and per-item detail: `docs/tasks/S3-parity.md`.
+
+| Tier                                        | State                                           |
+| ------------------------------------------- | ----------------------------------------------- |
+| Tier 1 runtime switching + dialogs + models | done — protocol v2, see below                   |
+| Tier 2 transcript gaps                      | open — thinking, tool results, subagents, cost  |
+| Tier 3 completeness                         | open — rewind, MCP, agents, elicitation, images |
+
+Tier 1 in one paragraph: model / effort / permission mode can be switched **while a
+session runs** (session toolbar selectors, or `/model`, `/effort`, `/permissions` in the
+chat with autocompleted arguments — that is where model ids are discoverable); the change
+is validated, persisted, and announced as `session.settings_changed`. `AskUserQuestion`
+now works: the sidecar declares `supportedDialogKinds`, forwards the dialog to the core,
+and the UI renders it (`QuestionDialog`), with a 5-minute auto-cancel so a turn can never
+park forever.
+
+Stage 2 (cross-agent context) is specified but not started: `docs/tasks/S2-T1-task-notes.md`,
+`docs/tasks/S2-T2-escalation.md`.
 
 ## Architecture map (where things live)
 
@@ -52,8 +73,9 @@ Branch `master` holds everything; `impl/T-6-string-questions` and
 - `core/config` — `~/.maestro/config.toml`, written with commented defaults on first run
   and applied into the settings table at startup (one lookup path at runtime).
 - `src/state/*` — zustand stores fed by bus events through `onBusEvent`.
-- `sidecar/src` — `protocol.ts` (mirror of `core/agent/protocol.rs`), `engine.ts`
-  (Claude Agent SDK, streaming input mode), `mock.ts` (scripted, no API usage).
+- `sidecar/src` — `protocol.ts` (mirror of `core/agent/protocol.rs`, currently version 2),
+  `engine.ts` (Claude Agent SDK, streaming input mode, runtime setters, dialog bridge),
+  `models.ts` (session-independent model list), `mock.ts` (scripted, no API usage).
 
 ## Conventions and hard-won details
 
@@ -74,8 +96,25 @@ Branch `master` holds everything; `impl/T-6-string-questions` and
 - Hotkeys use Alt (not Ctrl): the embedded CodeMirror editors and inputs own the Ctrl
   combinations. Alt+1…9 select a worktree, Alt+↑/↓ cycle, Alt+C/Alt+D switch panels.
 - Mock sidecar keywords (`MAESTRO_SIDECAR_MOCK=1`): `PERMISSION` → chat permission
-  prompt, `GATE` → push+PR command that the gate intercepts, `CRASH` → kills the
-  process to exercise supervisor recovery.
+  prompt, `GATE` → push+PR command that the gate intercepts, `ASK` → agent question
+  dialog (single-select + multi-select), `CRASH` → kills the process to exercise
+  supervisor recovery. The mock also echoes runtime model/effort/permission switches
+  into its next reply, which is how the round trip is smoke-tested.
+- **Read the SDK types, then verify against the CLI.** `AskUserQuestion` looks like it
+  needs the `onUserDialog` dialog bridge (there is even a `permission_ask_user_question`
+  dialog kind), and declaring it changes nothing. What actually happens with `canUseTool`
+  set: the questions arrive as a **permission request** for tool `AskUserQuestion`, and the
+  answers must ride back on the decision — `{behavior:"allow", updatedInput:{...input,
+answers, annotations}}`, or `{behavior:"deny", message}` to reply instead. Allowing with
+  an unchanged input is a dismissal, which is precisely what "granted permission, then
+  nothing" was. Two probe scripts settled this in minutes; hours of reading did not.
+- Dialog answers are shaped **in the sidecar**, never in the core or the UI: the pending
+  entry carries its own `settle`, so one `DialogAnswer { answers, annotations, feedback }`
+  from the UI resolves either a permission decision or a CLI dialog result. SDK shapes stay
+  behind that boundary.
+- `Options.supportedDialogKinds` is the real opt-in for CLI-raised dialogs — the callback
+  alone receives nothing, and an undeclared kind is never emitted (the flow behind it
+  degrades silently). It is deliberately empty until a kind has a renderer.
 - The Rust toolchain is pinned in `rust-toolchain.toml` (1.97.1) so `clippy -D warnings`
   means the same thing locally and on the runner — a version gap once let four lints
   through to CI. rustup installs it on demand; CI reads the same file via `rustup show`.
@@ -84,10 +123,11 @@ Branch `master` holds everything; `impl/T-6-string-questions` and
   without the env var it is skipped (CI sets it and builds the sidecar first).
 - Auth: the SDK uses the user's Claude Code OAuth login (no `ANTHROPIC_API_KEY` set), so
   sessions consume the subscription quota. Parallel agents burn it faster.
-- Git identity is set **locally** to ESeverdev <egor.sievierin@gmail.com>. A separate
-  GitHub account is still to be created; no remote is configured and nothing has been
-  pushed. Set up SSH/HTTPS auth separation before the first push, and `gh auth` before
-  using the PR gate for real.
+- Git identity ("Git identity"): local `user.name`/`user.email` are ESeverdev
+  <egor.sievierin@gmail.com>, and the remote uses the SSH alias `github-maestro` with a
+  dedicated key (`~/.ssh/id_ed25519_maestro`, `IdentitiesOnly yes`) so the work account
+  can never push here. `gh`'s active account is **global**: switch accounts before running
+  `gh` against a work repository.
 
 ## Fix rounds (what the reviews caught)
 
@@ -112,7 +152,7 @@ Findings and the full fix list live in `docs/tasks/T6-fixes.md` and
 
 ```sh
 cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-cd .. && npm run lint && npm run typecheck && npm run format:check && npx vite build
+cd .. && npm run lint && npm run typecheck && npm run format:check && npm test && npx vite build
 cd sidecar && npm run build && npm run lint
 ```
 

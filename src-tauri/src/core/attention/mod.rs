@@ -37,6 +37,8 @@ pub enum AttentionTarget {
 #[serde(rename_all = "snake_case")]
 pub enum AttentionKind {
     PermissionRequest,
+    /// The agent raised a blocking dialog (AskUserQuestion) and cannot continue.
+    Question,
     Gate,
     SessionFailed,
     LineQuestion,
@@ -48,6 +50,7 @@ impl AttentionKind {
     fn priority(&self) -> u8 {
         match self {
             AttentionKind::Gate => 3,
+            AttentionKind::Question => 3,
             AttentionKind::PermissionRequest => 2,
             AttentionKind::SessionFailed => 1,
             AttentionKind::LineQuestion => 0,
@@ -57,9 +60,9 @@ impl AttentionKind {
     pub fn target(&self) -> AttentionTarget {
         match self {
             AttentionKind::Gate => AttentionTarget::Gate,
-            AttentionKind::PermissionRequest | AttentionKind::SessionFailed => {
-                AttentionTarget::Chat
-            }
+            AttentionKind::PermissionRequest
+            | AttentionKind::Question
+            | AttentionKind::SessionFailed => AttentionTarget::Chat,
             AttentionKind::LineQuestion => AttentionTarget::Diff,
         }
     }
@@ -163,6 +166,24 @@ impl AttentionManager {
                     message: title.unwrap_or_else(|| format!("{tool} needs permission")),
                     created_at: Utc::now(),
                 });
+            }
+            Event::SessionUserDialog {
+                session_id,
+                request_id,
+                ..
+            } => {
+                self.add(AttentionItem {
+                    id: format!("dialog:{request_id}"),
+                    kind: AttentionKind::Question,
+                    target: AttentionKind::Question.target(),
+                    branch: None,
+                    session_id: Some(session_id),
+                    message: "The agent is waiting for an answer".to_string(),
+                    created_at: Utc::now(),
+                });
+            }
+            Event::SessionUserDialogResolved { request_id, .. } => {
+                self.remove(&format!("dialog:{request_id}"));
             }
             Event::GatePending {
                 gate_id,
@@ -289,6 +310,29 @@ mod tests {
     fn manager() -> (Arc<AttentionManager>, EventBus) {
         let bus = EventBus::new();
         (Arc::new(AttentionManager::new(bus.clone())), bus)
+    }
+
+    #[tokio::test]
+    async fn question_dialog_enqueues_and_clears_on_resolution() {
+        let (mgr, _bus) = manager();
+
+        mgr.handle(Event::SessionUserDialog {
+            session_id: "s1".into(),
+            request_id: "dlg-1".into(),
+            dialog_kind: "ask_user_question".into(),
+            payload: serde_json::json!({ "questions": [] }),
+        });
+        let items = mgr.list().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, AttentionKind::Question);
+        assert_eq!(items[0].target, AttentionTarget::Chat);
+
+        // Answered (or dismissed, or timed out): the queue must not keep nagging.
+        mgr.handle(Event::SessionUserDialogResolved {
+            session_id: "s1".into(),
+            request_id: "dlg-1".into(),
+        });
+        assert!(mgr.list().unwrap().is_empty());
     }
 
     #[tokio::test]

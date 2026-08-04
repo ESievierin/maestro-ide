@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import { Icon, StatusDot } from "../components/Icon";
 import remarkGfm from "remark-gfm";
 import { activeSessionCount, useSessions } from "../state/sessions";
-import type { CommandInfo, Session, TranscriptItem } from "../types/sessions";
+import type { CommandInfo, ModelOption, Session, TranscriptItem } from "../types/sessions";
 import {
   EFFORTS,
   GATE_UNSAFE_MODES,
@@ -13,6 +13,7 @@ import {
   READ_ONLY_MODE,
 } from "../types/sessions";
 import type { WorktreeInfo } from "../types/worktrees";
+import { QuestionDialog } from "./QuestionDialog";
 
 /** Commands handled by Maestro itself, merged into the autocomplete list. */
 const LOCAL_COMMANDS: (CommandInfo & { local: true })[] = [
@@ -22,7 +23,42 @@ const LOCAL_COMMANDS: (CommandInfo & { local: true })[] = [
     argument_hint: "",
     local: true,
   },
+  {
+    name: "model",
+    description: "Maestro: switch this session's model (blank = default)",
+    argument_hint: "<model-id>",
+    local: true,
+  },
+  {
+    name: "effort",
+    description: "Maestro: switch this session's reasoning effort",
+    argument_hint: "<low|medium|high|xhigh|max>",
+    local: true,
+  },
+  {
+    name: "permissions",
+    description: "Maestro: switch this session's permission mode",
+    argument_hint: "<default|acceptEdits|auto|plan>",
+    local: true,
+  },
 ];
+
+/** A local command whose argument Maestro can complete, with the values to offer. */
+function localArgumentValues(
+  command: string,
+  models: ModelOption[],
+): { value: string; label: string }[] {
+  switch (command) {
+    case "model":
+      return models.map((m) => ({ value: m.id, label: m.display_name }));
+    case "effort":
+      return EFFORTS.map((e) => ({ value: e, label: e }));
+    case "permissions":
+      return PERMISSION_MODES.map((m) => ({ value: m, label: PERMISSION_MODE_LABELS[m] ?? m }));
+    default:
+      return [];
+  }
+}
 
 function StatusPill({ status }: { status: Session["status"] }) {
   const live = status === "streaming" || status === "spawning";
@@ -133,6 +169,25 @@ function TranscriptView({ sessionId, items }: { sessionId: string; items: Transc
             );
           case "permission_request":
             return <PermissionEntry key={i} sessionId={sessionId} item={item} />;
+          case "dialog":
+            return (
+              <div key={i} className="t-dialog">
+                <div className="t-dialog-title">
+                  <Icon name="question" /> {item.title}
+                </div>
+                {item.lines.map((line, j) => (
+                  <div key={j} className="t-dialog-line">
+                    {line}
+                  </div>
+                ))}
+              </div>
+            );
+          case "settings":
+            return (
+              <div key={i} className="t-status">
+                <Icon name="sliders" /> {item.text}
+              </div>
+            );
         }
       })}
       <div ref={bottomRef} />
@@ -142,33 +197,75 @@ function TranscriptView({ sessionId, items }: { sessionId: string; items: Transc
 
 type SuggestedCommand = CommandInfo & { local?: boolean };
 
-/** Chat input with slash-command autocomplete fed by the session's command list. */
+/** One entry in the autocomplete list: either a command or a value for its argument. */
+type Suggestion =
+  | { kind: "command"; command: SuggestedCommand }
+  | { kind: "value"; command: string; value: string; label: string };
+
+/**
+ * Chat input with slash-command autocomplete. Command names come from the session
+ * (the CLI reports them) plus Maestro's own; for Maestro's runtime commands the argument
+ * is completed too, which is where the model *ids* become discoverable.
+ */
 function ChatInput({
   disabled,
   commands,
+  models,
   onSend,
   onResume,
+  onLocal,
 }: {
   disabled: boolean;
   commands: CommandInfo[];
+  models: ModelOption[];
   onSend: (text: string) => void;
   onResume: () => void;
+  onLocal: (command: string, argument: string) => void;
 }) {
   const [value, setValue] = useState("");
   const [highlight, setHighlight] = useState(0);
 
-  const suggestions = useMemo<SuggestedCommand[]>(() => {
-    if (!value.startsWith("/") || value.includes(" ")) return [];
-    const query = value.slice(1).toLowerCase();
-    const all: SuggestedCommand[] = [...LOCAL_COMMANDS, ...commands];
-    return all.filter((c) => c.name.toLowerCase().startsWith(query)).slice(0, 8);
-  }, [value, commands]);
+  const suggestions = useMemo<Suggestion[]>(() => {
+    if (!value.startsWith("/")) return [];
+    const [head, ...rest] = value.slice(1).split(" ");
+    if (rest.length === 0) {
+      const query = head.toLowerCase();
+      const all: SuggestedCommand[] = [...LOCAL_COMMANDS, ...commands];
+      return all
+        .filter((c) => c.name.toLowerCase().startsWith(query))
+        .slice(0, 8)
+        .map((command) => ({ kind: "command", command }));
+    }
+    const partial = rest.join(" ").toLowerCase();
+    return localArgumentValues(head, models)
+      .filter(
+        (v) => v.value.toLowerCase().includes(partial) || v.label.toLowerCase().includes(partial),
+      )
+      .slice(0, 8)
+      .map((v) => ({ kind: "value", command: head, value: v.value, label: v.label }));
+  }, [value, commands, models]);
 
-  const accept = (command: SuggestedCommand) => {
-    if (command.local && command.name === "resume") {
-      setValue("");
-      setHighlight(0);
+  const runLocal = (name: string, argument: string) => {
+    setValue("");
+    setHighlight(0);
+    if (name === "resume") {
       onResume();
+      return;
+    }
+    onLocal(name, argument);
+  };
+
+  const accept = (suggestion: Suggestion) => {
+    if (suggestion.kind === "value") {
+      // Picking the value *is* the action — filling it in would leave Enter with
+      // nothing to do, since the suggestion list still matches the completed text.
+      runLocal(suggestion.command, suggestion.value);
+      return;
+    }
+    const command = suggestion.command;
+    // A local command with no argument runs immediately; the rest just get filled in.
+    if (command.local && command.argument_hint === "") {
+      runLocal(command.name, "");
       return;
     }
     setValue(`/${command.name} `);
@@ -178,6 +275,13 @@ function ChatInput({
   const submit = () => {
     const text = value.trim();
     if (text.length === 0) return;
+    if (text.startsWith("/")) {
+      const [head, ...rest] = text.slice(1).split(" ");
+      if (LOCAL_COMMANDS.some((c) => c.name === head)) {
+        runLocal(head, rest.join(" ").trim());
+        return;
+      }
+    }
     onSend(text);
     setValue("");
     setHighlight(0);
@@ -187,18 +291,28 @@ function ChatInput({
     <div className="chat-input">
       {suggestions.length > 0 && (
         <div className="autocomplete">
-          {suggestions.map((c, i) => (
+          {suggestions.map((s, i) => (
             <button
-              key={c.name}
+              key={s.kind === "command" ? s.command.name : s.value}
               className={`autocomplete-item ${i === highlight ? "highlight" : ""}`}
               onMouseEnter={() => setHighlight(i)}
-              onClick={() => accept(c)}
+              onClick={() => accept(s)}
             >
-              <span className="ac-name">
-                /{c.name} {c.argument_hint && <em>{c.argument_hint}</em>}
-                {c.local && <span className="ac-local">maestro</span>}
-              </span>
-              <span className="ac-desc">{c.description}</span>
+              {s.kind === "command" ? (
+                <>
+                  <span className="ac-name">
+                    /{s.command.name}{" "}
+                    {s.command.argument_hint && <em>{s.command.argument_hint}</em>}
+                    {s.command.local && <span className="ac-local">maestro</span>}
+                  </span>
+                  <span className="ac-desc">{s.command.description}</span>
+                </>
+              ) : (
+                <>
+                  <span className="ac-name">{s.value}</span>
+                  <span className="ac-desc">{s.label}</span>
+                </>
+              )}
             </button>
           ))}
         </div>
@@ -225,12 +339,7 @@ function ChatInput({
                 setHighlight((h) => (h - 1 + suggestions.length) % suggestions.length);
                 return;
               }
-              if (e.key === "Tab") {
-                e.preventDefault();
-                accept(suggestions[highlight]);
-                return;
-              }
-              if (e.key === "Enter") {
+              if (e.key === "Tab" || e.key === "Enter") {
                 e.preventDefault();
                 accept(suggestions[highlight]);
                 return;
@@ -382,12 +491,98 @@ function ResumePicker({
   );
 }
 
+/**
+ * Live model / effort / permission switches. These apply to the running session — the
+ * core forwards them to the CLI, persists them, and reports back through
+ * `session.settings_changed`, so the selectors always show what the agent is really on.
+ */
+function RuntimeControls({ session }: { session: Session }) {
+  const models = useSessions((s) => s.models);
+  const refreshModels = useSessions((s) => s.refreshModels);
+  const setModel = useSessions((s) => s.setModel);
+  const setEffort = useSessions((s) => s.setEffort);
+  const setPermissionMode = useSessions((s) => s.setPermissionMode);
+
+  useEffect(() => {
+    void refreshModels();
+  }, [refreshModels]);
+
+  // The CLI may report a model this list doesn't have (an alias, or a newer build).
+  const known = models.some((m) => m.id === session.model);
+
+  return (
+    <div className="runtime-controls">
+      <label title="Model used for the next turn">
+        <Icon name="sliders" />
+        <select
+          value={known ? (session.model ?? "") : ""}
+          onChange={(e) => void setModel(session.id, e.target.value)}
+        >
+          <option value="">default{!known && session.model ? ` (${session.model})` : ""}</option>
+          {models
+            .filter((m) => m.id !== "default")
+            .map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.display_name} — {m.id}
+              </option>
+            ))}
+        </select>
+      </label>
+      <label title="Reasoning effort">
+        <select
+          value={session.effort ?? ""}
+          onChange={(e) => void setEffort(session.id, e.target.value)}
+        >
+          <option value="">effort: default</option>
+          {EFFORTS.map((e) => (
+            <option key={e} value={e}>
+              {e}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label title="Permission mode">
+        <select
+          value={session.permission_mode ?? ""}
+          onChange={(e) => void setPermissionMode(session.id, e.target.value)}
+        >
+          {session.permission_mode === null && <option value="">permissions: default</option>}
+          {PERMISSION_MODES.map((m) => (
+            <option key={m} value={m}>
+              {PERMISSION_MODE_LABELS[m] ?? m}
+            </option>
+          ))}
+        </select>
+      </label>
+      {GATE_UNSAFE_MODES.includes(session.permission_mode ?? "") && (
+        <span className="pill pill-warn" title="A classifier may approve gated commands">
+          <Icon name="alert" /> gate not guaranteed
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
   const branch = worktree.branch as string;
   const sessions = useSessions((s) => s.byBranch[branch]);
   const transcripts = useSessions((s) => s.transcripts);
   const commands = useSessions((s) => s.commands);
-  const { fetch, send, interrupt, close, remove, spawn, error, clearError } = useSessions();
+  const {
+    fetch,
+    send,
+    interrupt,
+    close,
+    remove,
+    spawn,
+    models,
+    dialogs,
+    setModel,
+    setEffort,
+    setPermissionMode,
+    error,
+    clearError,
+  } = useSessions();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showResumePicker, setShowResumePicker] = useState(false);
 
@@ -399,6 +594,24 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
   const list = sessions ?? [];
   const selected = list.find((s) => s.id === selectedId) ?? null;
   const activeCount = activeSessionCount(list);
+
+  // Any session of this worktree can be blocked on a dialog, not just the visible one.
+  const pendingDialog =
+    (selected && dialogs[selected.id]) || list.map((s) => dialogs[s.id]).find(Boolean) || null;
+
+  const runLocalCommand = (session: Session, command: string, argument: string) => {
+    switch (command) {
+      case "model":
+        void setModel(session.id, argument);
+        break;
+      case "effort":
+        void setEffort(session.id, argument);
+        break;
+      case "permissions":
+        void setPermissionMode(session.id, argument);
+        break;
+    }
+  };
 
   const resume = async (source: Session) => {
     const session = await spawn({
@@ -447,11 +660,15 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
       {selected ? (
         <>
           <div className="session-toolbar">
-            <span className="session-meta">
-              {selected.model ?? "default model"}
-              {selected.effort ? ` · ${selected.effort}` : ""}
-              {selected.permission_mode ? ` · ${selected.permission_mode}` : ""}
-            </span>
+            {isTerminalStatus(selected.status) ? (
+              <span className="session-meta">
+                {selected.model ?? "default model"}
+                {selected.effort ? ` · ${selected.effort}` : ""}
+                {selected.permission_mode ? ` · ${selected.permission_mode}` : ""}
+              </span>
+            ) : (
+              <RuntimeControls session={selected} />
+            )}
             <div className="actions">
               {isTerminalStatus(selected.status) ? (
                 <>
@@ -496,13 +713,18 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
           <ChatInput
             disabled={isTerminalStatus(selected.status)}
             commands={commands[selected.id] ?? []}
+            models={models}
             onSend={(text) => void send(selected.id, text)}
             onResume={() => setShowResumePicker(true)}
+            onLocal={(command, argument) => runLocalCommand(selected, command, argument)}
           />
         </>
       ) : (
         <NewSessionForm branch={branch} onSpawned={(s) => setSelectedId(s.id)} />
       )}
+
+      {/* A dialog blocks the agent, so it is modal even if the user switched tabs. */}
+      {pendingDialog && <QuestionDialog dialog={pendingDialog} />}
 
       {showResumePicker && (
         <ResumePicker

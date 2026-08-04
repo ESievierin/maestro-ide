@@ -1497,3 +1497,196 @@ button:active:not(:disabled) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---------- Runtime session controls (S3) ---------- */
+
+.runtime-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.runtime-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: #666e80;
+}
+
+.runtime-controls select {
+  background: #1c1f26;
+  color: #b9c0cf;
+  border: 1px solid #2a2e37;
+  border-radius: 6px;
+  padding: 0.15rem 0.3rem;
+  font-size: 0.72rem;
+  max-width: 15rem;
+}
+
+.runtime-controls select:hover {
+  border-color: #3a3f4b;
+}
+
+.pill-warn {
+  color: #e0af68;
+  border-color: #5c4a2d;
+}
+
+/* ---------- Agent question dialog (AskUserQuestion) ---------- */
+
+.q-modal {
+  width: 620px;
+  max-height: 86vh;
+  overflow: auto;
+}
+
+.q-card {
+  border: 1px solid #2a2e37;
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.75rem;
+  background: #191c22;
+}
+
+.q-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.q-chip {
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #7aa2f7;
+  border: 1px solid #33415e;
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+}
+
+.q-multi {
+  font-size: 0.65rem;
+  color: #666e80;
+}
+
+.q-text {
+  margin: 0.45rem 0 0.6rem;
+  font-size: 0.88rem;
+}
+
+.q-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.q-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  text-align: left;
+  background: #1c1f26;
+  border: 1px solid #2a2e37;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  transition:
+    border-color var(--fast) var(--ease),
+    background var(--fast) var(--ease);
+}
+
+.q-option:hover {
+  border-color: #3a3f4b;
+}
+
+.q-option.picked {
+  border-color: #33415e;
+  background: #1c2230;
+}
+
+.q-option-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #e6e8ee;
+  font-size: 0.82rem;
+}
+
+.q-option.picked .q-option-label {
+  color: #7aa2f7;
+}
+
+.q-option-desc {
+  color: #8b93a5;
+  font-size: 0.74rem;
+  padding-left: 1.3rem;
+}
+
+.q-preview {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.6rem;
+  background: #14161b;
+  border: 1px solid #2a2e37;
+  border-radius: 6px;
+  color: #b9c0cf;
+  font-size: 0.72rem;
+  max-height: 12rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.q-other {
+  width: 100%;
+  margin-top: 0.5rem;
+  background: #14161b;
+  color: #e6e8ee;
+  border: 1px solid #2a2e37;
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.78rem;
+}
+
+.q-clarify summary {
+  cursor: pointer;
+  color: #8b93a5;
+  font-size: 0.76rem;
+}
+
+.q-clarify textarea {
+  width: 100%;
+  margin-top: 0.4rem;
+  background: #14161b;
+  color: #e6e8ee;
+  border: 1px solid #2a2e37;
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.8rem;
+  font-family: inherit;
+}
+
+.q-modal .modal-actions {
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Answers kept in the transcript, so the session history is complete. */
+.t-dialog {
+  border: 1px solid #33415e;
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  margin: 0.4rem 0;
+  background: #1a1e28;
+}
+
+.t-dialog-title {
+  color: #7aa2f7;
+  font-size: 0.78rem;
+}
+
+.t-dialog-line {
+  color: #b9c0cf;
+  font-size: 0.75rem;
+  margin-top: 0.2rem;
+}

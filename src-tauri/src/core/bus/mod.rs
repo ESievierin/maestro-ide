@@ -50,6 +50,32 @@ pub enum Event {
         title: Option<String>,
     },
 
+    /// The agent asked a blocking question (AskUserQuestion and friends). The UI renders
+    /// `payload` for the known kinds and cancels the rest.
+    #[serde(rename = "session.user_dialog")]
+    SessionUserDialog {
+        session_id: String,
+        request_id: String,
+        dialog_kind: String,
+        payload: serde_json::Value,
+    },
+
+    /// The dialog was answered or dismissed; whatever was waiting on it can stand down.
+    #[serde(rename = "session.user_dialog_resolved")]
+    SessionUserDialogResolved {
+        session_id: String,
+        request_id: String,
+    },
+
+    /// A runtime knob of a live session changed (model / effort / permission mode).
+    #[serde(rename = "session.settings_changed")]
+    SessionSettingsChanged {
+        session_id: String,
+        model: Option<String>,
+        effort: Option<String>,
+        permission_mode: Option<String>,
+    },
+
     #[serde(rename = "session.commands")]
     SessionCommands {
         session_id: String,
@@ -134,6 +160,9 @@ impl Event {
             Event::SessionStreamDelta { .. } => "session.stream_delta",
             Event::SessionToolUse { .. } => "session.tool_use",
             Event::SessionPermissionRequest { .. } => "session.permission_request",
+            Event::SessionUserDialog { .. } => "session.user_dialog",
+            Event::SessionUserDialogResolved { .. } => "session.user_dialog_resolved",
+            Event::SessionSettingsChanged { .. } => "session.settings_changed",
             Event::SessionCommands { .. } => "session.commands",
             Event::SessionModels { .. } => "session.models",
             Event::DiffUpdated { .. } => "diff.updated",

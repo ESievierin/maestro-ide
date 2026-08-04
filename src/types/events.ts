@@ -38,6 +38,28 @@ export type BusEvent =
         title: string | null;
       };
     }
+  | {
+      type: "session.user_dialog";
+      data: {
+        session_id: string;
+        request_id: string;
+        dialog_kind: string;
+        payload: unknown;
+      };
+    }
+  | {
+      type: "session.user_dialog_resolved";
+      data: { session_id: string; request_id: string };
+    }
+  | {
+      type: "session.settings_changed";
+      data: {
+        session_id: string;
+        model: string | null;
+        effort: string | null;
+        permission_mode: string | null;
+      };
+    }
   | { type: "diff.updated"; data: { branch: string } }
   | {
       type: "gate.pending";

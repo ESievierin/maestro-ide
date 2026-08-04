@@ -59,6 +59,19 @@ pub trait AgentEngine: Send + Sync {
 
     /// Ask the CLI which models it offers; the answer arrives as a `models` event.
     fn list_models(&self, cwd: &str) -> Result<()>;
+
+    /// Runtime knobs of a live session. Empty strings clear model/effort overrides.
+    fn set_model(&self, session_id: &str, model: &str) -> Result<()>;
+    fn set_effort(&self, session_id: &str, effort: &str) -> Result<()>;
+    fn set_permission_mode(&self, session_id: &str, mode: &str) -> Result<()>;
+
+    /// Answer a dialog the CLI asked the host to render.
+    fn respond_user_dialog(
+        &self,
+        request_id: &str,
+        behavior: &str,
+        result: Option<Value>,
+    ) -> Result<()>;
 }
 
 /// How to launch the sidecar process.
@@ -178,6 +191,10 @@ fn request_id(request: &SidecarRequest) -> Option<u64> {
         | SidecarRequest::Close { id, .. }
         | SidecarRequest::PermissionResponse { id, .. }
         | SidecarRequest::ListModels { id, .. }
+        | SidecarRequest::SetModel { id, .. }
+        | SidecarRequest::SetEffort { id, .. }
+        | SidecarRequest::SetPermissionMode { id, .. }
+        | SidecarRequest::UserDialogResponse { id, .. }
         | SidecarRequest::Shutdown { id } => Some(*id),
     }
 }
@@ -392,6 +409,48 @@ impl AgentEngine for SidecarEngine {
         let request = SidecarRequest::ListModels {
             id: self.next_request_id(),
             cwd: cwd.to_string(),
+        };
+        self.write(&request, None)
+    }
+
+    fn set_model(&self, session_id: &str, model: &str) -> Result<()> {
+        let request = SidecarRequest::SetModel {
+            id: self.next_request_id(),
+            session_id: session_id.to_string(),
+            model: model.to_string(),
+        };
+        self.write(&request, Some(session_id))
+    }
+
+    fn set_effort(&self, session_id: &str, effort: &str) -> Result<()> {
+        let request = SidecarRequest::SetEffort {
+            id: self.next_request_id(),
+            session_id: session_id.to_string(),
+            effort: effort.to_string(),
+        };
+        self.write(&request, Some(session_id))
+    }
+
+    fn set_permission_mode(&self, session_id: &str, mode: &str) -> Result<()> {
+        let request = SidecarRequest::SetPermissionMode {
+            id: self.next_request_id(),
+            session_id: session_id.to_string(),
+            permission_mode: mode.to_string(),
+        };
+        self.write(&request, Some(session_id))
+    }
+
+    fn respond_user_dialog(
+        &self,
+        request_id: &str,
+        behavior: &str,
+        result: Option<Value>,
+    ) -> Result<()> {
+        let request = SidecarRequest::UserDialogResponse {
+            id: self.next_request_id(),
+            request_id: request_id.to_string(),
+            behavior: behavior.to_string(),
+            result,
         };
         self.write(&request, None)
     }

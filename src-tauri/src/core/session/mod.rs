@@ -112,6 +112,22 @@ pub fn is_writer_mode(permission_mode: Option<&str>) -> bool {
     permission_mode != Some(READ_ONLY_MODE)
 }
 
+/// Reasoning-effort levels the CLI accepts. An empty string clears the override.
+pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// Permission modes the CLI accepts. `bypassPermissions` and `dontAsk` are absent on
+/// purpose: with them the SDK never calls `canUseTool`, which is what the commit/push
+/// gate hangs on, so they would silently disarm it.
+pub const PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "auto", "plan"];
+
+pub fn is_known_effort(effort: &str) -> bool {
+    effort.is_empty() || EFFORT_LEVELS.contains(&effort)
+}
+
+pub fn is_known_permission_mode(mode: &str) -> bool {
+    PERMISSION_MODES.contains(&mode)
+}
+
 /// Persisted session row. `branch` is the foreign key linking worktree ↔ task ↔ PR.
 /// `sdk_session_id` is the Claude Agent SDK session id, persisted for resume.
 #[derive(Clone, Debug, Serialize, Deserialize)]

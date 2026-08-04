@@ -162,7 +162,11 @@ pub fn run() {
             ipc::reset_prompt,
             ipc::list_attention,
             ipc::dismiss_attention,
-            ipc::refresh_models
+            ipc::refresh_models,
+            ipc::set_session_model,
+            ipc::set_session_effort,
+            ipc::set_session_permission_mode,
+            ipc::respond_user_dialog
         ])
         .setup(move |app| {
             ipc::spawn_event_forwarder(app.handle().clone(), bus.clone());

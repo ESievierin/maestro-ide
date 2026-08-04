@@ -1,7 +1,7 @@
 // Rust ↔ sidecar protocol, version 1. NDJSON over stdio: one JSON object per line.
 // Keep in sync with src-tauri/src/core/agent/protocol.rs.
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 // ---------- Requests (core → sidecar) ----------
 
@@ -46,6 +46,60 @@ export interface PermissionResponseRequest {
   message?: string;
 }
 
+/** Change the model of a running session (Query.setModel). */
+export interface SetModelRequest {
+  type: "set_model";
+  id: number;
+  session_id: string;
+  /** Empty string clears the override and returns to the default. */
+  model: string;
+}
+
+/** Change the effort of a running session (Query.applyFlagSettings). */
+export interface SetEffortRequest {
+  type: "set_effort";
+  id: number;
+  session_id: string;
+  /** Empty string clears the override. */
+  effort: string;
+}
+
+/** Change the permission mode of a running session (Query.setPermissionMode). */
+export interface SetPermissionModeRequest {
+  type: "set_permission_mode";
+  id: number;
+  session_id: string;
+  permission_mode: string;
+}
+
+/**
+ * A dialog answer in Maestro's own terms. The engine translates it into the
+ * CLI-specific result shape of the dialog it belongs to, so neither the core nor the
+ * UI has to know that (say) `permission_ask_user_question` is answered with a
+ * permission decision carrying an updated tool input.
+ */
+export interface DialogAnswer {
+  /** Question text → chosen option label. Multi-select answers are comma-separated. */
+  answers?: Record<string, string>;
+  /** Per-question extras the CLI hands back to the model (option preview, user notes). */
+  annotations?: Record<string, { preview?: string; notes?: string }>;
+  /**
+   * Free text instead of picking options. The agent is told the user wants to clarify
+   * the questions rather than answer them as asked.
+   */
+  feedback?: string;
+}
+
+/** The host's answer to a `user_dialog_request`. */
+export interface UserDialogResponseRequest {
+  type: "user_dialog_response";
+  id: number;
+  request_id: string;
+  /** `completed` carries the answer; `cancelled` means the user dismissed the dialog. */
+  behavior: "completed" | "cancelled";
+  result?: DialogAnswer;
+}
+
 /** Ask the CLI which models it offers. No session, no turn, no tokens. */
 export interface ListModelsRequest {
   type: "list_models";
@@ -60,6 +114,10 @@ export interface ShutdownRequest {
 
 export type SidecarRequest =
   | ListModelsRequest
+  | SetModelRequest
+  | SetEffortRequest
+  | SetPermissionModeRequest
+  | UserDialogResponseRequest
   | SpawnRequest
   | SendRequest
   | InterruptRequest
@@ -101,6 +159,19 @@ export type SidecarEvent =
       args: Record<string, unknown>;
       title?: string;
     }
+  /**
+   * The CLI wants a blocking dialog rendered (AskUserQuestion and friends). `dialog_kind`
+   * is an open union: a host that does not recognise one must answer `cancelled`, or the
+   * agent's turn hangs waiting for an answer that never comes.
+   */
+  | {
+      type: "user_dialog_request";
+      session_id: string;
+      request_id: string;
+      dialog_kind: string;
+      payload: Record<string, unknown>;
+      tool_use_id?: string;
+    }
   | { type: "status"; session_id: string; status: SessionRuntimeStatus }
   | {
       type: "result";
@@ -131,4 +202,13 @@ export interface SessionHandle {
     updatedArgs?: Record<string, unknown>,
     message?: string,
   ): boolean;
+  /** Returns false when the dialog id is unknown to this session. */
+  respondUserDialog(
+    requestId: string,
+    behavior: "completed" | "cancelled",
+    result?: DialogAnswer,
+  ): boolean;
+  setModel(model: string): Promise<void>;
+  setEffort(effort: string): Promise<void>;
+  setPermissionMode(mode: string): Promise<void>;
 }

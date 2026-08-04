@@ -541,6 +541,26 @@ mod tests {
         fn list_models(&self, _cwd: &str) -> Result<()> {
             Ok(())
         }
+        fn set_model(&self, _session_id: &str, _model: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn set_effort(&self, _session_id: &str, _effort: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn set_permission_mode(&self, _session_id: &str, _mode: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn respond_user_dialog(
+            &self,
+            _request_id: &str,
+            _behavior: &str,
+            _result: Option<serde_json::Value>,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     fn spawn_params(branch: &str) -> SpawnParams {

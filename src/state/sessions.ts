@@ -1,7 +1,14 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { CommandInfo, ModelOption, Session, TranscriptItem } from "../types/sessions";
-import { ACTIVE_STATUSES, FALLBACK_MODELS } from "../types/sessions";
+import type {
+  CommandInfo,
+  DialogAnswer,
+  ModelOption,
+  Session,
+  TranscriptItem,
+  UserDialog,
+} from "../types/sessions";
+import { ACTIVE_STATUSES, FALLBACK_MODELS, isTerminalStatus } from "../types/sessions";
 import { onBusEvent } from "./events";
 
 const MODELS_CACHE_KEY = "maestro.models";
@@ -43,6 +50,11 @@ interface SessionsState {
   models: ModelOption[];
   /** Ask the CLI for the authoritative list; safe to call repeatedly. */
   refreshModels: () => Promise<void>;
+  /**
+   * Dialogs the agent is blocked on, per session id. One at a time per session: the CLI
+   * raises the next only after this one is answered.
+   */
+  dialogs: Record<string, UserDialog>;
   error: string | null;
 
   fetch: (branch: string) => Promise<void>;
@@ -53,6 +65,11 @@ interface SessionsState {
   close: (sessionId: string) => Promise<void>;
   remove: (sessionId: string, branch: string) => Promise<boolean>;
   respondPermission: (sessionId: string, requestId: string, allow: boolean) => Promise<void>;
+  /** Answer (or dismiss, with `null`) the dialog the agent is waiting on. */
+  respondDialog: (sessionId: string, answer: DialogAnswer | null) => Promise<void>;
+  setModel: (sessionId: string, model: string) => Promise<void>;
+  setEffort: (sessionId: string, effort: string) => Promise<void>;
+  setPermissionMode: (sessionId: string, mode: string) => Promise<void>;
   clearError: () => void;
 }
 
@@ -80,6 +97,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
   transcripts: {},
   commands: {},
   models: loadCachedModels(),
+  dialogs: {},
   error: null,
 
   refreshModels: async () => {
@@ -188,8 +206,64 @@ export const useSessions = create<SessionsState>((set, get) => ({
     }
   },
 
+  respondDialog: async (sessionId, answer) => {
+    const dialog = get().dialogs[sessionId];
+    if (!dialog) return;
+    try {
+      // `null` result reaches the core as "dismissed"; the sidecar then tells the agent
+      // the question went unanswered instead of leaving it to a CLI default.
+      await invoke("respond_user_dialog", { requestId: dialog.requestId, result: answer });
+    } catch (e) {
+      set({ error: String(e) });
+      return;
+    }
+    set((s) => {
+      const dialogs = { ...s.dialogs };
+      delete dialogs[sessionId];
+      return {
+        dialogs,
+        transcripts: appendTranscript(s.transcripts, sessionId, summarize(answer)),
+      };
+    });
+  },
+
+  setModel: async (sessionId, model) => {
+    try {
+      await invoke("set_session_model", { sessionId, model });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  setEffort: async (sessionId, effort) => {
+    try {
+      await invoke("set_session_effort", { sessionId, effort });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  setPermissionMode: async (sessionId, mode) => {
+    try {
+      await invoke("set_session_permission_mode", { sessionId, mode });
+    } catch (e) {
+      // Refused when it would create a second writer on the branch — show the reason.
+      set({ error: String(e) });
+    }
+  },
+
   clearError: () => set({ error: null }),
 }));
+
+/** Transcript entry for an answered dialog, built from the answer alone. */
+function summarize(answer: DialogAnswer | null): TranscriptItem {
+  if (!answer) return { kind: "dialog", title: "Question dismissed", lines: [] };
+  if (answer.feedback?.trim()) {
+    return { kind: "dialog", title: "Asked the agent to clarify", lines: [answer.feedback.trim()] };
+  }
+  const lines = Object.entries(answer.answers ?? {}).map(([q, a]) => `${q} → ${a}`);
+  return { kind: "dialog", title: "Answered", lines };
+}
 
 /** Count of live sessions per branch — used for WorktreeList badges. */
 export function activeSessionCount(sessions: Session[] | undefined): number {
@@ -203,9 +277,14 @@ onBusEvent((event) => {
     case "session.status_changed": {
       const { branch, session_id, status } = event.data;
       useSessions.setState((s) => {
+        // A finished session can no longer answer a dialog; drop it or the modal sticks.
+        const dialogs =
+          s.dialogs[session_id] && isTerminalStatus(status) ? { ...s.dialogs } : s.dialogs;
+        if (dialogs !== s.dialogs) delete dialogs[session_id];
         const sessions = s.byBranch[branch];
-        if (!sessions) return {};
+        if (!sessions) return { dialogs };
         return {
+          dialogs,
           byBranch: {
             ...s.byBranch,
             [branch]: sessions.map((sess) => (sess.id === session_id ? { ...sess, status } : sess)),
@@ -249,6 +328,64 @@ onBusEvent((event) => {
           resolved: "pending",
         }),
       }));
+      break;
+    }
+    case "session.user_dialog": {
+      const { session_id, request_id, dialog_kind, payload } = event.data;
+      useSessions.setState((s) => ({
+        dialogs: {
+          ...s.dialogs,
+          [session_id]: {
+            sessionId: session_id,
+            requestId: request_id,
+            dialogKind: dialog_kind,
+            payload,
+          },
+        },
+      }));
+      break;
+    }
+    case "session.user_dialog_resolved": {
+      // Answered here or elsewhere (another window, a timeout): the modal must go.
+      const { session_id, request_id } = event.data;
+      useSessions.setState((s) => {
+        if (s.dialogs[session_id]?.requestId !== request_id) return {};
+        const dialogs = { ...s.dialogs };
+        delete dialogs[session_id];
+        return { dialogs };
+      });
+      break;
+    }
+    case "session.settings_changed": {
+      const { session_id, model, effort, permission_mode } = event.data;
+      const parts = [
+        model !== null && `model: ${model || "default"}`,
+        effort !== null && `effort: ${effort || "default"}`,
+        permission_mode !== null && `permissions: ${permission_mode}`,
+      ].filter(Boolean) as string[];
+      useSessions.setState((s) => {
+        const byBranch = { ...s.byBranch };
+        for (const [branch, list] of Object.entries(byBranch)) {
+          if (!list.some((sess) => sess.id === session_id)) continue;
+          byBranch[branch] = list.map((sess) =>
+            sess.id === session_id
+              ? {
+                  ...sess,
+                  model: model ?? sess.model,
+                  effort: effort ?? sess.effort,
+                  permission_mode: permission_mode ?? sess.permission_mode,
+                }
+              : sess,
+          );
+        }
+        return {
+          byBranch,
+          transcripts: appendTranscript(s.transcripts, session_id, {
+            kind: "settings",
+            text: parts.join(" · "),
+          }),
+        };
+      });
       break;
     }
     case "session.commands": {

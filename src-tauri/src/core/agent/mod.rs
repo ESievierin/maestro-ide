@@ -31,6 +31,8 @@ pub struct SpawnSessionRequest {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
+    /// Thinking budget: see [`AgentEngine::set_thinking`].
+    pub thinking: Option<String>,
     pub resume_id: Option<String>,
 }
 
@@ -64,6 +66,9 @@ pub trait AgentEngine: Send + Sync {
     fn set_model(&self, session_id: &str, model: &str) -> Result<()>;
     fn set_effort(&self, session_id: &str, effort: &str) -> Result<()>;
     fn set_permission_mode(&self, session_id: &str, mode: &str) -> Result<()>;
+    /// `""`/`default` restores the CLI default, `off` disables thinking, a decimal string
+    /// sets a token budget.
+    fn set_thinking(&self, session_id: &str, thinking: &str) -> Result<()>;
 
     /// Answer a dialog the CLI asked the host to render.
     fn respond_user_dialog(
@@ -194,6 +199,7 @@ fn request_id(request: &SidecarRequest) -> Option<u64> {
         | SidecarRequest::SetModel { id, .. }
         | SidecarRequest::SetEffort { id, .. }
         | SidecarRequest::SetPermissionMode { id, .. }
+        | SidecarRequest::SetThinking { id, .. }
         | SidecarRequest::UserDialogResponse { id, .. }
         | SidecarRequest::Shutdown { id } => Some(*id),
     }
@@ -358,6 +364,7 @@ impl AgentEngine for SidecarEngine {
             model: req.model,
             effort: req.effort,
             permission_mode: req.permission_mode,
+            thinking: req.thinking,
             resume_id: req.resume_id,
         };
         self.write(&request, Some(&req.session_id))
@@ -431,6 +438,15 @@ impl AgentEngine for SidecarEngine {
         self.write(&request, Some(session_id))
     }
 
+    fn set_thinking(&self, session_id: &str, thinking: &str) -> Result<()> {
+        let request = SidecarRequest::SetThinking {
+            id: self.next_request_id(),
+            session_id: session_id.to_string(),
+            thinking: thinking.to_string(),
+        };
+        self.write(&request, Some(session_id))
+    }
+
     fn set_permission_mode(&self, session_id: &str, mode: &str) -> Result<()> {
         let request = SidecarRequest::SetPermissionMode {
             id: self.next_request_id(),
@@ -493,6 +509,7 @@ mod tests {
                     model: None,
                     effort: None,
                     permission_mode: None,
+                    thinking: None,
                     resume_id: None,
                 })
                 .expect("spawn");
@@ -557,6 +574,7 @@ mod tests {
                 model: None,
                 effort: None,
                 permission_mode: None,
+                thinking: None,
                 resume_id: None,
             })
             .expect("spawn after crash");

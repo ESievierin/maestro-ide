@@ -32,13 +32,21 @@ pub enum Event {
     },
 
     #[serde(rename = "session.stream_delta")]
-    SessionStreamDelta { session_id: String, text: String },
+    SessionStreamDelta {
+        session_id: String,
+        text: String,
+        /// Set when a subagent produced the text.
+        parent_tool_use_id: Option<String>,
+    },
 
     #[serde(rename = "session.tool_use")]
     SessionToolUse {
         session_id: String,
+        tool_use_id: String,
         name: String,
         summary: String,
+        /// Set when a subagent made the call, so the UI nests it under the Task entry.
+        parent_tool_use_id: Option<String>,
     },
 
     #[serde(rename = "session.permission_request")]
@@ -60,6 +68,63 @@ pub enum Event {
         payload: serde_json::Value,
     },
 
+    /// A slice of the agent's reasoning. Separate from `session.stream_delta` so the UI
+    /// can fold it away; `parent_tool_use_id` marks subagent thinking.
+    #[serde(rename = "session.thinking_delta")]
+    SessionThinkingDelta {
+        session_id: String,
+        text: String,
+        parent_tool_use_id: Option<String>,
+    },
+
+    /// What a tool returned, matched to its call by `tool_use_id`.
+    #[serde(rename = "session.tool_result")]
+    SessionToolResult {
+        session_id: String,
+        tool_use_id: String,
+        is_error: bool,
+        text: String,
+    },
+
+    /// The agent's checklist as of the latest TodoWrite (replaces the previous one).
+    #[serde(rename = "session.todos")]
+    SessionTodos {
+        session_id: String,
+        items: Vec<crate::core::agent::protocol::TodoItem>,
+    },
+
+    /// Cost and context pressure for a session.
+    #[serde(rename = "session.usage")]
+    SessionUsage {
+        session_id: String,
+        total_cost_usd: Option<f64>,
+        num_turns: Option<u32>,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        context_tokens: Option<u64>,
+        context_max_tokens: Option<u64>,
+        context_percent: Option<f64>,
+    },
+
+    /// Subscription rate-limit state changed (a warning arrives before the wall).
+    #[serde(rename = "session.rate_limit")]
+    SessionRateLimit {
+        session_id: String,
+        status: String,
+        limit_type: Option<String>,
+        utilization: Option<f64>,
+        resets_at: Option<String>,
+    },
+
+    /// A tool call denied without asking the user (classifier, deny rule, `dontAsk`).
+    #[serde(rename = "session.permission_denied")]
+    SessionPermissionDenied {
+        session_id: String,
+        tool: String,
+        reason: String,
+        message: String,
+    },
+
     /// The dialog was answered or dismissed; whatever was waiting on it can stand down.
     #[serde(rename = "session.user_dialog_resolved")]
     SessionUserDialogResolved {
@@ -74,6 +139,7 @@ pub enum Event {
         model: Option<String>,
         effort: Option<String>,
         permission_mode: Option<String>,
+        thinking: Option<String>,
     },
 
     #[serde(rename = "session.commands")]
@@ -161,6 +227,12 @@ impl Event {
             Event::SessionToolUse { .. } => "session.tool_use",
             Event::SessionPermissionRequest { .. } => "session.permission_request",
             Event::SessionUserDialog { .. } => "session.user_dialog",
+            Event::SessionThinkingDelta { .. } => "session.thinking_delta",
+            Event::SessionToolResult { .. } => "session.tool_result",
+            Event::SessionTodos { .. } => "session.todos",
+            Event::SessionUsage { .. } => "session.usage",
+            Event::SessionRateLimit { .. } => "session.rate_limit",
+            Event::SessionPermissionDenied { .. } => "session.permission_denied",
             Event::SessionUserDialogResolved { .. } => "session.user_dialog_resolved",
             Event::SessionSettingsChanged { .. } => "session.settings_changed",
             Event::SessionCommands { .. } => "session.commands",

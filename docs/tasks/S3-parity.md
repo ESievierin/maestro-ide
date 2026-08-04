@@ -102,27 +102,47 @@ Known limits carried forward: `SUPPORTED_DIALOG_KINDS` is empty, so plan approva
 (`permission_exit_plan_mode_v2`) still degrades to its no-dialog behaviour; image
 attachments in answers (`contentBlocks`) are not supported.
 
-## Tier 2 — visible gaps in the transcript
+## Tier 2 — DONE (2026-08-05)
 
-4. **Thinking blocks.** `stream_event` carries thinking deltas; render them collapsed
-   ("thinking…" with an expandable body), separate from answer text.
-5. **Tool results.** We show `tool_use` but never the result; a session where the agent reads
-   files looks like it did nothing. Forward the `user` message's `tool_use_result` /
-   `tool_result` content, matched to its `tool_use_id`, and render it inside the existing
-   collapsible tool entry.
-6. **Subagent activity.** Messages with `parent_tool_use_id` are dropped, so a `Task`/agent
-   call is invisible. Nest them under the spawning tool entry (`subagent_type`,
-   `task_description` are on the message).
-7. **TodoWrite / plan rendering.** The agent's todo list and plan-mode output are structured
-   data; render them as a checklist instead of raw JSON in a tool entry.
-8. **Cost, context and rate limits.** `result` messages carry `total_cost_usd`, `num_turns`,
-   `usage`; `getContextUsage()` gives context pressure; `rate_limit_event` warns before a
-   wall. Show per-session cost + a context meter in the session toolbar.
+4. **Thinking blocks.** Streamed as `session.thinking_delta` and rendered folded, apart
+   from the answer. Two findings, both from probing the real CLI:
+   - With the CLI's default thinking config the tested models produced **no thinking at
+     all**, so there was nothing to show. Thinking is therefore a session knob now
+     (`default` / `off` / 4k / 16k / 32k), at spawn and at runtime
+     (`Query.setMaxThinkingTokens`), persisted like model and effort (migration 5).
+   - A budget alone is not enough: without `display: "summarized"` the assistant message
+     carries a thinking block whose content is **empty**. With it, reasoning arrives as
+     deltas. Both the spawn config and the runtime setter pass it.
+     The assistant message's thinking block is also emitted as a fallback when no deltas
+     streamed, so nothing is lost if a future CLI stops streaming them.
+5. **Tool results.** `tool_use` now carries `tool_use_id`, and `session.tool_result`
+   (matched by that id) fills in the entry, which renders running / done / error with the
+   output folded inside. Output is truncated at 4 000 characters in the sidecar.
+6. **Subagent activity.** Messages with `parent_tool_use_id` are no longer dropped: text,
+   thinking and tool calls from a subagent are nested under the `Task` entry that spawned
+   it, with a count badge on the summary line.
+7. **Plan / checklist.** This CLI has **no `TodoWrite`** — work is tracked as tasks
+   (`task_started` / `task_updated` / `task_notification` system messages). The sidecar
+   folds those into a list and republishes it whole as `session.todos`; `TodoWrite` input
+   is still parsed for older CLIs. Rendered above the input as a checklist.
+8. **Cost, context, rate limits.** `session.usage` carries turn totals (cost, turns,
+   tokens) plus a context reading fetched with `getContextUsage()` after every turn — a
+   control request, so it costs nothing. The session toolbar shows `$cost` and a context
+   bar that turns amber past 80%. `session.rate_limit` drives a pill in the panel header
+   and, when the status is not `allowed`, an `error.raised` warning so it also toasts.
+
+Also brought forward from Tier 3, because it was one event away: **auto-denied tool calls**
+(item 9) arrive as `session.permission_denied` and render as a muted-red transcript entry
+with the deciding reason — previously an agent that got refused by the classifier just
+appeared to skip work.
+
+Verified against the real CLI: tool calls and results, nested subagent activity, a growing
+task checklist, cost $1.05 / context 4% of 1 000 000 tokens on one run, and 867 characters
+of streamed reasoning once a budget and summarized display were set.
 
 ## Tier 3 — completeness, lower urgency
 
-9. **Auto-denied tool calls** (`SDKPermissionDenied`) — currently invisible; render as a
-   denied tool entry so `dontAsk`/`auto` denials are explicable.
+9. ~~**Auto-denied tool calls**~~ — done in Tier 2 (`session.permission_denied`).
 10. **File rewind / checkpoints** (`rewindFiles`) — the CLI's `/rewind`; needs a UI to pick a
     message to rewind to.
 11. **MCP servers** — `mcpServerStatus`, `toggleMcpServer`, `reconnectMcpServer`; the session

@@ -10,6 +10,7 @@ export interface Session {
   model: string | null;
   effort: string | null;
   permission_mode: string | null;
+  thinking: string | null;
   sdk_session_id: string | null;
   created_at: string;
   updated_at: string;
@@ -85,10 +86,54 @@ export function asQuestionPayload(payload: unknown): AskUserQuestionPayload | nu
   return valid ? { questions: questions as DialogQuestion[] } : null;
 }
 
+/** One entry of the agent's checklist (CLI tasks, or TodoWrite on older CLIs). */
+export interface TodoItem {
+  content: string;
+  status: string;
+}
+
+/** Cost and context pressure of a session, as reported after each turn. */
+export interface SessionUsage {
+  costUsd?: number;
+  turns?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  contextTokens?: number;
+  contextMaxTokens?: number;
+  contextPercent?: number;
+}
+
+/** Account-wide rate-limit state; a warning arrives before the wall. */
+export interface RateLimitInfo {
+  status: string;
+  limitType?: string;
+  utilization?: number;
+  resetsAt?: string;
+}
+
+/** Subagent activity, nested under the tool call that spawned it. */
+export type ToolChild =
+  | { kind: "text"; text: string }
+  | { kind: "thinking"; text: string }
+  | { kind: "tool_use"; id: string; name: string; summary: string };
+
 export type TranscriptItem =
   | { kind: "user"; text: string }
   | { kind: "text"; text: string }
-  | { kind: "tool_use"; name: string; summary: string }
+  /** The agent's reasoning; rendered folded, never mixed into the answer. */
+  | { kind: "thinking"; text: string }
+  | {
+      kind: "tool_use";
+      id: string;
+      name: string;
+      summary: string;
+      /** Filled in when the tool returns; absent while it is still running. */
+      result?: { isError: boolean; text: string };
+      /** Subagent output for a Task call. */
+      children: ToolChild[];
+    }
+  /** Denied without asking: auto-mode classifier, a deny rule, or `dontAsk`. */
+  | { kind: "denied"; tool: string; reason: string; message: string }
   | {
       kind: "permission_request";
       requestId: string;
@@ -104,6 +149,21 @@ export type TranscriptItem =
   | { kind: "settings"; text: string };
 
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+/**
+ * Thinking budgets. `default` leaves the CLI alone — which in testing meant the models
+ * produced no thinking at all, so nothing was shown; a budget is what makes reasoning
+ * visible. Mirrors `THINKING_OPTIONS` in the Rust core.
+ */
+export const THINKING_OPTIONS = ["default", "off", "4000", "16000", "32000"] as const;
+
+export const THINKING_LABELS: Record<string, string> = {
+  default: "thinking: CLI default",
+  off: "thinking: off",
+  "4000": "thinking: 4k budget",
+  "16000": "thinking: 16k budget",
+  "32000": "thinking: 32k budget",
+};
 // `bypassPermissions` is deliberately absent: with it the SDK never calls canUseTool,
 // so pushes/PRs/commits would run without ever reaching the gate. The plumbing still
 // accepts it (config file / settings), it just isn't offered in the UI.
@@ -127,6 +187,14 @@ export const PERMISSION_MODE_LABELS: Record<string, string> = {
   plan: "plan (read-only)",
 };
 export const ACTIVE_STATUSES: SessionStatus[] = ["spawning", "streaming", "awaiting_input"];
+
+/** Order the checklist renders in: what is happening now, then what is left. */
+export const TODO_STATUS_ORDER: Record<string, number> = {
+  failed: 0,
+  in_progress: 1,
+  pending: 2,
+  completed: 3,
+};
 
 export function isTerminalStatus(status: SessionStatus): boolean {
   return status === "done" || status === "failed" || status === "cancelled";

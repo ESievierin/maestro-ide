@@ -15,8 +15,8 @@ use crate::core::agent::{AgentEngine, EngineSignal, SpawnSessionRequest};
 use crate::core::bus::{Event, EventBus};
 use crate::core::gate::GateManager;
 use crate::core::session::{
-    is_known_effort, is_known_permission_mode, is_writer_mode, Session, SessionStatus, SessionType,
-    EFFORT_LEVELS, READ_ONLY_MODE,
+    is_known_effort, is_known_permission_mode, is_known_thinking, is_writer_mode, Session,
+    SessionStatus, SessionType, EFFORT_LEVELS, READ_ONLY_MODE, THINKING_OPTIONS,
 };
 use crate::core::store::Store;
 use crate::error::{MaestroError, Result, Severity};
@@ -33,6 +33,8 @@ pub struct SpawnParams {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
+    /// Thinking budget: `default`/`None`, `off`, or a token count.
+    pub thinking: Option<String>,
     pub prompt: String,
     /// Maestro session id of a finished session to resume (continues its SDK context).
     pub resume_from: Option<String>,
@@ -124,6 +126,9 @@ impl SessionManager {
                 if params.effort.is_none() {
                     params.effort = source.effort.clone();
                 }
+                if params.thinking.is_none() {
+                    params.thinking = source.thinking.clone();
+                }
                 Some(sdk_id)
             }
             None => None,
@@ -163,13 +168,14 @@ impl SessionManager {
             }
         }
 
-        let session = Session::new(
+        let mut session = Session::new(
             params.branch.clone(),
             params.session_type,
             params.model.clone(),
             params.effort.clone(),
             permission_mode.clone(),
         );
+        session.thinking = params.thinking.clone();
         self.store.insert_session(&session)?;
         self.lock_runtime()?.insert(
             session.id.clone(),
@@ -190,6 +196,7 @@ impl SessionManager {
             model: params.model,
             effort: params.effort,
             permission_mode,
+            thinking: params.thinking,
             resume_id,
         });
         if let Err(err) = spawn_result {
@@ -285,13 +292,14 @@ impl SessionManager {
         self.ensure_live(session_id)?;
         self.engine.set_model(session_id, model)?;
         self.store
-            .set_session_runtime(session_id, Some(model), None, None)?;
+            .set_session_runtime(session_id, Some(model), None, None, None)?;
         tracing::info!(session_id, model, "session model changed");
         self.bus.publish(Event::SessionSettingsChanged {
             session_id: session_id.to_string(),
             model: Some(model.to_string()),
             effort: None,
             permission_mode: None,
+            thinking: None,
         });
         Ok(())
     }
@@ -309,13 +317,14 @@ impl SessionManager {
         self.ensure_live(session_id)?;
         self.engine.set_effort(session_id, effort)?;
         self.store
-            .set_session_runtime(session_id, None, Some(effort), None)?;
+            .set_session_runtime(session_id, None, Some(effort), None, None)?;
         tracing::info!(session_id, effort, "session effort changed");
         self.bus.publish(Event::SessionSettingsChanged {
             session_id: session_id.to_string(),
             model: None,
             effort: Some(effort.to_string()),
             permission_mode: None,
+            thinking: None,
         });
         Ok(())
     }
@@ -362,7 +371,7 @@ impl SessionManager {
 
         self.engine.set_permission_mode(session_id, mode)?;
         self.store
-            .set_session_runtime(session_id, None, None, Some(mode))?;
+            .set_session_runtime(session_id, None, None, Some(mode), None)?;
         if let Ok(mut runtime) = self.lock_runtime() {
             if let Some(entry) = runtime.get_mut(session_id) {
                 entry.is_writer = becomes_writer;
@@ -379,6 +388,33 @@ impl SessionManager {
             model: None,
             effort: None,
             permission_mode: Some(mode.to_string()),
+            thinking: None,
+        });
+        Ok(())
+    }
+
+    /// Change how much the model may think. Worth its own knob: with the CLI default the
+    /// models tested here often produce no thinking at all, so there is nothing to show.
+    pub fn set_thinking(&self, session_id: &str, thinking: &str) -> Result<()> {
+        if !is_known_thinking(thinking) {
+            return Err(MaestroError::InvalidData {
+                message: format!(
+                    "unknown thinking setting \"{thinking}\" — expected one of: {}",
+                    THINKING_OPTIONS.join(", ")
+                ),
+            });
+        }
+        self.ensure_live(session_id)?;
+        self.engine.set_thinking(session_id, thinking)?;
+        self.store
+            .set_session_runtime(session_id, None, None, None, Some(thinking))?;
+        tracing::info!(session_id, thinking, "session thinking changed");
+        self.bus.publish(Event::SessionSettingsChanged {
+            session_id: session_id.to_string(),
+            model: None,
+            effort: None,
+            permission_mode: None,
+            thinking: Some(thinking.to_string()),
         });
         Ok(())
     }
@@ -462,19 +498,123 @@ impl SessionManager {
                 };
                 self.transition(&session_id, status);
             }
-            SidecarEvent::StreamDelta { session_id, text } => {
-                self.bus
-                    .publish(Event::SessionStreamDelta { session_id, text });
+            SidecarEvent::StreamDelta {
+                session_id,
+                text,
+                parent_tool_use_id,
+            } => {
+                self.bus.publish(Event::SessionStreamDelta {
+                    session_id,
+                    text,
+                    parent_tool_use_id,
+                });
+            }
+            SidecarEvent::ThinkingDelta {
+                session_id,
+                text,
+                parent_tool_use_id,
+            } => {
+                self.bus.publish(Event::SessionThinkingDelta {
+                    session_id,
+                    text,
+                    parent_tool_use_id,
+                });
             }
             SidecarEvent::ToolUse {
                 session_id,
+                tool_use_id,
                 name,
                 summary,
+                parent_tool_use_id,
             } => {
                 self.bus.publish(Event::SessionToolUse {
                     session_id,
+                    tool_use_id,
                     name,
                     summary,
+                    parent_tool_use_id,
+                });
+            }
+            SidecarEvent::ToolResult {
+                session_id,
+                tool_use_id,
+                is_error,
+                text,
+            } => {
+                self.bus.publish(Event::SessionToolResult {
+                    session_id,
+                    tool_use_id,
+                    is_error,
+                    text,
+                });
+            }
+            SidecarEvent::Todos { session_id, items } => {
+                self.bus.publish(Event::SessionTodos { session_id, items });
+            }
+            SidecarEvent::Usage {
+                session_id,
+                total_cost_usd,
+                num_turns,
+                input_tokens,
+                output_tokens,
+                context_tokens,
+                context_max_tokens,
+                context_percent,
+            } => {
+                self.bus.publish(Event::SessionUsage {
+                    session_id,
+                    total_cost_usd,
+                    num_turns,
+                    input_tokens,
+                    output_tokens,
+                    context_tokens,
+                    context_max_tokens,
+                    context_percent,
+                });
+            }
+            SidecarEvent::RateLimit {
+                session_id,
+                status,
+                limit_type,
+                utilization,
+                resets_at,
+            } => {
+                // Worth knowing before it becomes a wall, so it is also an error event.
+                if status != "allowed" {
+                    let window = limit_type.clone().unwrap_or_else(|| "quota".to_string());
+                    let used = utilization
+                        .map(|u| format!(" at {u:.0}%"))
+                        .unwrap_or_default();
+                    self.bus.publish(Event::ErrorRaised {
+                        severity: if status == "rejected" {
+                            Severity::Error
+                        } else {
+                            Severity::Warning
+                        },
+                        code: "rate_limit".into(),
+                        message: format!("Rate limit ({window}){used}"),
+                    });
+                }
+                self.bus.publish(Event::SessionRateLimit {
+                    session_id,
+                    status,
+                    limit_type,
+                    utilization,
+                    resets_at,
+                });
+            }
+            SidecarEvent::PermissionDenied {
+                session_id,
+                tool,
+                reason,
+                message,
+            } => {
+                tracing::info!(session_id, tool, reason, "tool call denied without asking");
+                self.bus.publish(Event::SessionPermissionDenied {
+                    session_id,
+                    tool,
+                    reason,
+                    message,
                 });
             }
             SidecarEvent::PermissionRequest {
@@ -776,6 +916,14 @@ mod tests {
                 .push(format!("set_effort:{session_id}:{effort}"));
             Ok(())
         }
+        fn set_thinking(&self, session_id: &str, thinking: &str) -> Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("set_thinking:{session_id}:{thinking}"));
+            Ok(())
+        }
+
         fn set_permission_mode(&self, session_id: &str, mode: &str) -> Result<()> {
             self.calls
                 .lock()
@@ -813,6 +961,7 @@ mod tests {
             model: None,
             effort: None,
             permission_mode: None,
+            thinking: None,
             prompt: "hi".into(),
             resume_from: None,
         }
@@ -1174,6 +1323,60 @@ mod tests {
 
         let first = rx.recv().await.unwrap();
         assert_eq!(first.name(), "session.settings_changed");
+    }
+
+    #[tokio::test]
+    async fn thinking_is_validated_persisted_and_announced() {
+        let (manager, bus, engine) = setup();
+        let session = manager.spawn(spawn_params("impl/S3-e")).unwrap();
+        let mut rx = bus.subscribe();
+
+        // Only the offered budgets are accepted; a typo must not reach the CLI.
+        let err = manager
+            .set_thinking(&session.id, "4k")
+            .expect_err("unknown budget");
+        assert_eq!(err.code(), "invalid_data");
+
+        manager.set_thinking(&session.id, "16000").unwrap();
+        assert!(engine
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&format!("set_thinking:{}:16000", session.id)));
+        let stored = manager.store.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(stored.thinking.as_deref(), Some("16000"));
+
+        match rx.recv().await.unwrap() {
+            Event::SessionSettingsChanged { thinking, .. } => {
+                assert_eq!(thinking.as_deref(), Some("16000"));
+            }
+            other => panic!("expected settings_changed, got {}", other.name()),
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_inherits_thinking_budget() {
+        let (manager, _bus, engine) = setup();
+        let mut params = spawn_params("impl/S3-f");
+        params.thinking = Some("32000".into());
+        let first = manager.spawn(params).unwrap();
+        manager.handle_event(SidecarEvent::SessionInit {
+            session_id: first.id.clone(),
+            sdk_session_id: "sdk-1".into(),
+            model: None,
+        });
+        manager.close(&first.id).unwrap();
+        manager.handle_event(SidecarEvent::SessionClosed {
+            session_id: first.id.clone(),
+            reason: "closed".into(),
+        });
+
+        let mut resume = spawn_params("impl/S3-f");
+        resume.resume_from = Some(first.id.clone());
+        let second = manager.spawn(resume).unwrap();
+        assert_eq!(second.thinking.as_deref(), Some("32000"));
+        let spawns = engine.spawns.lock().unwrap();
+        assert_eq!(spawns.last().unwrap().thinking.as_deref(), Some("32000"));
     }
 
     #[tokio::test]

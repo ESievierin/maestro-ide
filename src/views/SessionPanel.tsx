@@ -3,7 +3,16 @@ import ReactMarkdown from "react-markdown";
 import { Icon, StatusDot } from "../components/Icon";
 import remarkGfm from "remark-gfm";
 import { activeSessionCount, useSessions } from "../state/sessions";
-import type { CommandInfo, ModelOption, Session, TranscriptItem } from "../types/sessions";
+import type {
+  CommandInfo,
+  ModelOption,
+  RateLimitInfo,
+  Session,
+  SessionUsage,
+  TodoItem,
+  ToolChild,
+  TranscriptItem,
+} from "../types/sessions";
 import {
   EFFORTS,
   GATE_UNSAFE_MODES,
@@ -11,6 +20,9 @@ import {
   PERMISSION_MODE_LABELS,
   PERMISSION_MODES,
   READ_ONLY_MODE,
+  THINKING_LABELS,
+  THINKING_OPTIONS,
+  TODO_STATUS_ORDER,
 } from "../types/sessions";
 import type { WorktreeInfo } from "../types/worktrees";
 import { QuestionDialog } from "./QuestionDialog";
@@ -41,6 +53,12 @@ const LOCAL_COMMANDS: (CommandInfo & { local: true })[] = [
     argument_hint: "<default|acceptEdits|auto|plan>",
     local: true,
   },
+  {
+    name: "thinking",
+    description: "Maestro: how much this session may think (a budget makes it visible)",
+    argument_hint: "<default|off|4000|16000|32000>",
+    local: true,
+  },
 ];
 
 /** A local command whose argument Maestro can complete, with the values to offer. */
@@ -55,6 +73,8 @@ function localArgumentValues(
       return EFFORTS.map((e) => ({ value: e, label: e }));
     case "permissions":
       return PERMISSION_MODES.map((m) => ({ value: m, label: PERMISSION_MODE_LABELS[m] ?? m }));
+    case "thinking":
+      return THINKING_OPTIONS.map((t) => ({ value: t, label: THINKING_LABELS[t] ?? t }));
     default:
       return [];
   }
@@ -78,15 +98,171 @@ function Markdown({ text }: { text: string }) {
   );
 }
 
-function ToolUseEntry({ name, summary }: { name: string; summary: string }) {
+function SubagentChild({ child }: { child: ToolChild }) {
+  if (child.kind === "tool_use") {
+    return (
+      <div className="t-sub-tool">
+        <span className="t-tool-name">{child.name}</span>
+        <span className="t-tool-preview">{child.summary.slice(0, 70)}</span>
+      </div>
+    );
+  }
+  if (child.kind === "thinking") {
+    return <div className="t-sub-thinking">{child.text}</div>;
+  }
   return (
-    <details className="t-tool">
+    <div className="t-sub-text">
+      <Markdown text={child.text} />
+    </div>
+  );
+}
+
+/**
+ * A tool call, its result, and — for `Task` — everything the subagent did inside it.
+ * Folded by default: the answer is what the user reads, this is the evidence behind it.
+ */
+function ToolUseEntry({ item }: { item: Extract<TranscriptItem, { kind: "tool_use" }> }) {
+  const { name, summary, result, children } = item;
+  const state = result ? (result.isError ? "error" : "done") : "running";
+  return (
+    <details className={`t-tool t-tool-${state}`}>
       <summary>
         <span className="t-tool-name">{name}</span>
         <span className="t-tool-preview">{summary.slice(0, 80)}</span>
+        {state === "running" && <Icon name="spinner" spin />}
+        {state === "error" && <Icon name="alert" />}
+        {children.length > 0 && <span className="t-tool-badge">{children.length}</span>}
       </summary>
       <code>{summary}</code>
+      {result && (
+        <pre className={`t-tool-result ${result.isError ? "error" : ""}`}>
+          {result.text || "(no output)"}
+        </pre>
+      )}
+      {children.length > 0 && (
+        <div className="t-subagent">
+          {children.map((child, i) => (
+            <SubagentChild key={i} child={child} />
+          ))}
+        </div>
+      )}
     </details>
+  );
+}
+
+/** The agent's reasoning. Folded away, because it is not the answer. */
+function ThinkingEntry({ text }: { text: string }) {
+  return (
+    <details className="t-thinking">
+      <summary>
+        <Icon name="spinner" /> thinking
+        <span className="t-tool-preview">{text.slice(0, 70)}</span>
+      </summary>
+      <div className="t-thinking-body">{text}</div>
+    </details>
+  );
+}
+
+/** A tool call refused before the user ever saw it (classifier, deny rule, `dontAsk`). */
+function DeniedEntry({ item }: { item: Extract<TranscriptItem, { kind: "denied" }> }) {
+  return (
+    <div className="t-denied">
+      <div className="t-denied-title">
+        <Icon name="shield" /> {item.tool} denied automatically ({item.reason})
+      </div>
+      <div className="t-denied-message">{item.message}</div>
+    </div>
+  );
+}
+
+/** The agent's checklist. Shown above the input, where the next step belongs. */
+function TodoList({ items }: { items: TodoItem[] }) {
+  const sorted = useMemo(
+    () =>
+      items
+        .map((t, i) => ({ t, i }))
+        .sort(
+          (a, b) =>
+            (TODO_STATUS_ORDER[a.t.status] ?? 1) - (TODO_STATUS_ORDER[b.t.status] ?? 1) ||
+            a.i - b.i,
+        )
+        .map((e) => e.t),
+    [items],
+  );
+  const done = items.filter((t) => t.status === "completed").length;
+
+  return (
+    <details className="todo-list" open>
+      <summary>
+        <Icon name="check" /> Plan
+        <span className="count">
+          {done}/{items.length}
+        </span>
+      </summary>
+      <ul>
+        {sorted.map((todo, i) => (
+          <li key={i} className={`todo todo-${todo.status}`}>
+            <Icon
+              name={
+                todo.status === "completed"
+                  ? "check"
+                  : todo.status === "in_progress"
+                    ? "play"
+                    : "circle"
+              }
+            />
+            {todo.content}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+/** Cost and context pressure of the selected session. */
+function UsageMeter({ usage }: { usage: SessionUsage }) {
+  const percent = usage.contextPercent;
+  const tooltip = [
+    usage.turns !== undefined && `${usage.turns} turns`,
+    usage.inputTokens !== undefined && `${usage.inputTokens.toLocaleString()} in`,
+    usage.outputTokens !== undefined && `${usage.outputTokens.toLocaleString()} out`,
+    usage.contextTokens !== undefined &&
+      usage.contextMaxTokens !== undefined &&
+      `context ${usage.contextTokens.toLocaleString()}/${usage.contextMaxTokens.toLocaleString()}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <span className="usage-meter" title={tooltip || "no usage reported yet"}>
+      {usage.costUsd !== undefined && (
+        <span className="usage-cost">${usage.costUsd.toFixed(3)}</span>
+      )}
+      {percent !== undefined && (
+        <span className={`usage-context ${percent >= 80 ? "warn" : ""}`}>
+          <span className="usage-bar">
+            <span className="usage-fill" style={{ width: `${Math.min(100, percent)}%` }} />
+          </span>
+          {Math.round(percent)}%
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** Account-wide quota state. Only rendered once the CLI has something to say. */
+function RateLimitPill({ info }: { info: RateLimitInfo }) {
+  if (info.status === "allowed") return null;
+  const resets = info.resetsAt ? new Date(info.resetsAt).toLocaleTimeString() : null;
+  return (
+    <span
+      className={`pill ${info.status === "rejected" ? "pill-failed" : "pill-warn"}`}
+      title={`${info.limitType ?? "quota"}${resets ? ` · resets ${resets}` : ""}`}
+    >
+      <Icon name="alert" />
+      {info.status === "rejected" ? "rate limited" : "quota"}
+      {info.utilization !== undefined && ` ${Math.round(info.utilization)}%`}
+    </span>
   );
 }
 
@@ -160,7 +336,11 @@ function TranscriptView({ sessionId, items }: { sessionId: string; items: Transc
           case "text":
             return <Markdown key={i} text={item.text} />;
           case "tool_use":
-            return <ToolUseEntry key={i} name={item.name} summary={item.summary} />;
+            return <ToolUseEntry key={i} item={item} />;
+          case "thinking":
+            return <ThinkingEntry key={i} text={item.text} />;
+          case "denied":
+            return <DeniedEntry key={i} item={item} />;
           case "status":
             return (
               <div key={i} className="t-status">
@@ -374,6 +554,7 @@ function NewSessionForm({
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<string>("");
   const [permissionMode, setPermissionMode] = useState<string>("");
+  const [thinking, setThinking] = useState<string>("");
   const [busy, setBusy] = useState(false);
 
   // The cached list can be stale (e.g. left over from mock mode); ask the CLI once.
@@ -389,6 +570,7 @@ function NewSessionForm({
       model: model || undefined,
       effort: effort || undefined,
       permission_mode: permissionMode || undefined,
+      thinking: thinking || undefined,
     });
     setBusy(false);
     if (session) {
@@ -423,6 +605,14 @@ function NewSessionForm({
           {PERMISSION_MODES.map((m) => (
             <option key={m} value={m}>
               {PERMISSION_MODE_LABELS[m] ?? m}
+            </option>
+          ))}
+        </select>
+        <select value={thinking} onChange={(e) => setThinking(e.target.value)}>
+          <option value="">thinking: CLI default</option>
+          {THINKING_OPTIONS.filter((t) => t !== "default").map((t) => (
+            <option key={t} value={t}>
+              {THINKING_LABELS[t] ?? t}
             </option>
           ))}
         </select>
@@ -502,6 +692,7 @@ function RuntimeControls({ session }: { session: Session }) {
   const setModel = useSessions((s) => s.setModel);
   const setEffort = useSessions((s) => s.setEffort);
   const setPermissionMode = useSessions((s) => s.setPermissionMode);
+  const setThinking = useSessions((s) => s.setThinking);
 
   useEffect(() => {
     void refreshModels();
@@ -554,6 +745,19 @@ function RuntimeControls({ session }: { session: Session }) {
           ))}
         </select>
       </label>
+      <label title="Thinking budget — the CLI default often produces none at all">
+        <select
+          value={session.thinking ?? ""}
+          onChange={(e) => void setThinking(session.id, e.target.value || "default")}
+        >
+          {session.thinking === null && <option value="">thinking: CLI default</option>}
+          {THINKING_OPTIONS.map((t) => (
+            <option key={t} value={t}>
+              {THINKING_LABELS[t] ?? t}
+            </option>
+          ))}
+        </select>
+      </label>
       {GATE_UNSAFE_MODES.includes(session.permission_mode ?? "") && (
         <span className="pill pill-warn" title="A classifier may approve gated commands">
           <Icon name="alert" /> gate not guaranteed
@@ -577,9 +781,13 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
     spawn,
     models,
     dialogs,
+    todos,
+    usage,
+    rateLimit,
     setModel,
     setEffort,
     setPermissionMode,
+    setThinking,
     error,
     clearError,
   } = useSessions();
@@ -610,6 +818,9 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
       case "permissions":
         void setPermissionMode(session.id, argument);
         break;
+      case "thinking":
+        void setThinking(session.id, argument || "default");
+        break;
     }
   };
 
@@ -629,6 +840,7 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
         <h2>
           Sessions <span className="count">({activeCount} active)</span>
         </h2>
+        {rateLimit && <RateLimitPill info={rateLimit} />}
       </div>
 
       {error && (
@@ -669,6 +881,7 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
             ) : (
               <RuntimeControls session={selected} />
             )}
+            {usage[selected.id] && <UsageMeter usage={usage[selected.id]} />}
             <div className="actions">
               {isTerminalStatus(selected.status) ? (
                 <>
@@ -710,6 +923,7 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
             </div>
           </div>
           <TranscriptView sessionId={selected.id} items={transcripts[selected.id] ?? []} />
+          {(todos[selected.id]?.length ?? 0) > 0 && <TodoList items={todos[selected.id]} />}
           <ChatInput
             disabled={isTerminalStatus(selected.status)}
             commands={commands[selected.id] ?? []}

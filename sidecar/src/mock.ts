@@ -3,8 +3,10 @@
 //
 // Prompt keywords: "PERMISSION" pauses on a chat permission request; "GATE" asks to run
 // a push+PR command (exercises the T7 approval dialog); "ASK" raises a question dialog
-// (AskUserQuestion path); "CRASH" kills the whole sidecar process (supervisor recovery
-// testing).
+// (AskUserQuestion path); "THINK" streams a thinking block; "TOOLS" runs a tool with a
+// result; "SUBAGENT" nests subagent output under a Task call; "TODO" publishes a todo
+// list; "DENY" reports an auto-denied tool call; "CRASH" kills the whole sidecar process
+// (supervisor recovery testing). Every turn also reports usage.
 
 import type { DialogAnswer, SessionHandle, SidecarEvent, SpawnRequest } from "./protocol.js";
 
@@ -17,8 +19,11 @@ export class MockSession implements SessionHandle {
   private closed = false;
   private permissionCounter = 0;
   private dialogCounter = 0;
+  private toolCounter = 0;
+  private turns = 0;
   private model = "";
   private effort = "";
+  private thinking = "";
   private permissionMode = "";
   private readonly pending = new Map<string, (allow: boolean) => void>();
   private readonly pendingDialogs = new Map<string, (answer: string) => void>();
@@ -94,8 +99,109 @@ export class MockSession implements SessionHandle {
       this.emit({
         type: "tool_use",
         session_id: this.sessionId,
+        tool_use_id: `mock-tool-${this.permissionCounter}`,
         name: "Bash",
         summary: allowed ? JSON.stringify({ command }) : "(denied)",
+      });
+      this.emit({
+        type: "tool_result",
+        session_id: this.sessionId,
+        tool_use_id: `mock-tool-${this.permissionCounter}`,
+        is_error: !allowed,
+        text: allowed ? "mock\n" : "Denied by user",
+      });
+    }
+
+    if (prompt.includes("THINK")) {
+      for (const part of ["Let me think. ", "The mock has two options. ", "Option two it is."]) {
+        if (this.interrupted || this.closed) break;
+        this.emit({ type: "thinking_delta", session_id: this.sessionId, text: part });
+        await sleep(80);
+      }
+    }
+
+    if (prompt.includes("TOOLS")) {
+      const id = `mock-read-${++this.toolCounter}`;
+      this.emit({
+        type: "tool_use",
+        session_id: this.sessionId,
+        tool_use_id: id,
+        name: "Read",
+        summary: JSON.stringify({ file_path: "src/main.ts" }),
+      });
+      await sleep(120);
+      this.emit({
+        type: "tool_result",
+        session_id: this.sessionId,
+        tool_use_id: id,
+        is_error: false,
+        text: "1\timport { run } from './run.js';\n2\trun();",
+      });
+    }
+
+    if (prompt.includes("SUBAGENT")) {
+      const id = `mock-task-${++this.toolCounter}`;
+      this.emit({
+        type: "tool_use",
+        session_id: this.sessionId,
+        tool_use_id: id,
+        name: "Task",
+        summary: JSON.stringify({ subagent_type: "explore", prompt: "find the entry point" }),
+      });
+      this.emit({
+        type: "tool_use",
+        session_id: this.sessionId,
+        tool_use_id: `${id}-inner`,
+        name: "Grep",
+        summary: JSON.stringify({ pattern: "main" }),
+        parent_tool_use_id: id,
+      });
+      this.emit({
+        type: "stream_delta",
+        session_id: this.sessionId,
+        text: "Found it in src/main.ts.",
+        parent_tool_use_id: id,
+      });
+      await sleep(120);
+      this.emit({
+        type: "tool_result",
+        session_id: this.sessionId,
+        tool_use_id: id,
+        is_error: false,
+        text: "The entry point is src/main.ts.",
+      });
+    }
+
+    if (prompt.includes("TODO")) {
+      this.emit({
+        type: "todos",
+        session_id: this.sessionId,
+        items: [
+          { content: "Read the protocol", status: "completed" },
+          { content: "Wire the events", status: "in_progress" },
+          { content: "Render them", status: "pending" },
+        ],
+      });
+    }
+
+    if (prompt.includes("DENY")) {
+      this.emit({
+        type: "permission_denied",
+        session_id: this.sessionId,
+        tool: "Bash",
+        reason: "classifier",
+        message: "Auto mode refused: rm -rf looks destructive",
+      });
+    }
+
+    if (prompt.includes("LIMIT")) {
+      this.emit({
+        type: "rate_limit",
+        session_id: this.sessionId,
+        status: "allowed_warning",
+        limit_type: "five_hour",
+        utilization: 82,
+        resets_at: "2026-08-05T12:00:00.000Z",
       });
     }
 
@@ -143,6 +249,7 @@ export class MockSession implements SessionHandle {
     const settings = [
       this.model && `model=${this.model}`,
       this.effort && `effort=${this.effort}`,
+      this.thinking && `thinking=${this.thinking}`,
       this.permissionMode && `permissions=${this.permissionMode}`,
     ]
       .filter(Boolean)
@@ -155,6 +262,18 @@ export class MockSession implements SessionHandle {
     }
 
     if (this.closed) return;
+    this.turns += 1;
+    this.emit({
+      type: "usage",
+      session_id: this.sessionId,
+      total_cost_usd: 0.0123 * this.turns,
+      num_turns: this.turns,
+      input_tokens: 1200 * this.turns,
+      output_tokens: 300 * this.turns,
+      context_tokens: 18000 * this.turns,
+      context_max_tokens: 200000,
+      context_percent: Math.min(100, 9 * this.turns),
+    });
     this.emit({
       type: "result",
       session_id: this.sessionId,
@@ -219,6 +338,10 @@ export class MockSession implements SessionHandle {
 
   async setEffort(effort: string): Promise<void> {
     this.effort = effort;
+  }
+
+  async setThinking(thinking: string): Promise<void> {
+    this.thinking = thinking;
   }
 
   async setPermissionMode(mode: string): Promise<void> {

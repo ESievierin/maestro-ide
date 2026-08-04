@@ -16,7 +16,13 @@ import {
   type UserDialogResult,
 } from "@anthropic-ai/claude-agent-sdk";
 
-import type { DialogAnswer, SessionHandle, SidecarEvent, SpawnRequest } from "./protocol.js";
+import type {
+  DialogAnswer,
+  SessionHandle,
+  SidecarEvent,
+  SpawnRequest,
+  TodoItem,
+} from "./protocol.js";
 import { AsyncQueue } from "./queue.js";
 
 const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
@@ -75,6 +81,18 @@ export class AgentSession implements SessionHandle {
   private readonly pendingPermissions = new Map<string, (result: PermissionResult) => void>();
   private readonly pendingDialogs = new Map<string, PendingDialog>();
   private dialogCounter = 0;
+  /**
+   * The agent's checklist. This CLI tracks work as *tasks* (task_started/updated/
+   * notification system messages) rather than the older TodoWrite tool, so the list is
+   * assembled from those and republished whole on every change.
+   */
+  private readonly tasks = new Map<string, { description: string; status: string }>();
+  /**
+   * Thinking characters streamed since the last assistant message. Adaptive thinking does
+   * not always stream deltas, so the assistant message's thinking block is the fallback —
+   * but only when nothing was streamed, or the transcript would show it twice.
+   */
+  private streamedThinking = 0;
   private q: Query | null = null;
   private closedByRequest = false;
 
@@ -107,6 +125,8 @@ export class AgentSession implements SessionHandle {
     if (req.permission_mode && PERMISSION_MODES.has(req.permission_mode)) {
       options.permissionMode = req.permission_mode as PermissionMode;
     }
+    const thinking = thinkingConfig(req.thinking);
+    if (thinking) options.thinking = thinking;
     if (req.resume_id) options.resume = req.resume_id;
 
     this.q = query({ prompt: this.input, options });
@@ -156,6 +176,28 @@ export class AgentSession implements SessionHandle {
   async setEffort(effort: string): Promise<void> {
     const level = effort.trim() === "" ? null : (effort as EffortLevel);
     await this.q?.applyFlagSettings({ effortLevel: level });
+  }
+
+  /**
+   * Change the thinking budget mid-session. `null` restores the API default; a budget
+   * re-enables thinking even for a session that started with it disabled.
+   */
+  async setThinking(thinking: string): Promise<void> {
+    const value = thinking.trim();
+    if (value === "" || value === "default") {
+      await this.q?.setMaxThinkingTokens(null);
+      return;
+    }
+    if (value === "off") {
+      await this.q?.setMaxThinkingTokens(0);
+      return;
+    }
+    const budget = Number(value);
+    if (!Number.isInteger(budget) || budget <= 0) {
+      throw new Error(`invalid thinking budget: ${thinking}`);
+    }
+    // Summarized display, for the same reason as at spawn: omitted content shows nothing.
+    await this.q?.setMaxThinkingTokens(budget, "summarized");
   }
 
   async setPermissionMode(mode: string): Promise<void> {
@@ -236,6 +278,24 @@ export class AgentSession implements SessionHandle {
   private onMessage(message: SDKMessage): void {
     switch (message.type) {
       case "system": {
+        if (
+          message.subtype === "task_started" ||
+          message.subtype === "task_updated" ||
+          message.subtype === "task_notification"
+        ) {
+          this.trackTask(message);
+          break;
+        }
+        if (message.subtype === "permission_denied") {
+          this.emit({
+            type: "permission_denied",
+            session_id: this.sessionId,
+            tool: message.tool_name,
+            reason: message.decision_reason ?? message.decision_reason_type ?? "denied",
+            message: message.message,
+          });
+          break;
+        }
         if (message.subtype === "init") {
           this.emit({
             type: "session_init",
@@ -248,35 +308,108 @@ export class AgentSession implements SessionHandle {
         break;
       }
       case "stream_event": {
-        // Only top-level assistant text; subagent output has parent_tool_use_id set.
-        if (message.parent_tool_use_id !== null) break;
+        // Subagent output keeps its parent id so the UI can nest it under the Task call.
+        const parent = message.parent_tool_use_id ?? undefined;
         const event = message.event as {
           type: string;
-          delta?: { type: string; text?: string };
+          delta?: { type: string; text?: string; thinking?: string };
         };
-        if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+        if (event.type !== "content_block_delta") break;
+        if (event.delta?.type === "text_delta") {
           const text = event.delta.text ?? "";
           if (text.length > 0) {
-            this.emit({ type: "stream_delta", session_id: this.sessionId, text });
-          }
-        }
-        break;
-      }
-      case "assistant": {
-        if (message.parent_tool_use_id !== null) break;
-        for (const block of message.message.content) {
-          if (block.type === "tool_use") {
             this.emit({
-              type: "tool_use",
+              type: "stream_delta",
               session_id: this.sessionId,
-              name: block.name,
-              summary: summarizeInput(block.input),
+              text,
+              ...(parent && { parent_tool_use_id: parent }),
+            });
+          }
+        } else if (event.delta?.type === "thinking_delta") {
+          const text = event.delta.thinking ?? "";
+          if (text.length > 0) {
+            if (!parent) this.streamedThinking += text.length;
+            this.emit({
+              type: "thinking_delta",
+              session_id: this.sessionId,
+              text,
+              ...(parent && { parent_tool_use_id: parent }),
             });
           }
         }
         break;
       }
+      case "assistant": {
+        const parent = message.parent_tool_use_id ?? undefined;
+        for (const block of message.message.content) {
+          // Thinking that never streamed as deltas still belongs in the transcript.
+          if (block.type === "thinking" && !parent && this.streamedThinking === 0) {
+            const text = (block as { thinking?: string }).thinking ?? "";
+            if (text.length > 0) {
+              this.emit({ type: "thinking_delta", session_id: this.sessionId, text });
+            }
+            continue;
+          }
+          if (block.type !== "tool_use") continue;
+          this.emit({
+            type: "tool_use",
+            session_id: this.sessionId,
+            tool_use_id: block.id,
+            name: block.name,
+            summary: summarizeInput(block.input),
+            ...(parent && { parent_tool_use_id: parent }),
+          });
+          // Older CLIs keep the checklist in TodoWrite's input; newer ones use tasks.
+          if (block.name === "TodoWrite") {
+            const items = todoItems(block.input);
+            if (items) {
+              this.emit({ type: "todos", session_id: this.sessionId, items });
+            }
+          }
+        }
+        this.streamedThinking = 0;
+        break;
+      }
+      case "user": {
+        // Tool results ride back on the user turn, keyed by the tool_use they answer.
+        const content = message.message.content;
+        if (typeof content === "string" || !Array.isArray(content)) break;
+        for (const block of content) {
+          if (block.type !== "tool_result") continue;
+          this.emit({
+            type: "tool_result",
+            session_id: this.sessionId,
+            tool_use_id: block.tool_use_id,
+            is_error: block.is_error === true,
+            text: resultText(block.content),
+          });
+        }
+        break;
+      }
+      case "rate_limit_event": {
+        const info = message.rate_limit_info;
+        this.emit({
+          type: "rate_limit",
+          session_id: this.sessionId,
+          status: info.status,
+          ...(info.rateLimitType && { limit_type: info.rateLimitType }),
+          ...(info.utilization !== undefined && { utilization: info.utilization }),
+          ...(info.resetsAt !== undefined && {
+            resets_at: new Date(info.resetsAt * 1000).toISOString(),
+          }),
+        });
+        break;
+      }
       case "result": {
+        // Usage first: a host that treats `result` as end-of-turn still gets the numbers.
+        this.emit({
+          type: "usage",
+          session_id: this.sessionId,
+          total_cost_usd: message.total_cost_usd,
+          num_turns: message.num_turns,
+          input_tokens: message.usage?.input_tokens,
+          output_tokens: message.usage?.output_tokens,
+        });
         this.emit({
           type: "result",
           session_id: this.sessionId,
@@ -286,11 +419,72 @@ export class AgentSession implements SessionHandle {
           total_cost_usd: message.total_cost_usd,
           num_turns: message.num_turns,
         });
+        void this.reportContextUsage();
         this.emit({ type: "status", session_id: this.sessionId, status: "awaiting_input" });
         break;
       }
       default:
         break;
+    }
+  }
+
+  /**
+   * Fold a task lifecycle message into the checklist and republish it. Ambient tasks the
+   * CLI marks `skip_transcript` are housekeeping, not the user's plan, so they stay out.
+   */
+  private trackTask(message: {
+    subtype: string;
+    task_id: string;
+    description?: string;
+    status?: string;
+    summary?: string;
+    skip_transcript?: boolean;
+    patch?: { status?: string; description?: string };
+  }): void {
+    if (message.skip_transcript) return;
+    const existing = this.tasks.get(message.task_id);
+    if (message.subtype === "task_started") {
+      this.tasks.set(message.task_id, {
+        description: message.description ?? existing?.description ?? "task",
+        status: "in_progress",
+      });
+    } else if (message.subtype === "task_updated") {
+      if (!existing) return;
+      this.tasks.set(message.task_id, {
+        description: message.patch?.description ?? existing.description,
+        status: taskStatus(message.patch?.status) ?? existing.status,
+      });
+    } else {
+      if (!existing) return;
+      this.tasks.set(message.task_id, {
+        description: existing.description,
+        status: taskStatus(message.status) ?? "completed",
+      });
+    }
+    this.emit({
+      type: "todos",
+      session_id: this.sessionId,
+      items: [...this.tasks.values()].map((t) => ({ content: t.description, status: t.status })),
+    });
+  }
+
+  /**
+   * How full the context window is. A control request, so it costs no tokens; failures are
+   * swallowed because a missing meter must never break a turn.
+   */
+  private async reportContextUsage(): Promise<void> {
+    if (!this.q) return;
+    try {
+      const usage = await this.q.getContextUsage();
+      this.emit({
+        type: "usage",
+        session_id: this.sessionId,
+        context_tokens: usage.totalTokens,
+        context_max_tokens: usage.maxTokens,
+        context_percent: usage.percentage,
+      });
+    } catch {
+      // The meter is best-effort.
     }
   }
 
@@ -450,6 +644,75 @@ export class AgentSession implements SessionHandle {
       });
     });
   }
+}
+
+/**
+ * Map Maestro's thinking setting to the SDK's config. `undefined` means "leave the CLI
+ * alone", which is not the same as adaptive: it is whatever the CLI would do by itself.
+ */
+function thinkingConfig(thinking: string | undefined): Options["thinking"] | undefined {
+  const value = thinking?.trim();
+  if (!value || value === "default") return undefined;
+  if (value === "off") return { type: "disabled" };
+  if (value === "adaptive") return { type: "adaptive" };
+  const budget = Number(value);
+  if (!Number.isInteger(budget) || budget <= 0) return undefined;
+  // `display` is the difference between reasoning we can show and an empty thinking
+  // block: without it the CLI omits the content, and the transcript has nothing to render.
+  return { type: "enabled", budgetTokens: budget, display: "summarized" };
+}
+
+/** CLI task status → the three states the checklist renders (plus failure). */
+function taskStatus(status: string | undefined): string | undefined {
+  switch (status) {
+    case "running":
+      return "in_progress";
+    case "completed":
+      return "completed";
+    case "failed":
+    case "killed":
+    case "stopped":
+      return "failed";
+    case "pending":
+    case "paused":
+      return "pending";
+    default:
+      return undefined;
+  }
+}
+
+/** TodoWrite's input, if it has the expected shape. */
+function todoItems(input: unknown): TodoItem[] | null {
+  if (typeof input !== "object" || input === null) return null;
+  const todos = (input as { todos?: unknown }).todos;
+  if (!Array.isArray(todos)) return null;
+  const items = todos
+    .filter((t): t is Record<string, unknown> => typeof t === "object" && t !== null)
+    .map((t) => ({
+      content: typeof t.content === "string" ? t.content : "",
+      status: typeof t.status === "string" ? t.status : "pending",
+    }))
+    .filter((t) => t.content.length > 0);
+  return items.length > 0 ? items : null;
+}
+
+/** Flatten a tool result's content blocks into the text the UI shows. */
+function resultText(content: unknown): string {
+  if (typeof content === "string") return truncate(content);
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    if (typeof block !== "object" || block === null) continue;
+    const b = block as { type?: string; text?: string };
+    if (b.type === "text" && typeof b.text === "string") parts.push(b.text);
+    else if (b.type === "image") parts.push("[image]");
+  }
+  return truncate(parts.join("\n"));
+}
+
+/** Tool output can be a whole file; the transcript only needs the head of it. */
+function truncate(text: string, limit = 4000): string {
+  return text.length > limit ? text.slice(0, limit) + "\n… (truncated)" : text;
 }
 
 function summarizeInput(input: unknown): string {

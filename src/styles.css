@@ -1690,3 +1690,199 @@ button:active:not(:disabled) {
   font-size: 0.75rem;
   margin-top: 0.2rem;
 }
+
+/* ---------- Transcript detail (S3 Tier 2) ---------- */
+
+.t-tool-running > summary .icon {
+  color: #7aa2f7;
+}
+
+.t-tool-error {
+  border-color: #5c2d38;
+}
+
+.t-tool-error > summary .icon {
+  color: #f7768e;
+}
+
+.t-tool-badge {
+  font-size: 0.6rem;
+  color: #8b93a5;
+  border: 1px solid #3a3f4b;
+  border-radius: 999px;
+  padding: 0 0.3rem;
+}
+
+.t-tool-result {
+  margin: 0.4rem 0 0;
+  padding: 0.4rem 0.5rem;
+  background: #14161b;
+  border: 1px solid #2a2e37;
+  border-radius: 6px;
+  color: #b9c0cf;
+  font-size: 0.72rem;
+  max-height: 14rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.t-tool-result.error {
+  border-color: #5c2d38;
+  color: #f7a1ae;
+}
+
+.t-subagent {
+  margin-top: 0.45rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid #33415e;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.t-sub-tool {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+}
+
+.t-sub-text {
+  font-size: 0.78rem;
+}
+
+.t-sub-thinking {
+  font-size: 0.72rem;
+  color: #666e80;
+  font-style: italic;
+  white-space: pre-wrap;
+}
+
+.t-thinking {
+  border: 1px dashed #3a3f4b;
+  border-radius: 6px;
+  padding: 0.3rem 0.55rem;
+  margin: 0.35rem 0;
+  background: #191c22;
+}
+
+.t-thinking > summary {
+  cursor: pointer;
+  color: #8b93a5;
+  font-size: 0.74rem;
+  gap: 0.4rem;
+}
+
+.t-thinking-body {
+  margin-top: 0.35rem;
+  color: #8b93a5;
+  font-size: 0.76rem;
+  white-space: pre-wrap;
+}
+
+.t-denied {
+  border: 1px solid #5c2d38;
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  margin: 0.4rem 0;
+  background: #1f1a1d;
+}
+
+.t-denied-title {
+  color: #f7768e;
+  font-size: 0.78rem;
+}
+
+.t-denied-message {
+  color: #b9c0cf;
+  font-size: 0.74rem;
+  margin-top: 0.2rem;
+}
+
+/* ---------- Plan / todos ---------- */
+
+.todo-list {
+  border: 1px solid #2a2e37;
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+  margin: 0.5rem 0 0;
+  background: #191c22;
+}
+
+.todo-list > summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: #b9c0cf;
+  gap: 0.4rem;
+}
+
+.todo-list ul {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.todo {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: #b9c0cf;
+}
+
+.todo-completed {
+  color: #666e80;
+  text-decoration: line-through;
+}
+
+.todo-in_progress {
+  color: #9ece6a;
+}
+
+/* ---------- Usage meter ---------- */
+
+.usage-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.7rem;
+  color: #8b93a5;
+  white-space: nowrap;
+}
+
+.usage-cost {
+  color: #b9c0cf;
+}
+
+.usage-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.usage-context.warn {
+  color: #e0af68;
+}
+
+.usage-bar {
+  display: inline-block;
+  width: 3.5rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: #2a2e37;
+  overflow: hidden;
+}
+
+.usage-fill {
+  display: block;
+  height: 100%;
+  background: #7aa2f7;
+  transition: width var(--medium) var(--ease);
+}
+
+.usage-context.warn .usage-fill {
+  background: #e0af68;
+}

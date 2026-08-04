@@ -15,8 +15,59 @@ export type BusEvent =
       type: "session.status_changed";
       data: { session_id: string; branch: string; status: SessionStatus };
     }
-  | { type: "session.stream_delta"; data: { session_id: string; text: string } }
-  | { type: "session.tool_use"; data: { session_id: string; name: string; summary: string } }
+  | {
+      type: "session.stream_delta";
+      data: { session_id: string; text: string; parent_tool_use_id: string | null };
+    }
+  | {
+      type: "session.thinking_delta";
+      data: { session_id: string; text: string; parent_tool_use_id: string | null };
+    }
+  | {
+      type: "session.tool_use";
+      data: {
+        session_id: string;
+        tool_use_id: string;
+        name: string;
+        summary: string;
+        parent_tool_use_id: string | null;
+      };
+    }
+  | {
+      type: "session.tool_result";
+      data: { session_id: string; tool_use_id: string; is_error: boolean; text: string };
+    }
+  | {
+      type: "session.todos";
+      data: { session_id: string; items: { content: string; status: string }[] };
+    }
+  | {
+      type: "session.usage";
+      data: {
+        session_id: string;
+        total_cost_usd: number | null;
+        num_turns: number | null;
+        input_tokens: number | null;
+        output_tokens: number | null;
+        context_tokens: number | null;
+        context_max_tokens: number | null;
+        context_percent: number | null;
+      };
+    }
+  | {
+      type: "session.rate_limit";
+      data: {
+        session_id: string;
+        status: string;
+        limit_type: string | null;
+        utilization: number | null;
+        resets_at: string | null;
+      };
+    }
+  | {
+      type: "session.permission_denied";
+      data: { session_id: string; tool: string; reason: string; message: string };
+    }
   | {
       type: "session.commands";
       data: {
@@ -58,6 +109,7 @@ export type BusEvent =
         model: string | null;
         effort: string | null;
         permission_mode: string | null;
+        thinking: string | null;
       };
     }
   | { type: "diff.updated"; data: { branch: string } }

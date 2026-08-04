@@ -51,6 +51,7 @@ pub trait Store: Send + Sync {
         model: Option<&str>,
         effort: Option<&str>,
         permission_mode: Option<&str>,
+        thinking: Option<&str>,
     ) -> Result<()>;
     fn get_session(&self, id: &str) -> Result<Option<Session>>;
     fn list_sessions(&self, branch: &str) -> Result<Vec<Session>>;
@@ -128,14 +129,15 @@ fn session_from_row(row: &Row) -> Result<Session> {
         model: row.get("model")?,
         effort: row.get("effort")?,
         permission_mode: row.get("permission_mode")?,
+        thinking: row.get("thinking")?,
         sdk_session_id: row.get("sdk_session_id")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
 }
 
-const SESSION_COLUMNS: &str =
-    "id, branch, type, status, model, effort, permission_mode, sdk_session_id, created_at, updated_at";
+const SESSION_COLUMNS: &str = "id, branch, type, status, model, effort, permission_mode, \
+     thinking, sdk_session_id, created_at, updated_at";
 
 impl Store for SqliteStore {
     fn upsert_branch(
@@ -192,8 +194,8 @@ impl Store for SqliteStore {
     fn insert_session(&self, session: &Session) -> Result<()> {
         self.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO sessions (id, branch, type, status, model, effort, permission_mode, sdk_session_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO sessions (id, branch, type, status, model, effort, permission_mode, thinking, sdk_session_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     session.id,
                     session.branch,
@@ -202,6 +204,7 @@ impl Store for SqliteStore {
                     session.model,
                     session.effort,
                     session.permission_mode,
+                    session.thinking,
                     session.sdk_session_id,
                     session.created_at,
                     session.updated_at,
@@ -247,6 +250,7 @@ impl Store for SqliteStore {
         model: Option<&str>,
         effort: Option<&str>,
         permission_mode: Option<&str>,
+        thinking: Option<&str>,
     ) -> Result<()> {
         self.with_conn(|conn| {
             let changed = conn.execute(
@@ -254,9 +258,10 @@ impl Store for SqliteStore {
                     model = COALESCE(?1, model),
                     effort = COALESCE(?2, effort),
                     permission_mode = COALESCE(?3, permission_mode),
-                    updated_at = ?4
-                 WHERE id = ?5",
-                params![model, effort, permission_mode, Utc::now(), id],
+                    thinking = COALESCE(?4, thinking),
+                    updated_at = ?5
+                 WHERE id = ?6",
+                params![model, effort, permission_mode, thinking, Utc::now(), id],
             )?;
             if changed == 0 {
                 return Err(MaestroError::InvalidData {

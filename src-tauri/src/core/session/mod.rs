@@ -112,6 +112,14 @@ pub fn is_writer_mode(permission_mode: Option<&str>) -> bool {
     permission_mode != Some(READ_ONLY_MODE)
 }
 
+/// Thinking options offered in the UI. `default` leaves the CLI alone (adaptive, which in
+/// practice often produces no thinking at all); the budgets force it on.
+pub const THINKING_OPTIONS: &[&str] = &["default", "off", "4000", "16000", "32000"];
+
+pub fn is_known_thinking(thinking: &str) -> bool {
+    thinking.is_empty() || THINKING_OPTIONS.contains(&thinking)
+}
+
 /// Reasoning-effort levels the CLI accepts. An empty string clears the override.
 pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
@@ -140,6 +148,8 @@ pub struct Session {
     pub effort: Option<String>,
     /// Effective permission mode (may have been downgraded by the single-writer rule).
     pub permission_mode: Option<String>,
+    /// Thinking budget: `None`/`default` = CLI default, `off`, or a token count.
+    pub thinking: Option<String>,
     pub sdk_session_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -163,6 +173,7 @@ impl Session {
             model,
             effort,
             permission_mode,
+            thinking: None,
             sdk_session_id: None,
             created_at: now,
             updated_at: now,

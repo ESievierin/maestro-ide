@@ -349,6 +349,7 @@ impl LineQuestionManager {
             model: None,
             effort: None,
             permission_mode: Some(READ_ONLY_MODE.to_string()),
+            thinking: None,
             prompt: prompt.to_string(),
             resume_from: None,
         })?;
@@ -549,6 +550,10 @@ mod tests {
             Ok(())
         }
 
+        fn set_thinking(&self, _session_id: &str, _thinking: &str) -> Result<()> {
+            Ok(())
+        }
+
         fn set_permission_mode(&self, _session_id: &str, _mode: &str) -> Result<()> {
             Ok(())
         }
@@ -571,6 +576,7 @@ mod tests {
             model: None,
             effort: None,
             permission_mode: None,
+            thinking: None,
             prompt: "hi".into(),
             resume_from: None,
         }

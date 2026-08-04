@@ -4,7 +4,11 @@ import type {
   CommandInfo,
   DialogAnswer,
   ModelOption,
+  RateLimitInfo,
   Session,
+  SessionUsage,
+  TodoItem,
+  ToolChild,
   TranscriptItem,
   UserDialog,
 } from "../types/sessions";
@@ -36,6 +40,7 @@ export interface SpawnSessionInput {
   model?: string;
   effort?: string;
   permission_mode?: string;
+  thinking?: string;
   resume_from?: string;
 }
 
@@ -55,6 +60,12 @@ interface SessionsState {
    * raises the next only after this one is answered.
    */
   dialogs: Record<string, UserDialog>;
+  /** Latest checklist per session (TodoWrite replaces it wholesale). */
+  todos: Record<string, TodoItem[]>;
+  /** Cost and context pressure per session, accumulated from `session.usage`. */
+  usage: Record<string, SessionUsage>;
+  /** Account-wide rate-limit state; null until the CLI reports one. */
+  rateLimit: RateLimitInfo | null;
   error: string | null;
 
   fetch: (branch: string) => Promise<void>;
@@ -70,7 +81,55 @@ interface SessionsState {
   setModel: (sessionId: string, model: string) => Promise<void>;
   setEffort: (sessionId: string, effort: string) => Promise<void>;
   setPermissionMode: (sessionId: string, mode: string) => Promise<void>;
+  setThinking: (sessionId: string, thinking: string) => Promise<void>;
   clearError: () => void;
+}
+
+/**
+ * Replace the tool entry with this id, wherever it sits (top level or nested under a
+ * Task call). Returns the same array when nothing matched, so React sees no change.
+ */
+function patchTool(
+  items: TranscriptItem[],
+  toolUseId: string,
+  patch: (item: Extract<TranscriptItem, { kind: "tool_use" }>) => TranscriptItem,
+): TranscriptItem[] {
+  // Newest first: a repeated tool_use id would only ever mean the latest call.
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (item.kind === "tool_use" && item.id === toolUseId) {
+      const next = items.slice();
+      next[i] = patch(item);
+      return next;
+    }
+  }
+  return items;
+}
+
+/** Append subagent activity to the tool call that spawned it. */
+function appendChild(
+  transcripts: Record<string, TranscriptItem[]>,
+  sessionId: string,
+  parentToolUseId: string,
+  child: ToolChild,
+): Record<string, TranscriptItem[]> {
+  const items = transcripts[sessionId] ?? [];
+  const patched = patchTool(items, parentToolUseId, (tool) => {
+    const last = tool.children[tool.children.length - 1];
+    // Merge consecutive text/thinking so a streamed answer stays one block.
+    if (last && last.kind === child.kind && child.kind !== "tool_use" && last.kind !== "tool_use") {
+      return {
+        ...tool,
+        children: [
+          ...tool.children.slice(0, -1),
+          { kind: child.kind, text: last.text + child.text },
+        ],
+      };
+    }
+    return { ...tool, children: [...tool.children, child] };
+  });
+  if (patched === items) return transcripts;
+  return { ...transcripts, [sessionId]: patched };
 }
 
 function appendTranscript(
@@ -79,13 +138,13 @@ function appendTranscript(
   item: TranscriptItem,
 ): Record<string, TranscriptItem[]> {
   const existing = transcripts[sessionId] ?? [];
-  // Merge consecutive text deltas so the transcript stays small.
-  if (item.kind === "text") {
+  // Merge consecutive text (and thinking) deltas so the transcript stays small.
+  if (item.kind === "text" || item.kind === "thinking") {
     const last = existing[existing.length - 1];
-    if (last && last.kind === "text") {
+    if (last && last.kind === item.kind) {
       return {
         ...transcripts,
-        [sessionId]: [...existing.slice(0, -1), { kind: "text", text: last.text + item.text }],
+        [sessionId]: [...existing.slice(0, -1), { kind: item.kind, text: last.text + item.text }],
       };
     }
   }
@@ -98,6 +157,9 @@ export const useSessions = create<SessionsState>((set, get) => ({
   commands: {},
   models: loadCachedModels(),
   dialogs: {},
+  todos: {},
+  usage: {},
+  rateLimit: null,
   error: null,
 
   refreshModels: async () => {
@@ -178,9 +240,13 @@ export const useSessions = create<SessionsState>((set, get) => ({
       set((s) => {
         const transcripts = { ...s.transcripts };
         const commands = { ...s.commands };
+        const todos = { ...s.todos };
+        const usage = { ...s.usage };
         delete transcripts[sessionId];
         delete commands[sessionId];
-        return { transcripts, commands };
+        delete todos[sessionId];
+        delete usage[sessionId];
+        return { transcripts, commands, todos, usage };
       });
       await get().fetch(branch);
       return true;
@@ -252,6 +318,14 @@ export const useSessions = create<SessionsState>((set, get) => ({
     }
   },
 
+  setThinking: async (sessionId, thinking) => {
+    try {
+      await invoke("set_session_thinking", { sessionId, thinking });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
   clearError: () => set({ error: null }),
 }));
 
@@ -299,19 +373,119 @@ onBusEvent((event) => {
       break;
     }
     case "session.stream_delta": {
-      const { session_id, text } = event.data;
-      useSessions.setState((s) => ({
-        transcripts: appendTranscript(s.transcripts, session_id, { kind: "text", text }),
-      }));
+      const { session_id, text, parent_tool_use_id } = event.data;
+      useSessions.setState((s) =>
+        parent_tool_use_id
+          ? {
+              transcripts: appendChild(s.transcripts, session_id, parent_tool_use_id, {
+                kind: "text",
+                text,
+              }),
+            }
+          : {
+              transcripts: appendTranscript(s.transcripts, session_id, { kind: "text", text }),
+            },
+      );
+      break;
+    }
+    case "session.thinking_delta": {
+      const { session_id, text, parent_tool_use_id } = event.data;
+      useSessions.setState((s) =>
+        parent_tool_use_id
+          ? {
+              transcripts: appendChild(s.transcripts, session_id, parent_tool_use_id, {
+                kind: "thinking",
+                text,
+              }),
+            }
+          : {
+              transcripts: appendTranscript(s.transcripts, session_id, { kind: "thinking", text }),
+            },
+      );
       break;
     }
     case "session.tool_use": {
-      const { session_id, name, summary } = event.data;
+      const { session_id, tool_use_id, name, summary, parent_tool_use_id } = event.data;
+      useSessions.setState((s) =>
+        parent_tool_use_id
+          ? {
+              transcripts: appendChild(s.transcripts, session_id, parent_tool_use_id, {
+                kind: "tool_use",
+                id: tool_use_id,
+                name,
+                summary,
+              }),
+            }
+          : {
+              transcripts: appendTranscript(s.transcripts, session_id, {
+                kind: "tool_use",
+                id: tool_use_id,
+                name,
+                summary,
+                children: [],
+              }),
+            },
+      );
+      break;
+    }
+    case "session.tool_result": {
+      const { session_id, tool_use_id, is_error, text } = event.data;
+      useSessions.setState((s) => {
+        const items = s.transcripts[session_id] ?? [];
+        const patched = patchTool(items, tool_use_id, (tool) => ({
+          ...tool,
+          result: { isError: is_error, text },
+        }));
+        if (patched === items) return {};
+        return { transcripts: { ...s.transcripts, [session_id]: patched } };
+      });
+      break;
+    }
+    case "session.todos": {
+      const { session_id, items } = event.data;
+      useSessions.setState((s) => ({ todos: { ...s.todos, [session_id]: items } }));
+      break;
+    }
+    case "session.usage": {
+      const d = event.data;
+      useSessions.setState((s) => {
+        // Two flavours arrive per turn (turn totals, then a context reading); each only
+        // carries its own fields, so they are merged rather than replaced.
+        const previous = s.usage[d.session_id] ?? {};
+        const next: SessionUsage = {
+          ...previous,
+          ...(d.total_cost_usd !== null && { costUsd: d.total_cost_usd }),
+          ...(d.num_turns !== null && { turns: d.num_turns }),
+          ...(d.input_tokens !== null && { inputTokens: d.input_tokens }),
+          ...(d.output_tokens !== null && { outputTokens: d.output_tokens }),
+          ...(d.context_tokens !== null && { contextTokens: d.context_tokens }),
+          ...(d.context_max_tokens !== null && { contextMaxTokens: d.context_max_tokens }),
+          ...(d.context_percent !== null && { contextPercent: d.context_percent }),
+        };
+        return { usage: { ...s.usage, [d.session_id]: next } };
+      });
+      break;
+    }
+    case "session.rate_limit": {
+      const { status, limit_type, utilization, resets_at } = event.data;
+      useSessions.setState({
+        rateLimit: {
+          status,
+          ...(limit_type !== null && { limitType: limit_type }),
+          ...(utilization !== null && { utilization }),
+          ...(resets_at !== null && { resetsAt: resets_at }),
+        },
+      });
+      break;
+    }
+    case "session.permission_denied": {
+      const { session_id, tool, reason, message } = event.data;
       useSessions.setState((s) => ({
         transcripts: appendTranscript(s.transcripts, session_id, {
-          kind: "tool_use",
-          name,
-          summary,
+          kind: "denied",
+          tool,
+          reason,
+          message,
         }),
       }));
       break;
@@ -357,11 +531,12 @@ onBusEvent((event) => {
       break;
     }
     case "session.settings_changed": {
-      const { session_id, model, effort, permission_mode } = event.data;
+      const { session_id, model, effort, permission_mode, thinking } = event.data;
       const parts = [
         model !== null && `model: ${model || "default"}`,
         effort !== null && `effort: ${effort || "default"}`,
         permission_mode !== null && `permissions: ${permission_mode}`,
+        thinking !== null && `thinking: ${thinking || "default"}`,
       ].filter(Boolean) as string[];
       useSessions.setState((s) => {
         const byBranch = { ...s.byBranch };
@@ -374,6 +549,7 @@ onBusEvent((event) => {
                   model: model ?? sess.model,
                   effort: effort ?? sess.effort,
                   permission_mode: permission_mode ?? sess.permission_mode,
+                  thinking: thinking ?? sess.thinking,
                 }
               : sess,
           );

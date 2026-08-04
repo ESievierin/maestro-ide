@@ -46,5 +46,10 @@ pub fn runner() -> Migrations<'static> {
             // T4: persist the permission mode (single-writer rule, read-only badge).
             "ALTER TABLE sessions ADD COLUMN permission_mode TEXT;",
         ),
+        M::up(
+            // S3: persist the thinking budget, so a resumed session thinks as much as
+            // the one it continues.
+            "ALTER TABLE sessions ADD COLUMN thinking TEXT;",
+        ),
     ])
 }

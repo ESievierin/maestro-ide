@@ -360,6 +360,10 @@ mod tests {
             Ok(())
         }
 
+        fn set_thinking(&self, _session_id: &str, _thinking: &str) -> Result<()> {
+            Ok(())
+        }
+
         fn set_permission_mode(&self, _session_id: &str, _mode: &str) -> Result<()> {
             Ok(())
         }

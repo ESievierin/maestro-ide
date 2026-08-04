@@ -166,6 +166,7 @@ pub fn run() {
             ipc::set_session_model,
             ipc::set_session_effort,
             ipc::set_session_permission_mode,
+            ipc::set_session_thinking,
             ipc::respond_user_dialog
         ])
         .setup(move |app| {

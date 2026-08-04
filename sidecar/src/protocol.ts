@@ -1,7 +1,7 @@
-// Rust ↔ sidecar protocol, version 1. NDJSON over stdio: one JSON object per line.
+// Rust ↔ sidecar protocol. NDJSON over stdio: one JSON object per line.
 // Keep in sync with src-tauri/src/core/agent/protocol.rs.
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 // ---------- Requests (core → sidecar) ----------
 
@@ -15,6 +15,8 @@ export interface SpawnRequest {
   model?: string;
   effort?: string;
   permission_mode?: string;
+  /** See {@link SetThinkingRequest.thinking}. Absent leaves the CLI default. */
+  thinking?: string;
   resume_id?: string;
 }
 
@@ -62,6 +64,21 @@ export interface SetEffortRequest {
   session_id: string;
   /** Empty string clears the override. */
   effort: string;
+}
+
+/**
+ * Change how much the model may think mid-session (Query.setMaxThinkingTokens).
+ *
+ * `thinking` is `""`/`"default"` for the CLI's own behaviour (adaptive on models that
+ * support it), `"off"` to disable it, or a token budget as a decimal string (`"4000"`).
+ * The budget matters in practice: with the default, the models tested here often produce
+ * no thinking at all, so nothing can be shown.
+ */
+export interface SetThinkingRequest {
+  type: "set_thinking";
+  id: number;
+  session_id: string;
+  thinking: string;
 }
 
 /** Change the permission mode of a running session (Query.setPermissionMode). */
@@ -116,6 +133,7 @@ export type SidecarRequest =
   | ListModelsRequest
   | SetModelRequest
   | SetEffortRequest
+  | SetThinkingRequest
   | SetPermissionModeRequest
   | UserDialogResponseRequest
   | SpawnRequest
@@ -142,6 +160,12 @@ export interface ModelOption {
   display_name: string;
 }
 
+/** One entry of the agent's todo list (TodoWrite). */
+export interface TodoItem {
+  content: string;
+  status: string;
+}
+
 export type SidecarEvent =
   | { type: "ready"; protocol_version: number }
   | { type: "ack"; id: number; ok: boolean; error?: string }
@@ -149,8 +173,71 @@ export type SidecarEvent =
   | { type: "commands"; session_id: string; commands: CommandInfo[] }
   /** `session_id` is empty for the global list from `list_models`. */
   | { type: "models"; session_id: string; models: ModelOption[] }
-  | { type: "stream_delta"; session_id: string; text: string }
-  | { type: "tool_use"; session_id: string; name: string; summary: string }
+  /** `parent_tool_use_id` is set for subagent output, so the UI can nest it. */
+  | {
+      type: "stream_delta";
+      session_id: string;
+      text: string;
+      parent_tool_use_id?: string;
+    }
+  /** The agent's reasoning, kept separate from its answer. */
+  | {
+      type: "thinking_delta";
+      session_id: string;
+      text: string;
+      parent_tool_use_id?: string;
+    }
+  | {
+      type: "tool_use";
+      session_id: string;
+      /** Matches the `tool_result` that follows, and the subagent output nested under it. */
+      tool_use_id: string;
+      name: string;
+      summary: string;
+      parent_tool_use_id?: string;
+    }
+  /** What a tool actually returned; without it a session looks like it did nothing. */
+  | {
+      type: "tool_result";
+      session_id: string;
+      tool_use_id: string;
+      is_error: boolean;
+      text: string;
+    }
+  /** The agent's plan/checklist, replaced wholesale on every TodoWrite. */
+  | { type: "todos"; session_id: string; items: TodoItem[] }
+  /** Cost and context pressure after a turn. */
+  | {
+      type: "usage";
+      session_id: string;
+      total_cost_usd?: number;
+      num_turns?: number;
+      input_tokens?: number;
+      output_tokens?: number;
+      context_tokens?: number;
+      context_max_tokens?: number;
+      context_percent?: number;
+    }
+  /** Subscription rate-limit state; a warning here precedes a wall. */
+  | {
+      type: "rate_limit";
+      session_id: string;
+      status: string;
+      limit_type?: string;
+      utilization?: number;
+      resets_at?: string;
+    }
+  /**
+   * A tool call denied without ever reaching `canUseTool` (auto mode's classifier, a deny
+   * rule, `dontAsk`). Invisible otherwise — the agent just seems to skip work.
+   */
+  | {
+      type: "permission_denied";
+      session_id: string;
+      tool: string;
+      reason: string;
+      message: string;
+    }
   | {
       type: "permission_request";
       session_id: string;
@@ -210,5 +297,6 @@ export interface SessionHandle {
   ): boolean;
   setModel(model: string): Promise<void>;
   setEffort(effort: string): Promise<void>;
+  setThinking(thinking: string): Promise<void>;
   setPermissionMode(mode: string): Promise<void>;
 }

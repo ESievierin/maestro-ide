@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Requests sent to the sidecar. Every request carries an `id`; the sidecar
 /// answers with an `ack` event carrying the same id.
@@ -23,6 +23,10 @@ pub enum SidecarRequest {
         effort: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         permission_mode: Option<String>,
+        /// `""`/absent leaves the CLI default; `off` disables thinking; a decimal string
+        /// is a token budget.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thinking: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         resume_id: Option<String>,
     },
@@ -65,6 +69,12 @@ pub enum SidecarRequest {
         session_id: String,
         permission_mode: String,
     },
+    /// Change how much the model may think mid-session.
+    SetThinking {
+        id: u64,
+        session_id: String,
+        thinking: String,
+    },
     /// Answer a dialog the CLI asked the host to render.
     UserDialogResponse {
         id: u64,
@@ -82,6 +92,13 @@ pub enum SidecarRequest {
     Shutdown {
         id: u64,
     },
+}
+
+/// One entry of the agent's todo list.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct TodoItem {
+    pub content: String,
+    pub status: String,
 }
 
 /// A slash command supported by a running session (for input autocomplete).
@@ -131,11 +148,74 @@ pub enum SidecarEvent {
     StreamDelta {
         session_id: String,
         text: String,
+        /// Set when the text came from a subagent, so the UI can nest it.
+        #[serde(default)]
+        parent_tool_use_id: Option<String>,
+    },
+    /// The agent's reasoning, kept apart from its answer.
+    ThinkingDelta {
+        session_id: String,
+        text: String,
+        #[serde(default)]
+        parent_tool_use_id: Option<String>,
     },
     ToolUse {
         session_id: String,
+        tool_use_id: String,
         name: String,
         summary: String,
+        #[serde(default)]
+        parent_tool_use_id: Option<String>,
+    },
+    /// What the tool returned, matched to its call by `tool_use_id`.
+    ToolResult {
+        session_id: String,
+        tool_use_id: String,
+        is_error: bool,
+        text: String,
+    },
+    /// The agent's checklist, replaced wholesale on every TodoWrite.
+    Todos {
+        session_id: String,
+        items: Vec<TodoItem>,
+    },
+    /// Cost and context pressure. Arrives in two flavours: turn totals after a result,
+    /// and a context-window reading right after it.
+    Usage {
+        session_id: String,
+        #[serde(default)]
+        total_cost_usd: Option<f64>,
+        #[serde(default)]
+        num_turns: Option<u32>,
+        #[serde(default)]
+        input_tokens: Option<u64>,
+        #[serde(default)]
+        output_tokens: Option<u64>,
+        #[serde(default)]
+        context_tokens: Option<u64>,
+        #[serde(default)]
+        context_max_tokens: Option<u64>,
+        #[serde(default)]
+        context_percent: Option<f64>,
+    },
+    /// Subscription rate-limit state; the warning precedes the wall.
+    RateLimit {
+        session_id: String,
+        status: String,
+        #[serde(default)]
+        limit_type: Option<String>,
+        #[serde(default)]
+        utilization: Option<f64>,
+        #[serde(default)]
+        resets_at: Option<String>,
+    },
+    /// A tool call denied without reaching `canUseTool` (auto-mode classifier, deny rule,
+    /// `dontAsk`). Invisible otherwise: the agent just appears to skip work.
+    PermissionDenied {
+        session_id: String,
+        tool: String,
+        reason: String,
+        message: String,
     },
     PermissionRequest {
         session_id: String,
@@ -196,6 +276,7 @@ mod tests {
             model: None,
             effort: Some("high".into()),
             permission_mode: None,
+            thinking: None,
             resume_id: None,
         };
         let json = serde_json::to_value(&req).expect("serialize");
@@ -213,9 +294,44 @@ mod tests {
             event,
             SidecarEvent::StreamDelta {
                 session_id: "s1".into(),
-                text: "hi".into()
+                text: "hi".into(),
+                parent_tool_use_id: None,
             }
         );
+
+        // Subagent output carries the parent tool call it belongs to.
+        let event: SidecarEvent = serde_json::from_str(
+            r#"{"type":"tool_use","session_id":"s1","tool_use_id":"t1","name":"Grep","summary":"{}","parent_tool_use_id":"task-1"}"#,
+        )
+        .expect("parse nested tool use");
+        match event {
+            SidecarEvent::ToolUse {
+                tool_use_id,
+                parent_tool_use_id,
+                ..
+            } => {
+                assert_eq!(tool_use_id, "t1");
+                assert_eq!(parent_tool_use_id.as_deref(), Some("task-1"));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // Usage arrives twice per turn (turn totals, then a context reading); every
+        // field is optional so a partial reading still parses.
+        let event: SidecarEvent =
+            serde_json::from_str(r#"{"type":"usage","session_id":"s1","context_percent":12.5}"#)
+                .expect("parse partial usage");
+        match event {
+            SidecarEvent::Usage {
+                context_percent,
+                total_cost_usd,
+                ..
+            } => {
+                assert_eq!(context_percent, Some(12.5));
+                assert_eq!(total_cost_usd, None);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
 
         let event: SidecarEvent = serde_json::from_str(
             r#"{"type":"result","session_id":"s1","subtype":"success","is_error":false}"#,

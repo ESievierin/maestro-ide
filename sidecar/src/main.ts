@@ -99,6 +99,7 @@ async function dispatch(request: SidecarRequest): Promise<void> {
     }
     case "set_model":
     case "set_effort":
+    case "set_thinking":
     case "set_permission_mode": {
       const session = sessions.get(request.session_id);
       if (!session) {
@@ -108,6 +109,7 @@ async function dispatch(request: SidecarRequest): Promise<void> {
       try {
         if (request.type === "set_model") await session.setModel(request.model);
         else if (request.type === "set_effort") await session.setEffort(request.effort);
+        else if (request.type === "set_thinking") await session.setThinking(request.thinking);
         else await session.setPermissionMode(request.permission_mode);
         ack(request.id, true);
       } catch (err) {

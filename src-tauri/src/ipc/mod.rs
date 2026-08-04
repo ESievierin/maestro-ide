@@ -148,6 +148,8 @@ pub struct SpawnSessionArgs {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
+    /// `default`/absent, `off`, or a token budget as a decimal string.
+    pub thinking: Option<String>,
     /// Maestro session id of a finished session whose SDK context to resume.
     pub resume_from: Option<String>,
 }
@@ -183,6 +185,7 @@ pub async fn spawn_session(
             model: args.model,
             effort: args.effort,
             permission_mode: args.permission_mode,
+            thinking: args.thinking,
             prompt: args.prompt,
             resume_from: args.resume_from,
         })
@@ -470,6 +473,20 @@ pub async fn set_session_permission_mode(
     let sessions = state.sessions.clone();
     run_core(state.bus.clone(), move || {
         sessions.set_permission_mode(&session_id, &mode)
+    })
+    .await
+}
+
+/// Change how much a live session may think (`default`, `off`, or a token budget).
+#[tauri::command]
+pub async fn set_session_thinking(
+    state: State<'_, AppState>,
+    session_id: String,
+    thinking: String,
+) -> Result<(), String> {
+    let sessions = state.sessions.clone();
+    run_core(state.bus.clone(), move || {
+        sessions.set_thinking(&session_id, &thinking)
     })
     .await
 }

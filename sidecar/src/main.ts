@@ -117,6 +117,16 @@ async function dispatch(request: SidecarRequest): Promise<void> {
       }
       return;
     }
+    case "escalation_response": {
+      for (const session of sessions.values()) {
+        if (session.respondEscalation(request.request_id, request.result)) {
+          ack(request.id, true);
+          return;
+        }
+      }
+      ack(request.id, false, `unknown escalation request: ${request.request_id}`);
+      return;
+    }
     case "mcp_action": {
       const session = sessions.get(request.session_id);
       if (!session) {

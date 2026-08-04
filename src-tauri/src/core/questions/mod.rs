@@ -350,6 +350,8 @@ impl LineQuestionManager {
             effort: None,
             permission_mode: Some(READ_ONLY_MODE.to_string()),
             thinking: None,
+            tools_profile: None,
+            disallowed_tools: Vec::new(),
             prompt: prompt.to_string(),
             resume_from: None,
         })?;
@@ -555,6 +557,10 @@ mod tests {
             Ok(())
         }
 
+        fn respond_escalation(&self, _request_id: &str, _result: &str) -> Result<()> {
+            Ok(())
+        }
+
         fn mcp_action(&self, _session_id: &str, _server: &str, _action: &str) -> Result<()> {
             Ok(())
         }
@@ -586,6 +592,8 @@ mod tests {
             effort: None,
             permission_mode: None,
             thinking: None,
+            tools_profile: None,
+            disallowed_tools: Vec::new(),
             prompt: "hi".into(),
             resume_from: None,
         }

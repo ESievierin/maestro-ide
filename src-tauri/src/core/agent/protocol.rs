@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Requests sent to the sidecar. Every request carries an `id`; the sidecar
 /// answers with an `ack` event carrying the same id.
@@ -27,6 +27,12 @@ pub enum SidecarRequest {
         /// is a token budget.
         #[serde(skip_serializing_if = "Option::is_none")]
         thinking: Option<String>,
+        /// Extra tools this session gets (`review` → `ask_original_agent`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tools_profile: Option<String>,
+        /// Tools the session may not use at all.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        disallowed_tools: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         resume_id: Option<String>,
     },
@@ -85,6 +91,12 @@ pub enum SidecarRequest {
         behavior: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<Value>,
+    },
+    /// Answer an `ask_original_agent` call. Always a readable result, including failures.
+    EscalationResponse {
+        id: u64,
+        request_id: String,
+        result: String,
     },
     /// Reconnect or enable/disable one MCP server of a running session.
     McpAction {
@@ -212,6 +224,12 @@ pub enum SidecarEvent {
         is_error: bool,
         text: String,
     },
+    /// The session asked the agent that implemented this branch about its reasoning.
+    EscalationRequest {
+        session_id: String,
+        request_id: String,
+        question: String,
+    },
     /// Subagent profiles this session can delegate to.
     Agents {
         session_id: String,
@@ -325,6 +343,8 @@ mod tests {
             effort: Some("high".into()),
             permission_mode: None,
             thinking: None,
+            tools_profile: None,
+            disallowed_tools: Vec::new(),
             resume_id: None,
         };
         let json = serde_json::to_value(&req).expect("serialize");

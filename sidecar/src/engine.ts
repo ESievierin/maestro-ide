@@ -4,7 +4,9 @@
 // only executes the session and maps the SDK stream to protocol events.
 
 import {
+  createSdkMcpServer,
   query,
+  tool,
   type EffortLevel,
   type ElicitationRequest,
   type ElicitationResult,
@@ -29,6 +31,7 @@ import type {
   TodoItem,
 } from "./protocol.js";
 import { AsyncQueue } from "./queue.js";
+import { z } from "zod";
 
 const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 export const PERMISSION_MODES = new Set([
@@ -70,6 +73,15 @@ const PLAN_TOOL = "ExitPlanMode";
 
 /** Dialog kind Maestro publishes for `ExitPlanMode`. */
 const PLAN_APPROVAL = "plan_approval";
+
+/**
+ * Tools profile that registers `ask_original_agent`. A review session gets it; nothing else
+ * does, so an implementation session cannot escalate to itself.
+ */
+const REVIEW_PROFILE = "review";
+
+/** How long a single escalation may take before the asking tool gives up on it. */
+const ESCALATION_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * Dialog kind for an MCP server asking the user for something — typically finishing an
@@ -115,6 +127,9 @@ export class AgentSession implements SessionHandle {
    * but only when nothing was streamed, or the transcript would show it twice.
    */
   private streamedThinking = 0;
+  /** In-flight `ask_original_agent` calls, waiting for the core's answer. */
+  private readonly pendingEscalations = new Map<string, (result: string) => void>();
+  private escalationCounter = 0;
   private q: Query | null = null;
   private closedByRequest = false;
 
@@ -150,6 +165,12 @@ export class AgentSession implements SessionHandle {
     }
     const thinking = thinkingConfig(req.thinking);
     if (thinking) options.thinking = thinking;
+    if (req.disallowed_tools && req.disallowed_tools.length > 0) {
+      options.disallowedTools = req.disallowed_tools;
+    }
+    if (req.tools_profile === REVIEW_PROFILE) {
+      options.mcpServers = { maestro: this.reviewToolServer() };
+    }
     if (req.resume_id) options.resume = req.resume_id;
 
     this.q = query({ prompt: this.input, options });
@@ -255,6 +276,14 @@ export class AgentSession implements SessionHandle {
     await this.q?.setPermissionMode(mode as PermissionMode);
   }
 
+  respondEscalation(requestId: string, result: string): boolean {
+    const resolve = this.pendingEscalations.get(requestId);
+    if (!resolve) return false;
+    this.pendingEscalations.delete(requestId);
+    resolve(result);
+    return true;
+  }
+
   respondUserDialog(
     requestId: string,
     behavior: "completed" | "cancelled",
@@ -275,6 +304,11 @@ export class AgentSession implements SessionHandle {
       pending.settle("cancelled");
     }
     this.pendingDialogs.clear();
+    // Escalations resolve with an explanation rather than hanging the asking turn.
+    for (const [, resolve] of this.pendingEscalations) {
+      resolve("Context unavailable: the asking session was closed.");
+    }
+    this.pendingEscalations.clear();
     // Deny anything still waiting so the query can unwind.
     for (const [, resolve] of this.pendingPermissions) {
       resolve({ behavior: "deny", message: "Session closed" });
@@ -655,6 +689,64 @@ export class AgentSession implements SessionHandle {
         dialog_kind: request.dialogKind,
         payload: request.payload,
         tool_use_id: request.toolUseID,
+      });
+    });
+  }
+
+  /**
+   * The one tool a review session gets: ask the agent that implemented this branch why it
+   * did something. The handler forwards the question to the core and waits; the core owns
+   * every decision about who is asked, how often, and what happens when it fails, and
+   * always answers with text — a refusal is an answer, not an error.
+   */
+  private reviewToolServer() {
+    return createSdkMcpServer({
+      name: "maestro",
+      version: "1.0.0",
+      tools: [
+        tool(
+          "ask_original_agent",
+          "Ask the agent that implemented this branch about its reasoning: why a decision " +
+            "was made, what was tried, what a trade-off was. Read-only — it cannot change " +
+            "files. Prefer TASK_NOTES.md first; use this when the notes do not answer it.",
+          {
+            question: z
+              .string()
+              .min(1)
+              .describe("One pointed question about the implementation's reasoning."),
+          },
+          async ({ question }) => {
+            const result = await this.escalate(question);
+            return { content: [{ type: "text", text: result }] };
+          },
+        ),
+      ],
+      alwaysLoad: true,
+    });
+  }
+
+  /** Forward one escalation to the core and wait for its answer. */
+  private escalate(question: string): Promise<string> {
+    const requestId = `esc-${this.sessionId}-${++this.escalationCounter}`;
+    return new Promise<string>((resolve) => {
+      let settled = false;
+      const settle = (result: string) => {
+        if (settled) return;
+        settled = true;
+        this.pendingEscalations.delete(requestId);
+        clearTimeout(timer);
+        resolve(result);
+      };
+      const timer = setTimeout(
+        () => settle("Context unavailable: the escalation timed out."),
+        ESCALATION_TIMEOUT_MS,
+      );
+      this.pendingEscalations.set(requestId, settle);
+      this.emit({
+        type: "escalation_request",
+        session_id: this.sessionId,
+        request_id: requestId,
+        question,
       });
     });
   }

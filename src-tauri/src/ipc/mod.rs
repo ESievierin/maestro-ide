@@ -189,6 +189,8 @@ pub async fn spawn_session(
             effort: args.effort,
             permission_mode: args.permission_mode,
             thinking: args.thinking,
+            tools_profile: None,
+            disallowed_tools: Vec::new(),
             prompt: args.prompt,
             resume_from: args.resume_from,
         })

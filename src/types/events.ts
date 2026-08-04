@@ -6,7 +6,7 @@ export type Severity = "info" | "warning" | "error" | "critical";
 export type SessionStatus =
   "spawning" | "streaming" | "awaiting_input" | "done" | "failed" | "cancelled";
 
-export type SessionType = "research" | "implementation" | "review_fix" | "manual";
+export type SessionType = "research" | "implementation" | "review_fix" | "manual" | "escalation";
 
 export type BusEvent =
   | { type: "worktree.created"; data: { branch: string; path: string } }
@@ -146,6 +146,23 @@ export type BusEvent =
       data: { question_id: string; session_id: string; ok: boolean };
     }
   | { type: "gate.resolved"; data: { gate_id: string; reason: string } }
+  | {
+      type: "escalation.started";
+      data: {
+        asking_session_id: string;
+        target_session_id: string;
+        escalated_session_id: string;
+        question: string;
+      };
+    }
+  | {
+      type: "escalation.finished";
+      data: { asking_session_id: string; target_session_id: string; chars: number };
+    }
+  | {
+      type: "escalation.failed";
+      data: { asking_session_id: string; target_session_id: string; reason: string };
+    }
   | { type: "notes.updated"; data: { branch: string } }
   | { type: "attention.updated"; data: { count: number } }
   | {

@@ -10,6 +10,7 @@ use crate::core::attention::AttentionManager;
 use crate::core::bus::EventBus;
 use crate::core::config::Config;
 use crate::core::diff::DiffManager;
+use crate::core::escalation::EscalationManager;
 use crate::core::gate::{self, GateManager};
 use crate::core::notes::NotesManager;
 use crate::core::prompts::PromptManager;
@@ -76,6 +77,8 @@ pub fn run() {
     // Agent engine: supervised Node sidecar. Signals flow supervisor → manager loop.
     let (signal_tx, signal_rx) = tokio::sync::mpsc::unbounded_channel();
     let engine = Arc::new(SidecarEngine::new(SidecarConfig::resolve(), signal_tx));
+    // The escalation manager answers tool calls directly, so it needs the engine too.
+    let engine_for_escalation: Arc<dyn core::agent::AgentEngine> = engine.clone();
 
     // Gate registry: git push / gh pr create (+ git commit behind the
     // `gate_commit` setting) pause for explicit approval before executing.
@@ -118,6 +121,19 @@ pub fn run() {
         prompts.clone(),
         bus.clone(),
     ));
+
+    // `ask_original_agent`: a review session can ask the implementing agent why. The two
+    // managers reference each other, so the escalation side holds weak references.
+    let escalations = Arc::new(EscalationManager::new(
+        engine_for_escalation,
+        store.clone(),
+        sessions.clone(),
+        worktrees.clone(),
+        bus.clone(),
+    ));
+    escalations.attach();
+    sessions.set_escalation_handler(Arc::downgrade(&escalations)
+        as std::sync::Weak<dyn core::session::manager::EscalationHandler>);
 
     let attention = Arc::new(AttentionManager::new(bus.clone()));
 
@@ -181,6 +197,7 @@ pub fn run() {
             tauri::async_runtime::spawn(diffs.clone().run_invalidation_loop(bus.clone()));
             tauri::async_runtime::spawn(questions.clone().run_loop(bus.clone()));
             tauri::async_runtime::spawn(attention.clone().run_loop(bus.clone()));
+            tauri::async_runtime::spawn(escalations.clone().run_loop(bus.clone()));
             tracing::info!("event forwarder, session manager, and diff invalidator started");
             Ok(())
         })

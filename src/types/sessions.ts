@@ -11,6 +11,8 @@ export interface Session {
   effort: string | null;
   permission_mode: string | null;
   thinking: string | null;
+  /** Extra tool profile the session ran with (`review` gets `ask_original_agent`). */
+  tools_profile: string | null;
   sdk_session_id: string | null;
   created_at: string;
   updated_at: string;
@@ -211,6 +213,19 @@ export type TranscriptItem =
   | { kind: "dialog"; title: string; lines: string[] }
   /** A runtime switch (model/effort/permissions) applied mid-session. */
   | { kind: "settings"; text: string };
+
+/**
+ * Session types the user can start. `escalation` is absent on purpose: those are spawned by
+ * the core to answer `ask_original_agent`, never by hand.
+ */
+export const SESSION_TYPES = ["manual", "research", "implementation", "review_fix"] as const;
+
+export const SESSION_TYPE_LABELS: Record<string, string> = {
+  manual: "manual (no extra behaviour)",
+  research: "research (read-only work)",
+  implementation: "implementation (writes TASK_NOTES.md on close)",
+  review_fix: "review fix (can ask the original agent)",
+};
 
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 

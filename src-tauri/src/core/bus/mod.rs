@@ -215,6 +215,32 @@ pub enum Event {
 
     /// The attention queue changed; panels refetch it. `count` lets a badge update
     /// without a round trip.
+    /// A review session asked the implementing agent a question (S2-T2).
+    #[serde(rename = "escalation.started")]
+    EscalationStarted {
+        asking_session_id: String,
+        target_session_id: String,
+        /// The read-only session spawned to answer; excluded from the attention queue.
+        escalated_session_id: String,
+        question: String,
+    },
+
+    /// The implementing agent answered.
+    #[serde(rename = "escalation.finished")]
+    EscalationFinished {
+        asking_session_id: String,
+        target_session_id: String,
+        chars: u32,
+    },
+
+    /// The question could not be answered; the asking agent was told why.
+    #[serde(rename = "escalation.failed")]
+    EscalationFailed {
+        asking_session_id: String,
+        target_session_id: String,
+        reason: String,
+    },
+
     /// A branch's `TASK_NOTES.md` changed (written by the core; external edits are seen
     /// on the next read).
     #[serde(rename = "notes.updated")]
@@ -264,6 +290,9 @@ impl Event {
             Event::QuestionAnswered { .. } => "question.answered",
             Event::GateResolved { .. } => "gate.resolved",
             Event::AttentionRequired { .. } => "attention.required",
+            Event::EscalationStarted { .. } => "escalation.started",
+            Event::EscalationFinished { .. } => "escalation.finished",
+            Event::EscalationFailed { .. } => "escalation.failed",
             Event::NotesUpdated { .. } => "notes.updated",
             Event::AttentionUpdated { .. } => "attention.updated",
             Event::ErrorRaised { .. } => "error.raised",

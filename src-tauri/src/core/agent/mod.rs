@@ -33,6 +33,10 @@ pub struct SpawnSessionRequest {
     pub permission_mode: Option<String>,
     /// Thinking budget: see [`AgentEngine::set_thinking`].
     pub thinking: Option<String>,
+    /// Extra tools this session gets (`review` → `ask_original_agent`).
+    pub tools_profile: Option<String>,
+    /// Tools this session may not use at all.
+    pub disallowed_tools: Vec<String>,
     pub resume_id: Option<String>,
 }
 
@@ -72,6 +76,8 @@ pub trait AgentEngine: Send + Sync {
     fn set_thinking(&self, session_id: &str, thinking: &str) -> Result<()>;
     /// `reconnect` | `enable` | `disable` on one of the session's MCP servers.
     fn mcp_action(&self, session_id: &str, server: &str, action: &str) -> Result<()>;
+    /// Answer an `ask_original_agent` call with text the asking agent can read.
+    fn respond_escalation(&self, request_id: &str, result: &str) -> Result<()>;
 
     /// Answer a dialog the CLI asked the host to render.
     fn respond_user_dialog(
@@ -204,6 +210,7 @@ fn request_id(request: &SidecarRequest) -> Option<u64> {
         | SidecarRequest::SetPermissionMode { id, .. }
         | SidecarRequest::SetThinking { id, .. }
         | SidecarRequest::McpAction { id, .. }
+        | SidecarRequest::EscalationResponse { id, .. }
         | SidecarRequest::UserDialogResponse { id, .. }
         | SidecarRequest::Shutdown { id } => Some(*id),
     }
@@ -279,6 +286,17 @@ fn spawn_stdout_reader(shared: Arc<Shared>, stdout: std::process::ChildStdout) {
                             core = protocol::PROTOCOL_VERSION,
                             "sidecar protocol version mismatch"
                         );
+                        // A stale `sidecar/dist` used to fail silently: features simply
+                        // did not work. Surface it as an error event so the UI says so —
+                        // the engine has no bus, so it travels the signal channel like any
+                        // other sidecar problem.
+                        let _ = shared.signal_tx.send(EngineSignal::Event(SidecarEvent::Error {
+                            session_id: None,
+                            message: format!(
+                                "the sidecar speaks protocol v{protocol_version}, this build expects v{}; rebuild it with: cd sidecar && npm run build",
+                                protocol::PROTOCOL_VERSION
+                            ),
+                        }));
                     } else {
                         tracing::info!(protocol_version, "sidecar ready");
                     }
@@ -369,6 +387,8 @@ impl AgentEngine for SidecarEngine {
             effort: req.effort,
             permission_mode: req.permission_mode,
             thinking: req.thinking,
+            tools_profile: req.tools_profile,
+            disallowed_tools: req.disallowed_tools,
             resume_id: req.resume_id,
         };
         self.write(&request, Some(&req.session_id))
@@ -446,6 +466,15 @@ impl AgentEngine for SidecarEngine {
             effort: effort.to_string(),
         };
         self.write(&request, Some(session_id))
+    }
+
+    fn respond_escalation(&self, request_id: &str, result: &str) -> Result<()> {
+        let request = SidecarRequest::EscalationResponse {
+            id: self.next_request_id(),
+            request_id: request_id.to_string(),
+            result: result.to_string(),
+        };
+        self.write(&request, None)
     }
 
     fn mcp_action(&self, session_id: &str, server: &str, action: &str) -> Result<()> {
@@ -530,6 +559,8 @@ mod tests {
                     effort: None,
                     permission_mode: None,
                     thinking: None,
+                    tools_profile: None,
+                    disallowed_tools: Vec::new(),
                     resume_id: None,
                 })
                 .expect("spawn");
@@ -595,6 +626,8 @@ mod tests {
                 effort: None,
                 permission_mode: None,
                 thinking: None,
+                tools_profile: None,
+                disallowed_tools: Vec::new(),
                 resume_id: None,
             })
             .expect("spawn after crash");

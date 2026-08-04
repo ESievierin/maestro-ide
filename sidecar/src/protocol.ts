@@ -1,7 +1,7 @@
 // Rust ↔ sidecar protocol. NDJSON over stdio: one JSON object per line.
 // Keep in sync with src-tauri/src/core/agent/protocol.rs.
 
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 // ---------- Requests (core → sidecar) ----------
 
@@ -17,6 +17,14 @@ export interface SpawnRequest {
   permission_mode?: string;
   /** See {@link SetThinkingRequest.thinking}. Absent leaves the CLI default. */
   thinking?: string;
+  /**
+   * Which extra tools this session gets. `"review"` registers `ask_original_agent`;
+   * absent or unknown registers nothing. A string rather than a boolean so more profiles
+   * can be added without another protocol change.
+   */
+  tools_profile?: string;
+  /** Tool names the session may not use at all (SDK `disallowedTools`). */
+  disallowed_tools?: string[];
   resume_id?: string;
 }
 
@@ -129,6 +137,17 @@ export interface UserDialogResponseRequest {
   result?: DialogAnswer;
 }
 
+/**
+ * The core's answer to an `escalation_request`. Always a result the asking agent can read —
+ * including the failures, which arrive as plain text rather than as a thrown tool error.
+ */
+export interface EscalationResponseRequest {
+  type: "escalation_response";
+  id: number;
+  request_id: string;
+  result: string;
+}
+
 /** Ask the CLI which models it offers. No session, no turn, no tokens. */
 export interface ListModelsRequest {
   type: "list_models";
@@ -158,6 +177,7 @@ export type SidecarRequest =
   | SetThinkingRequest
   | SetPermissionModeRequest
   | UserDialogResponseRequest
+  | EscalationResponseRequest
   | McpActionRequest
   | SpawnRequest
   | SendRequest
@@ -241,6 +261,16 @@ export type SidecarEvent =
       tool_use_id: string;
       is_error: boolean;
       text: string;
+    }
+  /**
+   * The session called `ask_original_agent`: it wants the reasoning of the agent that
+   * implemented this branch. The core answers with `escalation_response`.
+   */
+  | {
+      type: "escalation_request";
+      session_id: string;
+      request_id: string;
+      question: string;
     }
   /** Subagent profiles this session can delegate to. */
   | { type: "agents"; session_id: string; agents: AgentInfo[] }
@@ -342,5 +372,7 @@ export interface SessionHandle {
   setThinking(thinking: string): Promise<void>;
   /** `reconnect` | `enable` | `disable` on one MCP server. */
   mcpAction(server: string, action: string): Promise<void>;
+  /** Returns false when the escalation id is unknown to this session. */
+  respondEscalation(requestId: string, result: string): boolean;
   setPermissionMode(mode: string): Promise<void>;
 }

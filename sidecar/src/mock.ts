@@ -3,7 +3,8 @@
 //
 // Prompt keywords: "PERMISSION" pauses on a chat permission request; "GATE" asks to run
 // a push+PR command (exercises the T7 approval dialog); "ASK" raises a question dialog
-// (AskUserQuestion path); "PLAN" asks the user to approve a plan; "AUTH" raises an MCP
+// (AskUserQuestion path); "ESCALATE" asks the original agent through the core;
+// "PLAN" asks the user to approve a plan; "AUTH" raises an MCP
 // elicitation; "THINK" streams a
 // thinking block; "TOOLS" runs a tool with a
 // result; "SUBAGENT" nests subagent output under a Task call; "TODO" publishes a todo
@@ -29,6 +30,8 @@ export class MockSession implements SessionHandle {
   private permissionMode = "";
   private readonly pending = new Map<string, (allow: boolean) => void>();
   private readonly pendingDialogs = new Map<string, (answer: string) => void>();
+  private readonly pendingEscalations = new Map<string, (result: string) => void>();
+  private escalationCounter = 0;
 
   constructor(
     private readonly sessionId: string,
@@ -225,6 +228,24 @@ export class MockSession implements SessionHandle {
       });
     }
 
+    if (prompt.includes("ESCALATE")) {
+      const requestId = `mock-esc-${this.sessionId}-${++this.escalationCounter}`;
+      const result = await new Promise<string>((resolve) => {
+        this.pendingEscalations.set(requestId, resolve);
+        this.emit({
+          type: "escalation_request",
+          session_id: this.sessionId,
+          request_id: requestId,
+          question: "Why was the retry limit set to three?",
+        });
+      });
+      this.emit({
+        type: "stream_delta",
+        session_id: this.sessionId,
+        text: `Original agent said: ${result} `,
+      });
+    }
+
     if (prompt.includes("AUTH")) {
       const requestId = `mock-elicit-${this.sessionId}-${++this.dialogCounter}`;
       const answer = await new Promise<string>((resolve) => {
@@ -363,6 +384,8 @@ export class MockSession implements SessionHandle {
     this.pending.clear();
     for (const [, resolve] of this.pendingDialogs) resolve("(session closed)");
     this.pendingDialogs.clear();
+    for (const [, resolve] of this.pendingEscalations) resolve("(session closed)");
+    this.pendingEscalations.clear();
     this.emit({ type: "session_closed", session_id: this.sessionId, reason: "closed" });
     this.onEnd(this.sessionId);
   }
@@ -372,6 +395,14 @@ export class MockSession implements SessionHandle {
     if (!resolve) return false;
     this.pending.delete(requestId);
     resolve(allow);
+    return true;
+  }
+
+  respondEscalation(requestId: string, result: string): boolean {
+    const resolve = this.pendingEscalations.get(requestId);
+    if (!resolve) return false;
+    this.pendingEscalations.delete(requestId);
+    resolve(result);
     return true;
   }
 

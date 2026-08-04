@@ -88,6 +88,9 @@ pub const SETTING_OS_NOTIFICATIONS: &str = "os_notifications";
 pub struct AttentionManager {
     bus: EventBus,
     items: Mutex<HashMap<String, AttentionItem>>,
+    /// Sessions whose problems are nobody's business: escalations answer another agent's
+    /// question and are closed either way, so a failed one must not nag the user.
+    ignored: Mutex<std::collections::HashSet<String>>,
 }
 
 impl AttentionManager {
@@ -95,7 +98,22 @@ impl AttentionManager {
         Self {
             bus,
             items: Mutex::new(HashMap::new()),
+            ignored: Mutex::new(std::collections::HashSet::new()),
         }
+    }
+
+    /// Never queue anything for this session (used for escalation sessions).
+    pub fn ignore_session(&self, session_id: &str) {
+        if let Ok(mut ignored) = self.ignored.lock() {
+            ignored.insert(session_id.to_string());
+        }
+    }
+
+    fn is_ignored(&self, session_id: &str) -> bool {
+        self.ignored
+            .lock()
+            .map(|ignored| ignored.contains(session_id))
+            .unwrap_or(false)
     }
 
     /// Queue contents, most urgent first, newest first within a kind.
@@ -150,6 +168,15 @@ impl AttentionManager {
 
     fn handle(&self, event: Event) {
         match event {
+            // Escalation sessions are bookkeeping between agents: the user never waits on
+            // one, so anything it produces (including a failure) stays out of the queue.
+            Event::EscalationStarted {
+                escalated_session_id,
+                ..
+            } => {
+                self.ignore_session(&escalated_session_id);
+                self.remove(&format!("failed:{escalated_session_id}"));
+            }
             Event::SessionPermissionRequest {
                 session_id,
                 request_id,
@@ -157,6 +184,9 @@ impl AttentionManager {
                 title,
                 ..
             } => {
+                if self.is_ignored(&session_id) {
+                    return;
+                }
                 self.add(AttentionItem {
                     id: format!("permission:{request_id}"),
                     kind: AttentionKind::PermissionRequest,
@@ -210,6 +240,7 @@ impl AttentionManager {
                 branch,
                 status,
             } => match status {
+                SessionStatus::Failed if self.is_ignored(&session_id) => {}
                 SessionStatus::Failed => self.add(AttentionItem {
                     id: format!("failed:{session_id}"),
                     kind: AttentionKind::SessionFailed,
@@ -310,6 +341,41 @@ mod tests {
     fn manager() -> (Arc<AttentionManager>, EventBus) {
         let bus = EventBus::new();
         (Arc::new(AttentionManager::new(bus.clone())), bus)
+    }
+
+    #[tokio::test]
+    async fn escalation_sessions_stay_out_of_the_queue() {
+        let (mgr, _bus) = manager();
+
+        mgr.handle(Event::EscalationStarted {
+            asking_session_id: "asking".into(),
+            target_session_id: "target".into(),
+            escalated_session_id: "escalated".into(),
+            question: "why?".into(),
+        });
+
+        // Neither its permission prompts nor its failure are the user's problem.
+        mgr.handle(Event::SessionPermissionRequest {
+            session_id: "escalated".into(),
+            request_id: "req-1".into(),
+            tool: "Bash".into(),
+            args: serde_json::json!({}),
+            title: None,
+        });
+        mgr.handle(Event::SessionStatusChanged {
+            session_id: "escalated".into(),
+            branch: "impl/x".into(),
+            status: SessionStatus::Failed,
+        });
+        assert!(mgr.list().unwrap().is_empty());
+
+        // A normal session on the same branch is unaffected.
+        mgr.handle(Event::SessionStatusChanged {
+            session_id: "normal".into(),
+            branch: "impl/x".into(),
+            status: SessionStatus::Failed,
+        });
+        assert_eq!(mgr.list().unwrap().len(), 1);
     }
 
     #[tokio::test]

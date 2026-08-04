@@ -19,12 +19,17 @@ pub enum SessionType {
     Implementation,
     ReviewFix,
     Manual,
+    /// A short read-only session that answers another session's `ask_original_agent`
+    /// question by resuming the original implementation context. Never a writer, never in
+    /// the attention queue: nobody waits on it but the asking agent.
+    Escalation,
 }
 
 impl SessionType {
     pub fn as_str(&self) -> &'static str {
         match self {
             SessionType::Research => "research",
+            SessionType::Escalation => "escalation",
             SessionType::Implementation => "implementation",
             SessionType::ReviewFix => "review_fix",
             SessionType::Manual => "manual",
@@ -36,6 +41,7 @@ impl SessionType {
             "research" => Some(SessionType::Research),
             "implementation" => Some(SessionType::Implementation),
             "review_fix" => Some(SessionType::ReviewFix),
+            "escalation" => Some(SessionType::Escalation),
             "manual" => Some(SessionType::Manual),
             _ => None,
         }
@@ -150,6 +156,8 @@ pub struct Session {
     pub permission_mode: Option<String>,
     /// Thinking budget: `None`/`default` = CLI default, `off`, or a token count.
     pub thinking: Option<String>,
+    /// Extra tool profile this session ran with (`review`), persisted for audit and resume.
+    pub tools_profile: Option<String>,
     pub sdk_session_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -174,6 +182,7 @@ impl Session {
             effort,
             permission_mode,
             thinking: None,
+            tools_profile: None,
             sdk_session_id: None,
             created_at: now,
             updated_at: now,

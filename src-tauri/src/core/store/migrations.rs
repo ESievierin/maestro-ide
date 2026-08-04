@@ -51,5 +51,9 @@ pub fn runner() -> Migrations<'static> {
             // the one it continues.
             "ALTER TABLE sessions ADD COLUMN thinking TEXT;",
         ),
+        M::up(
+            // S2-T2: which extra tool profile a session ran with (audit + resume).
+            "ALTER TABLE sessions ADD COLUMN tools_profile TEXT;",
+        ),
     ])
 }

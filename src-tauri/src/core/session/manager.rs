@@ -37,6 +37,15 @@ const DEFAULT_FINALIZE_TIMEOUT_SECS: u64 = 120;
 /// Template rendered as the finalize prompt.
 const NOTES_TEMPLATE: &str = "task-notes";
 
+/// Tools profile that gives a session `ask_original_agent` (mirrors the sidecar constant).
+pub const REVIEW_TOOLS_PROFILE: &str = "review";
+
+/// Maestro's own escalation tool. It is read-only by construction (the core resolves the
+/// target, forces plan mode and withholds the writing tools), so prompting the user for
+/// permission to ask a question is pure noise — the escalation itself is the visible act,
+/// and it is announced on the bus.
+const OWN_TOOLS: &[&str] = &["mcp__maestro__ask_original_agent"];
+
 /// Dialog kind for the plan review. Approving it lets the agent start writing, so the
 /// answer goes through the single-writer rule before it reaches the CLI.
 const DIALOG_PLAN_APPROVAL: &str = "plan_approval";
@@ -55,6 +64,10 @@ pub struct SpawnParams {
     pub permission_mode: Option<String>,
     /// Thinking budget: `default`/`None`, `off`, or a token count.
     pub thinking: Option<String>,
+    /// Extra tools the session gets (`review` → `ask_original_agent`).
+    pub tools_profile: Option<String>,
+    /// Tools the session may not use at all.
+    pub disallowed_tools: Vec<String>,
     pub prompt: String,
     /// Maestro session id of a finished session to resume (continues its SDK context).
     pub resume_from: Option<String>,
@@ -87,6 +100,16 @@ pub struct SessionManager {
     /// Sessions writing their notes before closing: session id → deadline. The close
     /// happens when their turn ends, or when the deadline passes.
     finalizing: Mutex<HashMap<String, DateTime<Utc>>>,
+    /// Who answers `ask_original_agent`. Set after construction because the escalation
+    /// manager needs the session manager itself — the cycle is broken with a `OnceLock`
+    /// holding a weak reference rather than a second Arc that would leak.
+    escalations: std::sync::OnceLock<std::sync::Weak<dyn EscalationHandler>>,
+}
+
+/// What the manager needs from the escalation layer: one call, answered asynchronously.
+/// A trait keeps `core/session` from depending on `core/escalation` (which depends on it).
+pub trait EscalationHandler: Send + Sync {
+    fn handle(&self, session_id: String, request_id: String, question: String);
 }
 
 impl SessionManager {
@@ -110,7 +133,14 @@ impl SessionManager {
             runtime: Mutex::new(HashMap::new()),
             dialogs: Mutex::new(HashMap::new()),
             finalizing: Mutex::new(HashMap::new()),
+            escalations: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Register who answers `ask_original_agent`. Without it the tool is answered with a
+    /// "context unavailable" result rather than hanging the asking agent's turn.
+    pub fn set_escalation_handler(&self, handler: std::sync::Weak<dyn EscalationHandler>) {
+        let _ = self.escalations.set(handler);
     }
 
     /// Give the manager what it needs to ask a closing implementation session for its
@@ -206,6 +236,12 @@ impl SessionManager {
             }
         }
 
+        // A review session's whole job is to answer comments on someone else's work, so it
+        // gets the escalation tool by default — the notes first, this when they fall short.
+        if params.session_type == SessionType::ReviewFix && params.tools_profile.is_none() {
+            params.tools_profile = Some(REVIEW_TOOLS_PROFILE.to_string());
+        }
+
         let mut session = Session::new(
             params.branch.clone(),
             params.session_type,
@@ -214,6 +250,7 @@ impl SessionManager {
             permission_mode.clone(),
         );
         session.thinking = params.thinking.clone();
+        session.tools_profile = params.tools_profile.clone();
         self.store.insert_session(&session)?;
         self.lock_runtime()?.insert(
             session.id.clone(),
@@ -235,6 +272,8 @@ impl SessionManager {
             effort: params.effort,
             permission_mode,
             thinking: params.thinking,
+            tools_profile: params.tools_profile,
+            disallowed_tools: params.disallowed_tools,
             resume_id,
         });
         if let Err(err) = spawn_result {
@@ -771,6 +810,26 @@ impl SessionManager {
                     text,
                 });
             }
+            SidecarEvent::EscalationRequest {
+                session_id,
+                request_id,
+                question,
+            } => {
+                tracing::info!(session_id, request_id, "escalation requested");
+                match self.escalations.get().and_then(|weak| weak.upgrade()) {
+                    Some(handler) => handler.handle(session_id, request_id, question),
+                    None => {
+                        // Nothing can answer: tell the agent so instead of parking its turn.
+                        if let Err(err) = self.engine.respond_escalation(
+                            &request_id,
+                            "Context unavailable: escalation is not available in this build. \
+                             Answer from TASK_NOTES.md and the code.",
+                        ) {
+                            crate::error::report(&self.bus, &err);
+                        }
+                    }
+                }
+            }
             SidecarEvent::Agents { session_id, agents } => {
                 self.bus
                     .publish(Event::SessionAgents { session_id, agents });
@@ -860,6 +919,36 @@ impl SessionManager {
                 args,
                 title,
             } => {
+                // Maestro's own tools do not need the user's blessing.
+                if OWN_TOOLS.contains(&tool.as_str()) {
+                    tracing::debug!(session_id, tool, "own tool auto-allowed");
+                    if let Err(err) = self
+                        .engine
+                        .respond_permission(&request_id, true, None, None)
+                    {
+                        crate::error::report(&self.bus, &err);
+                    }
+                    return;
+                }
+                // An escalated session must never act. Its tools are already
+                // disallowed and it runs in plan mode, so reaching a gated call means
+                // something upstream failed — deny it outright rather than asking the user
+                // to adjudicate a call that should not exist.
+                if matches!(
+                    self.store.get_session(&session_id),
+                    Ok(Some(ref session)) if session.session_type == SessionType::Escalation
+                ) {
+                    tracing::warn!(session_id, tool, "escalated session tried to act; denied");
+                    if let Err(err) = self.engine.respond_permission(
+                        &request_id,
+                        false,
+                        None,
+                        Some("Escalated sessions are read-only: they answer questions, they do not act.".into()),
+                    ) {
+                        crate::error::report(&self.bus, &err);
+                    }
+                    return;
+                }
                 // Gated operations pause here (gate.pending) instead of the
                 // plain permission prompt; everything else is unchanged.
                 if let Some(gates) = &self.gates {
@@ -1172,6 +1261,14 @@ mod tests {
                 .push(format!("set_effort:{session_id}:{effort}"));
             Ok(())
         }
+        fn respond_escalation(&self, request_id: &str, result: &str) -> Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("escalation:{request_id}:{result}"));
+            Ok(())
+        }
+
         fn mcp_action(&self, session_id: &str, server: &str, action: &str) -> Result<()> {
             self.calls
                 .lock()
@@ -1267,6 +1364,8 @@ mod tests {
             effort: None,
             permission_mode: None,
             thinking: None,
+            tools_profile: None,
+            disallowed_tools: Vec::new(),
             prompt: "hi".into(),
             resume_from: None,
         }
@@ -1715,6 +1814,89 @@ mod tests {
         let calls = engine.calls.lock().unwrap().clone();
         assert!(calls.contains(&format!("close:{}", session.id)));
         assert!(!calls.contains(&format!("send:{}", session.id)));
+    }
+
+    #[tokio::test]
+    async fn an_escalated_session_cannot_act_even_if_it_tries() {
+        let (manager, bus, engine) = setup();
+        let mut params = spawn_params("impl/S2-T2-gate");
+        params.session_type = SessionType::Escalation;
+        params.permission_mode = Some(READ_ONLY_MODE.to_string());
+        let escalated = manager.spawn(params).unwrap();
+        let mut rx = bus.subscribe();
+
+        manager.handle_event(SidecarEvent::PermissionRequest {
+            session_id: escalated.id.clone(),
+            request_id: "req-push".into(),
+            tool: "Bash".into(),
+            args: serde_json::json!({ "command": "git push origin HEAD" }),
+            title: None,
+        });
+
+        // Denied outright: no gate for the user to answer, no permission event.
+        let (request_id, allow, _, message) = engine.perms.lock().unwrap()[0].clone();
+        assert_eq!(request_id, "req-push");
+        assert!(!allow);
+        assert!(message.unwrap().contains("read-only"));
+        assert!(rx.try_recv().is_err(), "nothing should be published");
+    }
+
+    #[tokio::test]
+    async fn a_review_session_gets_the_escalation_tool() {
+        let (manager, _bus, engine) = setup();
+        let mut params = spawn_params("impl/S2-T2-profile");
+        params.session_type = SessionType::ReviewFix;
+        let review = manager.spawn(params).unwrap();
+        assert_eq!(review.tools_profile.as_deref(), Some(REVIEW_TOOLS_PROFILE));
+
+        // And an implementation session does not — it cannot escalate to itself.
+        let mut params = spawn_params("impl/S2-T2-profile2");
+        params.session_type = SessionType::Implementation;
+        let impl_session = manager.spawn(params).unwrap();
+        assert_eq!(impl_session.tools_profile, None);
+
+        let spawns = engine.spawns.lock().unwrap();
+        let review_spawn = spawns.iter().find(|s| s.session_id == review.id).unwrap();
+        assert_eq!(review_spawn.tools_profile.as_deref(), Some("review"));
+    }
+
+    #[tokio::test]
+    async fn maestros_own_escalation_tool_needs_no_permission_prompt() {
+        let (manager, bus, engine) = setup();
+        let mut params = spawn_params("impl/S2-T2-own");
+        params.session_type = SessionType::ReviewFix;
+        let session = manager.spawn(params).unwrap();
+        let mut rx = bus.subscribe();
+
+        manager.handle_event(SidecarEvent::PermissionRequest {
+            session_id: session.id.clone(),
+            request_id: "req-ask".into(),
+            tool: "mcp__maestro__ask_original_agent".into(),
+            args: serde_json::json!({ "question": "why?" }),
+            title: None,
+        });
+
+        let (_, allow, _, _) = engine.perms.lock().unwrap()[0].clone();
+        assert!(allow, "our own read-only tool is allowed automatically");
+        assert!(rx.try_recv().is_err(), "no prompt should reach the user");
+    }
+
+    #[tokio::test]
+    async fn an_escalation_request_without_a_handler_is_answered_not_parked() {
+        let (manager, _bus, engine) = setup();
+        let session = manager.spawn(spawn_params("impl/S2-T2-noh")).unwrap();
+
+        manager.handle_event(SidecarEvent::EscalationRequest {
+            session_id: session.id.clone(),
+            request_id: "esc-1".into(),
+            question: "why?".into(),
+        });
+
+        let calls = engine.calls.lock().unwrap().clone();
+        assert!(
+            calls.iter().any(|c| c.starts_with("escalation:esc-1:")),
+            "the asking agent must get a result, got {calls:?}"
+        );
     }
 
     #[tokio::test]

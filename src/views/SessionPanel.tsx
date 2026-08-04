@@ -24,6 +24,8 @@ import {
   PERMISSION_MODES,
   MAX_ATTACHMENT_BYTES,
   READ_ONLY_MODE,
+  SESSION_TYPE_LABELS,
+  SESSION_TYPES,
   THINKING_LABELS,
   THINKING_OPTIONS,
   TODO_STATUS_ORDER,
@@ -691,6 +693,7 @@ function NewSessionForm({
   const [effort, setEffort] = useState<string>("");
   const [permissionMode, setPermissionMode] = useState<string>("");
   const [thinking, setThinking] = useState<string>("");
+  const [sessionType, setSessionType] = useState<string>("manual");
   const [busy, setBusy] = useState(false);
 
   // The cached list can be stale (e.g. left over from mock mode); ask the CLI once.
@@ -703,6 +706,7 @@ function NewSessionForm({
     const session = await spawn({
       branch,
       prompt,
+      session_type: sessionType,
       model: model || undefined,
       effort: effort || undefined,
       permission_mode: permissionMode || undefined,
@@ -718,6 +722,17 @@ function NewSessionForm({
   return (
     <div className="new-session">
       <div className="new-session-row">
+        <select
+          value={sessionType}
+          onChange={(e) => setSessionType(e.target.value)}
+          title="What kind of work this session is — it decides notes and tools"
+        >
+          {SESSION_TYPES.map((t) => (
+            <option key={t} value={t}>
+              {SESSION_TYPE_LABELS[t] ?? t}
+            </option>
+          ))}
+        </select>
         <select value={model} onChange={(e) => setModel(e.target.value)}>
           <option value="">model: default</option>
           {models
@@ -767,6 +782,18 @@ function NewSessionForm({
           <Icon name="alert" /> In <code>auto</code> a classifier answers permission prompts, and
           what it approves never reaches the commit/push/PR gate — a push can happen without the
           approval dialog. Avoid it where that matters.
+        </p>
+      )}
+      {sessionType === "implementation" && (
+        <p className="hint">
+          On close this session gets one last turn to write <code>TASK_NOTES.md</code> — the record
+          the next agent reads.
+        </p>
+      )}
+      {sessionType === "review_fix" && (
+        <p className="hint">
+          This session can call <code>ask_original_agent</code> to ask the implementing agent about
+          its reasoning (twice per turn, read-only).
         </p>
       )}
       <p className="hint">

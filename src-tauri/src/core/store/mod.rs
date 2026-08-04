@@ -130,6 +130,7 @@ fn session_from_row(row: &Row) -> Result<Session> {
         effort: row.get("effort")?,
         permission_mode: row.get("permission_mode")?,
         thinking: row.get("thinking")?,
+        tools_profile: row.get("tools_profile")?,
         sdk_session_id: row.get("sdk_session_id")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
@@ -137,7 +138,7 @@ fn session_from_row(row: &Row) -> Result<Session> {
 }
 
 const SESSION_COLUMNS: &str = "id, branch, type, status, model, effort, permission_mode, \
-     thinking, sdk_session_id, created_at, updated_at";
+     thinking, tools_profile, sdk_session_id, created_at, updated_at";
 
 impl Store for SqliteStore {
     fn upsert_branch(
@@ -194,8 +195,8 @@ impl Store for SqliteStore {
     fn insert_session(&self, session: &Session) -> Result<()> {
         self.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO sessions (id, branch, type, status, model, effort, permission_mode, thinking, sdk_session_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO sessions (id, branch, type, status, model, effort, permission_mode, thinking, tools_profile, sdk_session_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     session.id,
                     session.branch,
@@ -205,6 +206,7 @@ impl Store for SqliteStore {
                     session.effort,
                     session.permission_mode,
                     session.thinking,
+                    session.tools_profile,
                     session.sdk_session_id,
                     session.created_at,
                     session.updated_at,

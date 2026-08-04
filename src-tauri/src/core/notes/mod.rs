@@ -140,6 +140,29 @@ impl NotesManager {
         self.read(branch)
     }
 
+    /// Add one question-and-answer pair to the notes' `## Q&A` section, creating the file
+    /// and the section when they do not exist yet.
+    ///
+    /// This is the second way notes get written (the first is an implementation session's
+    /// last turn): a question the user asked about a specific line, and what the agent
+    /// answered, is exactly the context the next agent will want — and it would otherwise
+    /// live only in a chat transcript that nobody reads again.
+    pub fn append_qa(
+        &self,
+        branch: &str,
+        context: &str,
+        question: &str,
+        answer: &str,
+    ) -> Result<Notes> {
+        let existing = self.read(branch)?;
+        if let Some(reason) = existing.unavailable {
+            return Err(MaestroError::InvalidData { message: reason });
+        }
+        let entry = format_qa(context, question, answer);
+        let updated = insert_into_qa(&existing.raw, &entry);
+        self.write(branch, &updated)
+    }
+
     /// Notes content for prompt rendering: the file, or `None` when there is nothing yet.
     pub fn current_text(&self, branch: &str) -> Option<String> {
         match self.read(branch) {
@@ -155,6 +178,72 @@ impl NotesManager {
             .into_iter()
             .find(|w| w.branch.as_deref() == Some(branch));
         Ok(worktree.map(|w| w.path.join(NOTES_FILE)))
+    }
+}
+
+/// Heading the Q&A pairs live under.
+const QA_HEADING: &str = "## Q&A";
+
+/// One Q&A entry: where it was asked about, the question, the answer.
+fn format_qa(context: &str, question: &str, answer: &str) -> String {
+    let answer = answer.trim();
+    let question = question.trim();
+    format!("### {context}\n\n**Q:** {question}\n\n{answer}\n")
+}
+
+/// Put `entry` at the end of the `## Q&A` section, adding the section when it is missing.
+/// Everything else in the file is left exactly as it was — the user (and the agent that
+/// wrote the rest) own those sections.
+fn insert_into_qa(raw: &str, entry: &str) -> String {
+    let trimmed = raw.trim_end();
+    match section_bounds(trimmed, QA_HEADING) {
+        Some(end) => {
+            let (before, after) = trimmed.split_at(end);
+            format!(
+                "{}\n\n{}{}",
+                before.trim_end(),
+                entry.trim_end(),
+                tail(after)
+            )
+        }
+        None => {
+            let separator = if trimmed.is_empty() { "" } else { "\n\n" };
+            format!("{trimmed}{separator}{QA_HEADING}\n\n{}\n", entry.trim_end())
+        }
+    }
+}
+
+/// Byte offset where the named section's body ends (the next `## ` heading, or the end).
+fn section_bounds(raw: &str, heading: &str) -> Option<usize> {
+    let start = raw
+        .lines()
+        .scan(0usize, |offset, line| {
+            let at = *offset;
+            *offset += line.len() + 1;
+            Some((at, line))
+        })
+        .find(|(_, line)| line.trim_end() == heading)
+        .map(|(at, _)| at)?;
+
+    let after_heading = start + heading.len();
+    let next = raw[after_heading..]
+        .lines()
+        .scan(after_heading, |offset, line| {
+            let at = *offset;
+            *offset += line.len() + 1;
+            Some((at, line))
+        })
+        .find(|(at, line)| *at > after_heading && line.starts_with("## "))
+        .map(|(at, _)| at);
+    Some(next.unwrap_or(raw.len()))
+}
+
+/// The remainder of the file after an insertion point, kept verbatim.
+fn tail(after: &str) -> String {
+    if after.trim().is_empty() {
+        "\n".to_string()
+    } else {
+        format!("\n\n{}\n", after.trim())
     }
 }
 
@@ -211,6 +300,69 @@ mod tests {
 
 - none yet
 ";
+
+    #[test]
+    fn a_qa_entry_creates_the_section_when_it_is_missing() {
+        let updated = insert_into_qa(
+            WELL_FORMED,
+            &format_qa("src/a.rs:10-12", "why?", "because."),
+        );
+        assert!(updated.contains("## Q&A"));
+        assert!(updated.contains("### src/a.rs:10-12"));
+        assert!(updated.contains("**Q:** why?"));
+        assert!(updated.contains("because."));
+        // The sections that were already there survive untouched.
+        assert!(updated.contains("## Decisions"));
+        assert!(updated.contains("- Chose SQLite over a file, because queries."));
+    }
+
+    #[test]
+    fn a_second_qa_entry_joins_the_existing_section() {
+        let first = insert_into_qa(WELL_FORMED, &format_qa("src/a.rs:1-2", "q one", "a one"));
+        let second = insert_into_qa(&first, &format_qa("src/b.rs:3-4", "q two", "a two"));
+        assert_eq!(
+            second.matches("## Q&A").count(),
+            1,
+            "one section, two entries"
+        );
+        assert!(second.find("q one").unwrap() < second.find("q two").unwrap());
+        // And the Q&A section stays the last one, not spliced into another.
+        let sections = parse_sections(&second);
+        assert_eq!(sections.last().unwrap().title, "Q&A");
+    }
+
+    #[test]
+    fn a_qa_entry_lands_before_a_following_section() {
+        let raw = "## Q&A
+
+### old.rs:1-1
+
+**Q:** old?
+
+old answer
+
+## Open questions
+
+- none yet
+";
+        let updated = insert_into_qa(raw, &format_qa("new.rs:2-2", "new?", "new answer"));
+        let qa_at = updated.find("new answer").expect("the new entry");
+        let next_at = updated
+            .find("## Open questions")
+            .expect("the later section");
+        assert!(
+            qa_at < next_at,
+            "the entry belongs inside Q&A:
+{updated}"
+        );
+        assert!(updated.contains("old answer"), "the old entry survives");
+    }
+
+    #[test]
+    fn notes_that_do_not_exist_yet_start_with_the_qa_section() {
+        let updated = insert_into_qa("", &format_qa("src/a.rs:1-1", "why?", "because."));
+        assert!(updated.starts_with("## Q&A"));
+    }
 
     #[test]
     fn parses_the_three_sections() {

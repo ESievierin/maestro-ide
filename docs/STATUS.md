@@ -3,7 +3,7 @@
 Living handoff document: where Stage 1 stands, what the moving parts are, and the
 conventions that are easy to lose between sessions. Update it when a task lands.
 
-Last updated: 2026-08-05 (Stage 1 complete; Stage S3 Tier 1 — session parity — landed).
+Last updated: 2026-08-05 (Stage 1 complete; Stage S3 parity done; Stage 2 cross-agent context done).
 
 ## Stage 1 progress
 
@@ -54,8 +54,27 @@ and pasted images are sent as attachments. **Rewind is blocked**: `rewindFiles` 
 message uuid and this CLI emits no user-message replays to SDK consumers, so there is no
 checkpoint id — and a worktree plus `git checkout` already covers undoing edits.
 
-Stage 2 (cross-agent context) is specified but not started: `docs/tasks/S2-T1-task-notes.md`,
-`docs/tasks/S2-T2-escalation.md`.
+## Stage 2 progress (cross-agent context)
+
+| Task                       | State                                                             |
+| -------------------------- | ----------------------------------------------------------------- |
+| S2-T1 `TASK_NOTES.md`      | done — written on close, read in a Notes tab (Alt+N)              |
+| S2-T2 `ask_original_agent` | done — protocol v4, in-process MCP tool, verified on the real SDK |
+| S2-T3 Q&A archive          | done — line-question answers appended to the notes                |
+| S2-T4 review seeding       | done — review sessions start with the notes and the comments      |
+
+Specs: `docs/tasks/S2-T1-task-notes.md`, `docs/tasks/S2-T2-escalation.md`, and
+`docs/tasks/S2-T3-T4-context-loop.md` (T3/T4 had no separate spec; that document records
+what was built and why).
+
+The loop in one paragraph: an implementation session's **last turn writes
+`TASK_NOTES.md`** (decisions, trade-offs, open questions) in the worktree root, where it is
+committed like any other file. Line-question answers are **appended to the same file** under
+`## Q&A`, so a question asked once survives the chat. A **review-fix session starts with
+those notes** plus the pasted review comments, and can call **`ask_original_agent`** to ask
+the implementing session directly — read-only, on sonnet, twice per turn, with every failure
+(no target, no context, timeout, over budget) answered as readable text instead of a thrown
+error that would kill its turn.
 
 ## Architecture map (where things live)
 
@@ -82,8 +101,13 @@ Stage 2 (cross-agent context) is specified but not started: `docs/tasks/S2-T1-ta
   owns the answer lifecycle (`question.answering` / `question.answered`).
 - `core/gate` — `GateRule` trait + `GateRegistry` + `GateManager`; rules in
   `gate/rules.rs` with a span-tracking shell tokenizer.
+- `core/notes` — `TASK_NOTES.md` per branch: read/parse/write, `## Q&A` append, refresh on
+  read (no watcher). Missing notes are a state, not an error.
+- `core/escalation` — `ask_original_agent`: resolves the branch's latest resumable
+  implementation session, spawns a read-only `escalation` session on sonnet, collects its
+  answer from the bus, and answers the tool call with text whatever happens.
 - `core/attention` — the "who needs me?" queue, derived from bus events only; publishes
-  `attention.updated`.
+  `attention.updated`. Escalation sessions are excluded — nobody waits on them.
 - `core/config` — `~/.maestro/config.toml`, written with commented defaults on first run
   and applied into the settings table at startup (one lookup path at runtime).
 - `src/state/*` — zustand stores fed by bus events through `onBusEvent`.
@@ -139,6 +163,15 @@ answers, annotations}}`, or `{behavior:"deny", message}` to reply instead. Allow
   Bumping the version is a one-line change plus a full check run.
 - `cargo test` needs `MAESTRO_SIDECAR_E2E=1` **and** a built sidecar for the e2e test;
   without the env var it is skipped (CI sets it and builds the sidecar first).
+- Session types carry behaviour, not just a label: `implementation` writes notes on close,
+  `review_fix` gets the escalation tool and a notes-seeded first turn, `escalation` is
+  spawned only by the core and can never write. The new-session form says what each does.
+- **A stale `sidecar/dist` is now loud.** The core and sidecar both declare
+  `PROTOCOL_VERSION` (4); a mismatch raises an error event telling the user to rebuild.
+  Silent feature gaps were the previous behaviour, twice.
+- Component mount tests exist now (`src/views/*.test.tsx`, jsdom via a per-file
+  `@vitest-environment` comment). They are the only check that catches a panel that crashes
+  on mount — which has happened twice, both times a zustand selector.
 - Auth: the SDK uses the user's Claude Code OAuth login (no `ANTHROPIC_API_KEY` set), so
   sessions consume the subscription quota. Parallel agents burn it faster.
 - Git identity ("Git identity"): local `user.name`/`user.email` are ESeverdev

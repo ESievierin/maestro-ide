@@ -34,6 +34,9 @@ pub const SETTING_NOTES_FINALIZE_TIMEOUT: &str = "notes_finalize_timeout_secs";
 /// Default for [`SETTING_NOTES_FINALIZE_TIMEOUT`]. `0` disables the finalize step.
 const DEFAULT_FINALIZE_TIMEOUT_SECS: u64 = 120;
 
+/// Template a review session's first turn is rendered from.
+const REVIEW_TEMPLATE: &str = "review-fix";
+
 /// Template rendered as the finalize prompt.
 const NOTES_TEMPLATE: &str = "task-notes";
 
@@ -238,8 +241,15 @@ impl SessionManager {
 
         // A review session's whole job is to answer comments on someone else's work, so it
         // gets the escalation tool by default — the notes first, this when they fall short.
-        if params.session_type == SessionType::ReviewFix && params.tools_profile.is_none() {
-            params.tools_profile = Some(REVIEW_TOOLS_PROFILE.to_string());
+        if params.session_type == SessionType::ReviewFix {
+            if params.tools_profile.is_none() {
+                params.tools_profile = Some(REVIEW_TOOLS_PROFILE.to_string());
+            }
+            // ...and it starts with the branch's own record in front of it, so it does not
+            // re-derive decisions from the diff. What the user typed is the review comments.
+            if !params.prompt.trim().is_empty() {
+                params.prompt = self.render_review_prompt(&params.branch, &params.prompt);
+            }
         }
 
         let mut session = Session::new(
@@ -338,6 +348,50 @@ impl SessionManager {
             return Ok(());
         }
         self.engine.close_session(session_id)
+    }
+
+    /// Wrap review comments in the `review-fix` template, with the branch's notes included.
+    /// Falls back to the raw comments when the template or the notes are unavailable: a
+    /// session that starts with less context is much better than one that does not start.
+    fn render_review_prompt(&self, branch: &str, comments: &str) -> String {
+        let Some(prompts) = &self.prompts else {
+            return comments.to_string();
+        };
+        let branch_row = self.store.get_branch(branch).ok().flatten();
+        let mut vars = HashMap::new();
+        vars.insert("branch".to_string(), branch.to_string());
+        vars.insert(
+            "task_id".to_string(),
+            branch_row
+                .as_ref()
+                .and_then(|b| b.task_id.clone())
+                .unwrap_or_else(|| "(none)".to_string()),
+        );
+        vars.insert(
+            "base".to_string(),
+            branch_row
+                .and_then(|b| b.base_branch)
+                .unwrap_or_else(|| "(unknown)".to_string()),
+        );
+        vars.insert(
+            "notes".to_string(),
+            self.notes
+                .as_ref()
+                .and_then(|notes| notes.current_text(branch))
+                .unwrap_or_else(|| {
+                    "No TASK_NOTES.md on this branch — the implementing agent left no record."
+                        .to_string()
+                }),
+        );
+        vars.insert("comments".to_string(), comments.to_string());
+
+        match prompts.render(REVIEW_TEMPLATE, &vars) {
+            Ok(prompt) => prompt,
+            Err(err) => {
+                tracing::warn!(error = %err, "review-fix template unavailable; sending the comments as-is");
+                comments.to_string()
+            }
+        }
     }
 
     /// Ask a closing implementation session to write its `TASK_NOTES.md`, and defer the
@@ -1839,6 +1893,39 @@ mod tests {
         assert!(!allow);
         assert!(message.unwrap().contains("read-only"));
         assert!(rx.try_recv().is_err(), "nothing should be published");
+    }
+
+    #[tokio::test]
+    async fn a_review_session_starts_with_the_review_template_around_the_comments() {
+        let (manager, _bus, engine, _dir) = setup_with_notes("120");
+        let mut params = spawn_params("impl/S2-T4");
+        params.session_type = SessionType::ReviewFix;
+        params.prompt = "Reviewer says: the retry limit is arbitrary.".into();
+        let review = manager.spawn(params).unwrap();
+
+        let spawns = engine.spawns.lock().unwrap();
+        let spawn = spawns.iter().find(|s| s.session_id == review.id).unwrap();
+        // The comments are in there, wrapped in the template, with a notes placeholder.
+        assert!(spawn.prompt.contains("the retry limit is arbitrary"));
+        assert!(spawn.prompt.contains("Review comments to address"));
+        assert!(spawn.prompt.contains("ask_original_agent"));
+        assert!(
+            spawn.prompt.contains("No TASK_NOTES.md on this branch"),
+            "with no notes the prompt must say so, not render an empty block"
+        );
+    }
+
+    #[tokio::test]
+    async fn other_session_types_send_the_prompt_untouched() {
+        let (manager, _bus, engine, _dir) = setup_with_notes("120");
+        let mut params = spawn_params("impl/S2-T4b");
+        params.session_type = SessionType::Implementation;
+        params.prompt = "do the thing".into();
+        let session = manager.spawn(params).unwrap();
+
+        let spawns = engine.spawns.lock().unwrap();
+        let spawn = spawns.iter().find(|s| s.session_id == session.id).unwrap();
+        assert_eq!(spawn.prompt, "do the thing");
     }
 
     #[tokio::test]

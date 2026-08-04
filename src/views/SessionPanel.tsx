@@ -770,7 +770,11 @@ function NewSessionForm({
       </div>
       <textarea
         rows={3}
-        placeholder="Initial prompt for the agent…"
+        placeholder={
+          sessionType === "review_fix"
+            ? "Paste the review comments…"
+            : "Initial prompt for the agent…"
+        }
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
       />

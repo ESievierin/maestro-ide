@@ -32,6 +32,10 @@ const DEFAULT_TEMPLATES: &[(&str, &str)] = &[
         "task-notes",
         include_str!("../../../../prompts-defaults/task-notes.md"),
     ),
+    (
+        "review-fix",
+        include_str!("../../../../prompts-defaults/review-fix.md"),
+    ),
 ];
 
 /// One parsed template: informational frontmatter + a `{{var}}` body.

@@ -113,14 +113,17 @@ pub fn run() {
 
     // Sessions from a previous app run cannot be reattached (yet) — fail them.
     sessions.fail_stale_sessions("app restart");
-    let questions = Arc::new(LineQuestionManager::new(
-        diffs.clone(),
-        sessions.clone(),
-        worktrees.clone(),
-        store.clone(),
-        prompts.clone(),
-        bus.clone(),
-    ));
+    let questions = Arc::new(
+        LineQuestionManager::new(
+            diffs.clone(),
+            sessions.clone(),
+            worktrees.clone(),
+            store.clone(),
+            prompts.clone(),
+            bus.clone(),
+        )
+        .with_notes(notes.clone()),
+    );
 
     // `ask_original_agent`: a review session can ask the implementing agent why. The two
     // managers reference each other, so the escalation side holds weak references.

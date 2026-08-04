@@ -54,6 +54,10 @@ struct PendingQuestion {
     /// i.e. after the first `streaming` transition following the ask — otherwise the
     /// unrelated turn's `awaiting_input` would close the question with the wrong text.
     armed: bool,
+    /// The question text, kept so the core can archive the pair without the UI.
+    question: String,
+    /// The answer as it streams in, so the core (not the UI) can archive it.
+    answer: String,
 }
 
 pub struct LineQuestionManager {
@@ -66,6 +70,8 @@ pub struct LineQuestionManager {
     /// One pending question per session id — a session answers one line question at
     /// a time, matching the "keep it simple" scope of this task.
     pending: Mutex<HashMap<String, PendingQuestion>>,
+    /// Where answered questions are archived; `None` skips archiving entirely.
+    notes: Option<Arc<crate::core::notes::NotesManager>>,
 }
 
 impl LineQuestionManager {
@@ -85,7 +91,15 @@ impl LineQuestionManager {
             prompts,
             bus,
             pending: Mutex::new(HashMap::new()),
+            notes: None,
         }
+    }
+
+    /// Archive answered questions in the branch's `TASK_NOTES.md` (S2-T3). Additive: without
+    /// it the answer only lives in the chat, exactly as before.
+    pub fn with_notes(mut self, notes: Arc<crate::core::notes::NotesManager>) -> Self {
+        self.notes = Some(notes);
+        self
     }
 
     /// Build context for `path` lines `start..=end` on `branch`, render the
@@ -142,7 +156,7 @@ impl LineQuestionManager {
 
         let session_id = match reuse {
             Some(id) => {
-                self.register_pending(&id, &question_id, branch, path, start, end, false);
+                self.register_pending(&id, &question_id, branch, path, start, end, false, question);
                 if let Err(err) = self.sessions.send(&id, &rendered, &[]) {
                     self.drop_pending(&id);
                     return Err(err);
@@ -153,7 +167,7 @@ impl LineQuestionManager {
                 // A fresh session answers on its very first turn, so it is armed
                 // immediately: every delta it streams belongs to this question.
                 let id = self.spawn_fresh(branch, &rendered)?;
-                self.register_pending(&id, &question_id, branch, path, start, end, true);
+                self.register_pending(&id, &question_id, branch, path, start, end, true, question);
                 self.bus.publish(Event::QuestionAnswering {
                     question_id: question_id.clone(),
                     session_id: id.clone(),
@@ -191,6 +205,16 @@ impl LineQuestionManager {
         let mut rx = bus.subscribe();
         loop {
             match rx.recv().await {
+                Ok(Event::SessionStreamDelta {
+                    session_id,
+                    text,
+                    parent_tool_use_id,
+                }) => {
+                    // Subagent chatter is not the answer.
+                    if parent_tool_use_id.is_none() {
+                        self.collect(&session_id, &text);
+                    }
+                }
                 Ok(Event::SessionStatusChanged {
                     session_id, status, ..
                 }) => match status {
@@ -222,6 +246,7 @@ impl LineQuestionManager {
         start: u32,
         end: u32,
         armed: bool,
+        question_text: &str,
     ) {
         if let Ok(mut pending) = self.pending.lock() {
             pending.insert(
@@ -233,8 +258,22 @@ impl LineQuestionManager {
                     line_start: start,
                     line_end: end,
                     armed,
+                    question: question_text.to_string(),
+                    answer: String::new(),
                 },
             );
+        }
+    }
+
+    /// Collect a slice of the answer. Only armed questions collect: before that the
+    /// session's output belongs to whatever it was already doing.
+    fn collect(&self, session_id: &str, text: &str) {
+        if let Ok(mut pending) = self.pending.lock() {
+            if let Some(entry) = pending.get_mut(session_id) {
+                if entry.armed {
+                    entry.answer.push_str(text);
+                }
+            }
         }
     }
 
@@ -277,6 +316,32 @@ impl LineQuestionManager {
             ok,
             "line question completed"
         );
+        // Archive the pair in TASK_NOTES.md: a question about a specific line, answered
+        // once, is context the next agent needs and the chat transcript will not survive.
+        if ok && !question.answer.trim().is_empty() {
+            if let Some(notes) = &self.notes {
+                let context = format!(
+                    "{}:{}-{}",
+                    question.path, question.line_start, question.line_end
+                );
+                match notes.append_qa(
+                    &question.branch,
+                    &context,
+                    &question.question,
+                    &question.answer,
+                ) {
+                    Ok(_) => tracing::info!(
+                        branch = question.branch,
+                        context,
+                        "line question archived in TASK_NOTES.md"
+                    ),
+                    // Best-effort: the answer is already in the chat, and a missing
+                    // worktree is not a reason to make the question look failed.
+                    Err(err) => tracing::warn!(error = %err, "could not archive the answer"),
+                }
+            }
+        }
+
         self.bus.publish(Event::QuestionAnswered {
             question_id: question.question_id,
             session_id: session_id.to_string(),

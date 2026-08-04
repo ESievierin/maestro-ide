@@ -24,7 +24,9 @@ export type IconName =
   | "spinner"
   | "arrow-up"
   | "arrow-down"
-  | "question";
+  | "question"
+  | "folder"
+  | "chevron-down";
 
 /** Path data per icon, drawn on a 24×24 grid. */
 const PATHS: Record<IconName, ReactElement> = {
@@ -52,6 +54,8 @@ const PATHS: Record<IconName, ReactElement> = {
   spinner: <path d="M12 4a8 8 0 0 1 8 8" />,
   "arrow-up": <path d="M12 19V5M6 11l6-6 6 6" />,
   "arrow-down": <path d="M12 5v14M6 13l6 6 6-6" />,
+  folder: <path d="M3.5 6.5h5l2 2.5h10v9.5h-17V6.5Z" />,
+  "chevron-down": <path d="M6 10l6 6 6-6" />,
   question: <path d="M9 9a3 3 0 1 1 4.5 2.6c-1 .6-1.5 1.2-1.5 2.4M12 17.5v.5" />,
 };
 

@@ -1470,3 +1470,30 @@ button:active:not(:disabled) {
     transition-duration: 1ms !important;
   }
 }
+
+/* ---------- Repository switcher ---------- */
+
+.repo-switch {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 0.4rem;
+  background: none;
+  border: 1px solid transparent;
+  padding: 0.2rem 0.35rem;
+  font-size: 0.75rem;
+  color: #666e80;
+  text-align: left;
+}
+
+.repo-switch:hover:not(:disabled) {
+  background: #1c1f26;
+  border-color: #2a2e37;
+  color: #a9b1c3;
+}
+
+.repo-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

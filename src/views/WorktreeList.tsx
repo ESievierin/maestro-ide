@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Icon, StatusDot } from "../components/Icon";
 import { useDiffs } from "../state/diffs";
 import { activeSessionCount, useSessions } from "../state/sessions";
@@ -59,25 +60,62 @@ function StatusBadges({ wt }: { wt: WorktreeInfo }) {
   );
 }
 
-function RepoPicker() {
+/**
+ * Repository chooser. Shown when nothing is selected yet and whenever the user asks to
+ * switch — one repository is open at a time, and its path is persisted in settings.
+ */
+function RepoPicker({ current, onDone }: { current: string | null; onDone: () => void }) {
   const setRepo = useWorktrees((s) => s.setRepo);
-  const [path, setPath] = useState("");
+  const [path, setPath] = useState(current ?? "");
+  const [busy, setBusy] = useState(false);
+
+  const open = async (candidate: string) => {
+    const trimmed = candidate.trim();
+    if (!trimmed) return;
+    setBusy(true);
+    const ok = await setRepo(trimmed);
+    setBusy(false);
+    if (ok) onDone();
+  };
+
+  const browse = async () => {
+    const picked = await openDialog({
+      directory: true,
+      multiple: false,
+      title: "Pick a git repository",
+      defaultPath: path || undefined,
+    });
+    if (typeof picked === "string") {
+      setPath(picked);
+      await open(picked);
+    }
+  };
 
   return (
     <div className="repo-picker">
-      <p className="hint">Select the git repository to orchestrate:</p>
+      <p className="hint">Git repository to orchestrate:</p>
       <input
         type="text"
         placeholder="C:\path\to\repo"
         value={path}
         onChange={(e) => setPath(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && path.trim()) void setRepo(path.trim());
+          if (e.key === "Enter") void open(path);
         }}
       />
-      <button disabled={!path.trim()} onClick={() => void setRepo(path.trim())}>
-        Open repository
-      </button>
+      <div className="actions">
+        <button disabled={busy} onClick={() => void browse()}>
+          <Icon name="folder" /> Browse…
+        </button>
+        <button disabled={busy || !path.trim()} onClick={() => void open(path)}>
+          {busy ? "Opening…" : "Open"}
+        </button>
+        {current && (
+          <button className="small" onClick={onDone}>
+            Cancel
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -86,6 +124,7 @@ export function WorktreeList() {
   const { repo, worktrees, selected, loading, error, refresh, remove, select, clearError } =
     useWorktrees();
   const [showCreate, setShowCreate] = useState(false);
+  const [switchingRepo, setSwitchingRepo] = useState(false);
 
   useEffect(() => {
     // refresh is a stable zustand action; run once on mount.
@@ -119,13 +158,19 @@ export function WorktreeList() {
         </div>
       )}
 
-      {!repo ? (
-        <RepoPicker />
+      {!repo || switchingRepo ? (
+        <RepoPicker current={repo?.path ?? null} onDone={() => setSwitchingRepo(false)} />
       ) : (
         <>
-          <div className="repo-line" title={repo.path}>
-            {repo.path}
-          </div>
+          <button
+            className="repo-line repo-switch"
+            title={`${repo.path}\nClick to open a different repository`}
+            onClick={() => setSwitchingRepo(true)}
+          >
+            <Icon name="folder" size={12} />
+            <span className="repo-path">{repo.path}</span>
+            <Icon name="chevron-down" size={12} />
+          </button>
           {worktrees.length === 0 && !loading && (
             <p className="hint">
               No worktrees yet. Use <strong>+ New</strong> to create one per task.

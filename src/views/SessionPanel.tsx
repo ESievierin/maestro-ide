@@ -4,7 +4,14 @@ import { Icon, StatusDot } from "../components/Icon";
 import remarkGfm from "remark-gfm";
 import { activeSessionCount, useSessions } from "../state/sessions";
 import type { CommandInfo, Session, TranscriptItem } from "../types/sessions";
-import { EFFORTS, isTerminalStatus, PERMISSION_MODES, READ_ONLY_MODE } from "../types/sessions";
+import {
+  EFFORTS,
+  GATE_UNSAFE_MODES,
+  isTerminalStatus,
+  PERMISSION_MODE_LABELS,
+  PERMISSION_MODES,
+  READ_ONLY_MODE,
+} from "../types/sessions";
 import type { WorktreeInfo } from "../types/worktrees";
 
 /** Commands handled by Maestro itself, merged into the autocomplete list. */
@@ -306,7 +313,7 @@ function NewSessionForm({
           <option value="">permissions: default</option>
           {PERMISSION_MODES.map((m) => (
             <option key={m} value={m}>
-              {m === READ_ONLY_MODE ? "plan (read-only)" : m}
+              {PERMISSION_MODE_LABELS[m] ?? m}
             </option>
           ))}
         </select>
@@ -320,6 +327,13 @@ function NewSessionForm({
       <button disabled={busy || prompt.trim().length === 0} onClick={() => void submit()}>
         {busy ? "Starting…" : "Start session"}
       </button>
+      {GATE_UNSAFE_MODES.includes(permissionMode) && (
+        <p className="hint warn">
+          <Icon name="alert" /> In <code>auto</code> a classifier answers permission prompts, and
+          what it approves never reaches the commit/push/PR gate — a push can happen without the
+          approval dialog. Avoid it where that matters.
+        </p>
+      )}
       <p className="hint">
         One writer per worktree: if a writer session is already running, this one starts read-only.
       </p>

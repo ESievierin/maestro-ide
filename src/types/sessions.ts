@@ -52,8 +52,25 @@ export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 // `bypassPermissions` is deliberately absent: with it the SDK never calls canUseTool,
 // so pushes/PRs/commits would run without ever reaching the gate. The plumbing still
 // accepts it (config file / settings), it just isn't offered in the UI.
-export const PERMISSION_MODES = ["default", "acceptEdits", "plan"] as const;
+export const PERMISSION_MODES = ["default", "acceptEdits", "auto", "plan"] as const;
 export const READ_ONLY_MODE = "plan";
+
+/**
+ * `auto` lets a model classifier answer permission prompts. What it approves never
+ * reaches `canUseTool`, and that callback is what the commit/push/PR gate hangs on — so
+ * in this mode a gated command can execute without the approval dialog. Offered because
+ * it is genuinely useful for low-stakes work, labelled so the trade-off is visible, and
+ * to be revisited once the gate moves to a PreToolUse hook (which fires regardless of
+ * permission mode).
+ */
+export const GATE_UNSAFE_MODES: readonly string[] = ["auto"];
+
+export const PERMISSION_MODE_LABELS: Record<string, string> = {
+  default: "default (asks each time)",
+  acceptEdits: "acceptEdits (edits auto, commands ask)",
+  auto: "auto — gate not guaranteed",
+  plan: "plan (read-only)",
+};
 export const ACTIVE_STATUSES: SessionStatus[] = ["spawning", "streaming", "awaiting_input"];
 
 export function isTerminalStatus(status: SessionStatus): boolean {

@@ -4,7 +4,10 @@ import { Icon, StatusDot } from "../components/Icon";
 import remarkGfm from "remark-gfm";
 import { activeSessionCount, useSessions } from "../state/sessions";
 import type {
+  AgentInfo,
+  Attachment,
   CommandInfo,
+  McpServerInfo,
   ModelOption,
   RateLimitInfo,
   Session,
@@ -19,6 +22,7 @@ import {
   isTerminalStatus,
   PERMISSION_MODE_LABELS,
   PERMISSION_MODES,
+  MAX_ATTACHMENT_BYTES,
   READ_ONLY_MODE,
   THINKING_LABELS,
   THINKING_OPTIONS,
@@ -219,6 +223,93 @@ function TodoList({ items }: { items: TodoItem[] }) {
   );
 }
 
+/**
+ * What this session can reach: the subagent profiles it may delegate to and its MCP
+ * servers. Folded away, but a failed or unauthenticated server is worth surfacing —
+ * otherwise its tools are simply missing with no explanation.
+ */
+function SessionCapabilities({
+  session,
+  agents,
+  servers,
+}: {
+  session: Session;
+  agents: AgentInfo[];
+  servers: McpServerInfo[];
+}) {
+  const mcpAction = useSessions((s) => s.mcpAction);
+  const broken = servers.filter((s) => s.status !== "connected" && s.status !== "disabled");
+  if (agents.length === 0 && servers.length === 0) return null;
+
+  return (
+    <details className="capabilities">
+      <summary>
+        <Icon name="shield" /> Capabilities
+        <span className="count">
+          {agents.length} agents · {servers.length} MCP
+        </span>
+        {broken.length > 0 && (
+          <span className="pill pill-warn">
+            <Icon name="alert" /> {broken.length} need attention
+          </span>
+        )}
+      </summary>
+
+      {servers.length > 0 && (
+        <ul className="cap-list">
+          {servers.map((server) => (
+            <li key={server.name}>
+              <span className="cap-name">
+                <StatusDot tone={server.status === "connected" ? "streaming" : "failed"} />
+                {server.name}
+              </span>
+              <span className="ac-desc">
+                {server.status}
+                {server.tool_count > 0 && ` · ${server.tool_count} tools`}
+                {server.detail && ` · ${server.detail}`}
+              </span>
+              <span className="cap-actions">
+                <button
+                  className="small"
+                  onClick={() => void mcpAction(session.id, server.name, "reconnect")}
+                >
+                  <Icon name="refresh" /> Reconnect
+                </button>
+                <button
+                  className="small"
+                  onClick={() =>
+                    void mcpAction(
+                      session.id,
+                      server.name,
+                      server.status === "disabled" ? "enable" : "disable",
+                    )
+                  }
+                >
+                  {server.status === "disabled" ? "Enable" : "Disable"}
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {agents.length > 0 && (
+        <ul className="cap-list">
+          {agents.map((agent) => (
+            <li key={agent.name}>
+              <span className="cap-name">{agent.name}</span>
+              <span className="ac-desc">
+                {agent.description}
+                {agent.model && ` · ${agent.model}`}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </details>
+  );
+}
+
 /** Cost and context pressure of the selected session. */
 function UsageMeter({ usage }: { usage: SessionUsage }) {
   const percent = usage.contextPercent;
@@ -394,16 +485,19 @@ function ChatInput({
   onSend,
   onResume,
   onLocal,
+  onError,
 }: {
   disabled: boolean;
   commands: CommandInfo[];
   models: ModelOption[];
-  onSend: (text: string) => void;
+  onSend: (text: string, attachments: Attachment[]) => void;
   onResume: () => void;
   onLocal: (command: string, argument: string) => void;
+  onError: (message: string) => void;
 }) {
   const [value, setValue] = useState("");
   const [highlight, setHighlight] = useState(0);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
 
   const suggestions = useMemo<Suggestion[]>(() => {
     if (!value.startsWith("/")) return [];
@@ -454,7 +548,7 @@ function ChatInput({
 
   const submit = () => {
     const text = value.trim();
-    if (text.length === 0) return;
+    if (text.length === 0 && attachments.length === 0) return;
     if (text.startsWith("/")) {
       const [head, ...rest] = text.slice(1).split(" ");
       if (LOCAL_COMMANDS.some((c) => c.name === head)) {
@@ -462,9 +556,29 @@ function ChatInput({
         return;
       }
     }
-    onSend(text);
+    onSend(text, attachments);
     setValue("");
+    setAttachments([]);
     setHighlight(0);
+  };
+
+  /** Screenshots go straight from the clipboard to the agent. */
+  const paste = async (event: React.ClipboardEvent<HTMLInputElement>) => {
+    const images = [...event.clipboardData.items].filter((i) => i.type.startsWith("image/"));
+    if (images.length === 0) return;
+    event.preventDefault();
+    for (const item of images) {
+      const file = item.getAsFile();
+      if (!file) continue;
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        onError(`image is too large (${Math.round(file.size / 1024)} KB); 5 MB is the limit`);
+        continue;
+      }
+      const buffer = new Uint8Array(await file.arrayBuffer());
+      let binary = "";
+      for (const byte of buffer) binary += String.fromCharCode(byte);
+      setAttachments((current) => [...current, { media_type: file.type, data: btoa(binary) }]);
+    }
   };
 
   return (
@@ -497,12 +611,31 @@ function ChatInput({
           ))}
         </div>
       )}
+      {attachments.length > 0 && (
+        <div className="attachments">
+          {attachments.map((a, i) => (
+            <button
+              key={i}
+              className="attachment"
+              title="Remove"
+              onClick={() => setAttachments((c) => c.filter((_, j) => j !== i))}
+            >
+              <Icon name="file-text" /> {a.media_type.replace("image/", "")}{" "}
+              {Math.round((a.data.length * 3) / 4 / 1024)} KB
+              <Icon name="close" />
+            </button>
+          ))}
+        </div>
+      )}
       <div className="follow-up">
         <input
           type="text"
-          placeholder={disabled ? "Session is finished" : "Message the agent… ( / for commands)"}
+          placeholder={
+            disabled ? "Session is finished" : "Message the agent… ( / for commands, paste images)"
+          }
           value={value}
           disabled={disabled}
+          onPaste={(e) => void paste(e)}
           onChange={(e) => {
             setValue(e.target.value);
             setHighlight(0);
@@ -532,7 +665,10 @@ function ChatInput({
             if (e.key === "Enter") submit();
           }}
         />
-        <button disabled={disabled || value.trim().length === 0} onClick={submit}>
+        <button
+          disabled={disabled || (value.trim().length === 0 && attachments.length === 0)}
+          onClick={submit}
+        >
           Send
         </button>
       </div>
@@ -783,6 +919,8 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
     dialogs,
     todos,
     usage,
+    agents,
+    mcpServers,
     rateLimit,
     setModel,
     setEffort,
@@ -922,15 +1060,23 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
               )}
             </div>
           </div>
+          {!isTerminalStatus(selected.status) && (
+            <SessionCapabilities
+              session={selected}
+              agents={agents[selected.id] ?? []}
+              servers={mcpServers[selected.id] ?? []}
+            />
+          )}
           <TranscriptView sessionId={selected.id} items={transcripts[selected.id] ?? []} />
           {(todos[selected.id]?.length ?? 0) > 0 && <TodoList items={todos[selected.id]} />}
           <ChatInput
             disabled={isTerminalStatus(selected.status)}
             commands={commands[selected.id] ?? []}
             models={models}
-            onSend={(text) => void send(selected.id, text)}
+            onSend={(text, attachments) => void send(selected.id, text, attachments)}
             onResume={() => setShowResumePicker(true)}
             onLocal={(command, argument) => runLocalCommand(selected, command, argument)}
+            onError={(message) => useSessions.setState({ error: message })}
           />
         </>
       ) : (

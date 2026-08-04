@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::core::agent::protocol::SidecarEvent;
+use crate::core::agent::protocol::{Attachment, SidecarEvent};
 use crate::core::agent::{AgentEngine, EngineSignal, SpawnSessionRequest};
 use crate::core::bus::{Event, EventBus};
 use crate::core::gate::GateManager;
@@ -23,6 +23,13 @@ use crate::error::{MaestroError, Result, Severity};
 
 /// Setting key for what happens when a second writer is requested on a branch.
 pub const SETTING_SINGLE_WRITER_POLICY: &str = "single_writer_policy";
+
+/// Dialog kind for the plan review. Approving it lets the agent start writing, so the
+/// answer goes through the single-writer rule before it reaches the CLI.
+const DIALOG_PLAN_APPROVAL: &str = "plan_approval";
+
+/// Permission mode a session lands in when its plan is approved.
+const APPROVED_PLAN_MODE: &str = "acceptEdits";
 
 /// Everything the IPC layer passes in to start a session.
 #[derive(Clone, Debug)]
@@ -58,9 +65,9 @@ pub struct SessionManager {
     /// Gate for dangerous tool calls (T7); `None` skips gating entirely.
     gates: Option<Arc<GateManager>>,
     runtime: Mutex<HashMap<String, RuntimeSession>>,
-    /// Dialogs the agents are blocked on: request id → session id. The engine keys
-    /// dialogs by request id alone, and everything downstream needs the session.
-    dialogs: Mutex<HashMap<String, String>>,
+    /// Dialogs the agents are blocked on: request id → (session id, dialog kind). The
+    /// engine keys dialogs by request id alone, and everything downstream needs both.
+    dialogs: Mutex<HashMap<String, (String, String)>>,
 }
 
 impl SessionManager {
@@ -222,9 +229,9 @@ impl SessionManager {
             .any(|s| s.branch == branch && s.is_writer && !s.status.is_terminal()))
     }
 
-    pub fn send(&self, session_id: &str, prompt: &str) -> Result<()> {
+    pub fn send(&self, session_id: &str, prompt: &str, attachments: &[Attachment]) -> Result<()> {
         self.ensure_live(session_id)?;
-        self.engine.send_prompt(session_id, prompt)
+        self.engine.send_prompt(session_id, prompt, attachments)
     }
 
     pub fn interrupt(&self, session_id: &str) -> Result<()> {
@@ -427,21 +434,52 @@ impl SessionManager {
         } else {
             "cancelled"
         };
+        let pending = self
+            .dialogs
+            .lock()
+            .ok()
+            .and_then(|d| d.get(request_id).cloned());
+
+        // An approved plan turns a read-only session into a writer. The branch allows one,
+        // so claim the slot *before* the CLI is told, and refuse the approval if it is
+        // taken — otherwise two agents would be writing to the same worktree.
+        if let Some((session_id, kind)) = &pending {
+            if kind == DIALOG_PLAN_APPROVAL && plan_approved(result.as_ref()) {
+                self.set_permission_mode(session_id, APPROVED_PLAN_MODE)
+                    .map_err(|err| MaestroError::InvalidData {
+                        message: format!("cannot start on this plan: {err}"),
+                    })?;
+            }
+        }
+
         tracing::info!(request_id, behavior, "user dialog answered");
         self.engine
             .respond_user_dialog(request_id, behavior, result)?;
         // Announce the resolution so the attention queue and any other view stand down.
-        let session_id = self
-            .dialogs
-            .lock()
-            .ok()
-            .and_then(|mut d| d.remove(request_id))
+        if let Ok(mut dialogs) = self.dialogs.lock() {
+            dialogs.remove(request_id);
+        }
+        let session_id = pending
+            .map(|(session_id, _)| session_id)
             .unwrap_or_default();
         self.bus.publish(Event::SessionUserDialogResolved {
             session_id,
             request_id: request_id.to_string(),
         });
         Ok(())
+    }
+
+    /// Reconnect or enable/disable one of a session's MCP servers. The new state arrives
+    /// as a `session.mcp_servers` event.
+    pub fn mcp_action(&self, session_id: &str, server: &str, action: &str) -> Result<()> {
+        if !matches!(action, "reconnect" | "enable" | "disable") {
+            return Err(MaestroError::InvalidData {
+                message: format!("unknown mcp action: {action}"),
+            });
+        }
+        self.ensure_live(session_id)?;
+        tracing::info!(session_id, server, action, "mcp server action");
+        self.engine.mcp_action(session_id, server, action)
     }
 
     /// Ask the CLI for its model list; the answer arrives as a `session.models` event
@@ -548,6 +586,19 @@ impl SessionManager {
                     text,
                 });
             }
+            SidecarEvent::Agents { session_id, agents } => {
+                self.bus
+                    .publish(Event::SessionAgents { session_id, agents });
+            }
+            SidecarEvent::McpServers {
+                session_id,
+                servers,
+            } => {
+                self.bus.publish(Event::SessionMcpServers {
+                    session_id,
+                    servers,
+                });
+            }
             SidecarEvent::Todos { session_id, items } => {
                 self.bus.publish(Event::SessionTodos { session_id, items });
             }
@@ -652,7 +703,10 @@ impl SessionManager {
                 ..
             } => {
                 if let Ok(mut dialogs) = self.dialogs.lock() {
-                    dialogs.insert(request_id.clone(), session_id.clone());
+                    dialogs.insert(
+                        request_id.clone(),
+                        (session_id.clone(), dialog_kind.clone()),
+                    );
                 }
                 self.bus.publish(Event::SessionUserDialog {
                     session_id,
@@ -833,6 +887,15 @@ impl SessionManager {
     }
 }
 
+/// Did the user approve the plan? The answer is dialog-specific JSON everywhere else in
+/// this layer, and this is the one field the core has to understand.
+fn plan_approved(result: Option<&Value>) -> bool {
+    result
+        .and_then(|value| value.get("approved"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -859,7 +922,12 @@ mod tests {
             self.spawns.lock().unwrap().push(req);
             Ok(())
         }
-        fn send_prompt(&self, session_id: &str, _prompt: &str) -> Result<()> {
+        fn send_prompt(
+            &self,
+            session_id: &str,
+            _prompt: &str,
+            _attachments: &[Attachment],
+        ) -> Result<()> {
             self.calls
                 .lock()
                 .unwrap()
@@ -916,6 +984,14 @@ mod tests {
                 .push(format!("set_effort:{session_id}:{effort}"));
             Ok(())
         }
+        fn mcp_action(&self, session_id: &str, server: &str, action: &str) -> Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("mcp:{session_id}:{server}:{action}"));
+            Ok(())
+        }
+
         fn set_thinking(&self, session_id: &str, thinking: &str) -> Result<()> {
             self.calls
                 .lock()
@@ -1194,7 +1270,7 @@ mod tests {
         let stored = manager.list_for_branch("impl/T-5-x").unwrap();
         assert!(stored.iter().all(|s| s.status == SessionStatus::Failed));
         assert!(
-            manager.send(&s2.id, "hi").is_err(),
+            manager.send(&s2.id, "hi", &[]).is_err(),
             "dead sessions reject sends"
         );
     }
@@ -1416,6 +1492,99 @@ mod tests {
             .unwrap();
         let stored = manager.store.get_session(&reader.id).unwrap().unwrap();
         assert_eq!(stored.permission_mode.as_deref(), Some("acceptEdits"));
+    }
+
+    #[tokio::test]
+    async fn approving_a_plan_claims_the_writer_slot() {
+        let (manager, _bus, engine) = setup();
+        // A writer already holds the branch, so the planner starts read-only.
+        let writer = manager.spawn(spawn_params("impl/S3-g")).unwrap();
+        let planner = manager.spawn(spawn_params("impl/S3-g")).unwrap();
+        assert!(!planner.is_writer());
+
+        manager.handle_event(SidecarEvent::UserDialogRequest {
+            session_id: planner.id.clone(),
+            request_id: "plan-1".into(),
+            dialog_kind: "plan_approval".into(),
+            payload: serde_json::json!({ "plan": "do the thing" }),
+            tool_use_id: None,
+        });
+
+        // Approving would make a second writer on the branch: refused, and the CLI is
+        // never told, so the agent stays in plan mode.
+        let err = manager
+            .respond_user_dialog("plan-1", Some(serde_json::json!({ "approved": true })))
+            .expect_err("second writer must be refused");
+        assert_eq!(err.code(), "invalid_data");
+        assert!(!engine
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.starts_with("dialog:plan-1")));
+
+        // With the slot free, the same approval promotes the session and reaches the CLI.
+        manager.close(&writer.id).unwrap();
+        manager.handle_event(SidecarEvent::SessionClosed {
+            session_id: writer.id.clone(),
+            reason: "closed".into(),
+        });
+        manager
+            .respond_user_dialog("plan-1", Some(serde_json::json!({ "approved": true })))
+            .unwrap();
+        let stored = manager.store.get_session(&planner.id).unwrap().unwrap();
+        assert_eq!(stored.permission_mode.as_deref(), Some("acceptEdits"));
+        assert!(engine
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&"dialog:plan-1:completed".to_string()));
+    }
+
+    #[tokio::test]
+    async fn rejecting_a_plan_leaves_the_session_read_only() {
+        let (manager, _bus, _engine) = setup();
+        let mut params = spawn_params("impl/S3-h");
+        params.permission_mode = Some(READ_ONLY_MODE.to_string());
+        let planner = manager.spawn(params).unwrap();
+
+        manager.handle_event(SidecarEvent::UserDialogRequest {
+            session_id: planner.id.clone(),
+            request_id: "plan-2".into(),
+            dialog_kind: "plan_approval".into(),
+            payload: serde_json::json!({ "plan": "do the thing" }),
+            tool_use_id: None,
+        });
+        manager
+            .respond_user_dialog(
+                "plan-2",
+                Some(serde_json::json!({ "approved": false, "feedback": "narrow it down" })),
+            )
+            .unwrap();
+
+        let stored = manager.store.get_session(&planner.id).unwrap().unwrap();
+        assert_eq!(stored.permission_mode.as_deref(), Some(READ_ONLY_MODE));
+    }
+
+    #[tokio::test]
+    async fn mcp_actions_are_validated_and_forwarded() {
+        let (manager, _bus, engine) = setup();
+        let session = manager.spawn(spawn_params("impl/S3-i")).unwrap();
+
+        assert_eq!(
+            manager
+                .mcp_action(&session.id, "srv", "restart")
+                .expect_err("unknown action")
+                .code(),
+            "invalid_data"
+        );
+        assert!(manager.mcp_action("nope", "srv", "reconnect").is_err());
+
+        manager.mcp_action(&session.id, "srv", "reconnect").unwrap();
+        manager.mcp_action(&session.id, "srv", "disable").unwrap();
+        let calls = engine.calls.lock().unwrap().clone();
+        assert!(calls.contains(&format!("mcp:{}:srv:reconnect", session.id)));
+        assert!(calls.contains(&format!("mcp:{}:srv:disable", session.id)));
     }
 
     #[tokio::test]

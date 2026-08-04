@@ -1,8 +1,11 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AgentInfo,
+  Attachment,
   CommandInfo,
   DialogAnswer,
+  McpServerInfo,
   ModelOption,
   RateLimitInfo,
   Session,
@@ -62,6 +65,10 @@ interface SessionsState {
   dialogs: Record<string, UserDialog>;
   /** Latest checklist per session (TodoWrite replaces it wholesale). */
   todos: Record<string, TodoItem[]>;
+  /** Subagent profiles per session, as reported by the CLI. */
+  agents: Record<string, AgentInfo[]>;
+  /** MCP servers per session and their connection state. */
+  mcpServers: Record<string, McpServerInfo[]>;
   /** Cost and context pressure per session, accumulated from `session.usage`. */
   usage: Record<string, SessionUsage>;
   /** Account-wide rate-limit state; null until the CLI reports one. */
@@ -71,7 +78,7 @@ interface SessionsState {
   fetch: (branch: string) => Promise<void>;
   fetchMany: (branches: string[]) => Promise<void>;
   spawn: (input: SpawnSessionInput) => Promise<Session | null>;
-  send: (sessionId: string, prompt: string) => Promise<void>;
+  send: (sessionId: string, prompt: string, attachments?: Attachment[]) => Promise<void>;
   interrupt: (sessionId: string) => Promise<void>;
   close: (sessionId: string) => Promise<void>;
   remove: (sessionId: string, branch: string) => Promise<boolean>;
@@ -82,6 +89,8 @@ interface SessionsState {
   setEffort: (sessionId: string, effort: string) => Promise<void>;
   setPermissionMode: (sessionId: string, mode: string) => Promise<void>;
   setThinking: (sessionId: string, thinking: string) => Promise<void>;
+  /** `reconnect` | `enable` | `disable` one MCP server of a live session. */
+  mcpAction: (sessionId: string, server: string, action: string) => Promise<void>;
   clearError: () => void;
 }
 
@@ -158,6 +167,8 @@ export const useSessions = create<SessionsState>((set, get) => ({
   models: loadCachedModels(),
   dialogs: {},
   todos: {},
+  agents: {},
+  mcpServers: {},
   usage: {},
   rateLimit: null,
   error: null,
@@ -207,11 +218,19 @@ export const useSessions = create<SessionsState>((set, get) => ({
     }
   },
 
-  send: async (sessionId, prompt) => {
+  send: async (sessionId, prompt, attachments = []) => {
     try {
-      await invoke("send_prompt", { sessionId, prompt });
+      await invoke("send_prompt", {
+        sessionId,
+        prompt,
+        ...(attachments.length > 0 && { attachments }),
+      });
+      const note = attachments.length > 0 ? `\n\n_(${attachments.length} image attached)_` : "";
       set((s) => ({
-        transcripts: appendTranscript(s.transcripts, sessionId, { kind: "user", text: prompt }),
+        transcripts: appendTranscript(s.transcripts, sessionId, {
+          kind: "user",
+          text: prompt + note,
+        }),
       }));
     } catch (e) {
       set({ error: String(e) });
@@ -242,11 +261,15 @@ export const useSessions = create<SessionsState>((set, get) => ({
         const commands = { ...s.commands };
         const todos = { ...s.todos };
         const usage = { ...s.usage };
+        const agents = { ...s.agents };
+        const mcpServers = { ...s.mcpServers };
         delete transcripts[sessionId];
         delete commands[sessionId];
         delete todos[sessionId];
         delete usage[sessionId];
-        return { transcripts, commands, todos, usage };
+        delete agents[sessionId];
+        delete mcpServers[sessionId];
+        return { transcripts, commands, todos, usage, agents, mcpServers };
       });
       await get().fetch(branch);
       return true;
@@ -326,12 +349,28 @@ export const useSessions = create<SessionsState>((set, get) => ({
     }
   },
 
+  mcpAction: async (sessionId, server, action) => {
+    try {
+      // The new state comes back as a session.mcp_servers event.
+      await invoke("mcp_server_action", { sessionId, server, action });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
   clearError: () => set({ error: null }),
 }));
 
 /** Transcript entry for an answered dialog, built from the answer alone. */
 function summarize(answer: DialogAnswer | null): TranscriptItem {
   if (!answer) return { kind: "dialog", title: "Question dismissed", lines: [] };
+  if (answer.approved !== undefined) {
+    return {
+      kind: "dialog",
+      title: answer.approved ? "Plan approved" : "Kept planning",
+      lines: answer.feedback?.trim() ? [answer.feedback.trim()] : [],
+    };
+  }
   if (answer.feedback?.trim()) {
     return { kind: "dialog", title: "Asked the agent to clarify", lines: [answer.feedback.trim()] };
   }
@@ -438,6 +477,24 @@ onBusEvent((event) => {
         }));
         if (patched === items) return {};
         return { transcripts: { ...s.transcripts, [session_id]: patched } };
+      });
+      break;
+    }
+    case "session.agents": {
+      const { session_id, agents } = event.data;
+      useSessions.setState((s) => ({ agents: { ...s.agents, [session_id]: agents } }));
+      break;
+    }
+    case "session.mcp_servers": {
+      const { session_id, servers } = event.data;
+      useSessions.setState((s) => {
+        // A single-server reply (after a reconnect) patches that entry, not the list.
+        const previous = s.mcpServers[session_id] ?? [];
+        const merged =
+          servers.length === 1 && previous.length > 1
+            ? previous.map((p) => (p.name === servers[0].name ? servers[0] : p))
+            : servers;
+        return { mcpServers: { ...s.mcpServers, [session_id]: merged } };
       });
       break;
     }

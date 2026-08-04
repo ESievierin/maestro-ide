@@ -34,6 +34,8 @@ pub enum SidecarRequest {
         id: u64,
         session_id: String,
         prompt: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Attachment>,
     },
     Interrupt {
         id: u64,
@@ -84,6 +86,13 @@ pub enum SidecarRequest {
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<Value>,
     },
+    /// Reconnect or enable/disable one MCP server of a running session.
+    McpAction {
+        id: u64,
+        session_id: String,
+        server: String,
+        action: String,
+    },
     /// Ask the CLI for its model list without starting a session (no tokens spent).
     ListModels {
         id: u64,
@@ -92,6 +101,35 @@ pub enum SidecarRequest {
     Shutdown {
         id: u64,
     },
+}
+
+/// An image pasted into the chat, carried to the model as a content block.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct Attachment {
+    /// MIME type, e.g. `image/png`.
+    pub media_type: String,
+    /// Base64 payload without a data-URI prefix.
+    pub data: String,
+}
+
+/// A subagent profile the session can delegate to.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct AgentInfo {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+/// Connection state of one MCP server.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct McpServerInfo {
+    pub name: String,
+    pub status: String,
+    #[serde(default)]
+    pub tool_count: u32,
+    #[serde(default)]
+    pub detail: String,
 }
 
 /// One entry of the agent's todo list.
@@ -173,6 +211,16 @@ pub enum SidecarEvent {
         tool_use_id: String,
         is_error: bool,
         text: String,
+    },
+    /// Subagent profiles this session can delegate to.
+    Agents {
+        session_id: String,
+        agents: Vec<AgentInfo>,
+    },
+    /// MCP servers of this session and their connection state.
+    McpServers {
+        session_id: String,
+        servers: Vec<McpServerInfo>,
     },
     /// The agent's checklist, replaced wholesale on every TodoWrite.
     Todos {

@@ -20,11 +20,18 @@ export interface SpawnRequest {
   resume_id?: string;
 }
 
+/** An image the user pasted into the chat, carried as base64 next to the prompt. */
+export interface Attachment {
+  media_type: string;
+  data: string;
+}
+
 export interface SendRequest {
   type: "send";
   id: number;
   session_id: string;
   prompt: string;
+  attachments?: Attachment[];
 }
 
 export interface InterruptRequest {
@@ -105,6 +112,11 @@ export interface DialogAnswer {
    * the questions rather than answer them as asked.
    */
   feedback?: string;
+  /**
+   * Yes/no answer for approval dialogs (the plan review). `false` with `feedback` is
+   * "not yet, here is what to change".
+   */
+  approved?: boolean;
 }
 
 /** The host's answer to a `user_dialog_request`. */
@@ -124,6 +136,16 @@ export interface ListModelsRequest {
   cwd: string;
 }
 
+/** Reconnect or enable/disable an MCP server of a running session. */
+export interface McpActionRequest {
+  type: "mcp_action";
+  id: number;
+  session_id: string;
+  server: string;
+  /** `reconnect`, `enable` or `disable`. */
+  action: string;
+}
+
 export interface ShutdownRequest {
   type: "shutdown";
   id: number;
@@ -136,6 +158,7 @@ export type SidecarRequest =
   | SetThinkingRequest
   | SetPermissionModeRequest
   | UserDialogResponseRequest
+  | McpActionRequest
   | SpawnRequest
   | SendRequest
   | InterruptRequest
@@ -158,6 +181,21 @@ export interface ModelOption {
   /** Model identifier to use when spawning sessions. */
   id: string;
   display_name: string;
+}
+
+/** A subagent profile the session can delegate to (`Task` with this `subagent_type`). */
+export interface AgentInfo {
+  name: string;
+  description: string;
+  model: string;
+}
+
+/** Connection state of one MCP server, as the CLI reports it. */
+export interface McpServerInfo {
+  name: string;
+  status: string;
+  tool_count: number;
+  detail: string;
 }
 
 /** One entry of the agent's todo list (TodoWrite). */
@@ -204,6 +242,10 @@ export type SidecarEvent =
       is_error: boolean;
       text: string;
     }
+  /** Subagent profiles this session can delegate to. */
+  | { type: "agents"; session_id: string; agents: AgentInfo[] }
+  /** MCP servers of this session and their connection state. */
+  | { type: "mcp_servers"; session_id: string; servers: McpServerInfo[] }
   /** The agent's plan/checklist, replaced wholesale on every TodoWrite. */
   | { type: "todos"; session_id: string; items: TodoItem[] }
   /** Cost and context pressure after a turn. */
@@ -279,7 +321,7 @@ export function writeEvent(event: SidecarEvent): void {
 /** Common surface of a session runner (real SDK-backed or mock). */
 export interface SessionHandle {
   spawn(req: SpawnRequest): Promise<void>;
-  send(prompt: string): void;
+  send(prompt: string, attachments?: Attachment[]): void;
   interrupt(): Promise<void>;
   close(): void;
   /** Returns false when the request id is unknown to this session. */
@@ -298,5 +340,7 @@ export interface SessionHandle {
   setModel(model: string): Promise<void>;
   setEffort(effort: string): Promise<void>;
   setThinking(thinking: string): Promise<void>;
+  /** `reconnect` | `enable` | `disable` on one MCP server. */
+  mcpAction(server: string, action: string): Promise<void>;
   setPermissionMode(mode: string): Promise<void>;
 }

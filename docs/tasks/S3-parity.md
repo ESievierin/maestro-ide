@@ -140,19 +140,46 @@ Verified against the real CLI: tool calls and results, nested subagent activity,
 task checklist, cost $1.05 / context 4% of 1 000 000 tokens on one run, and 867 characters
 of streamed reasoning once a budget and summarized display were set.
 
-## Tier 3 — completeness, lower urgency
+## Tier 3 — DONE except rewind (2026-08-05)
 
-9. ~~**Auto-denied tool calls**~~ — done in Tier 2 (`session.permission_denied`).
-10. **File rewind / checkpoints** (`rewindFiles`) — the CLI's `/rewind`; needs a UI to pick a
-    message to rewind to.
-11. **MCP servers** — `mcpServerStatus`, `toggleMcpServer`, `reconnectMcpServer`; the session
-    already inherits the user's MCP config, but nothing is visible or controllable.
-12. **Agents** — `supportedAgents()` and the `agent` spawn option (run a session as a named
-    subagent profile).
-13. **Elicitation** (`onElicitation`) — MCP servers asking for input/auth; same bridge as the
-    user dialog, different callback.
-14. **Attachments** — pasting images into the chat input (`SDKUserMessage` content blocks
-    support images).
+**Plan approval** (was the deferred dialog from Tier 1, and the most valuable item here).
+`ExitPlanMode` reaches us the same way `AskUserQuestion` does — a permission request whose
+input is the plan — so it is rendered as its own review dialog: the plan as markdown, a
+notes box, and Approve / Keep planning. Two things make it more than a prettier prompt:
+
+- Approving is what lets the session write, so the **core claims the branch's writer slot
+  first** (`set_permission_mode` → `acceptEdits`) and refuses the approval if another
+  writer holds it. The CLI is never told in that case, so the agent stays in plan mode.
+- Rejecting sends the user's own words back as the denial message, so the agent revises
+  instead of stopping. Verified against the real CLI: three plan revisions in one session
+  (3 143 → 4 460 → 4 812 characters), each one raised as a dialog.
+
+**MCP servers** (item 11). `mcpServerStatus()` is reported on session init as
+`session.mcp_servers`; the Capabilities panel lists each server with its state and tool
+count and offers Reconnect / Enable / Disable (`mcp_action` → `reconnectMcpServer` /
+`toggleMcpServer`), with the fresh state coming back as another event. A server in
+`needs-auth` or `failed` is now visible instead of its tools silently missing.
+
+**Agents** (item 12). `supportedAgents()` is reported as `session.agents` and listed in the
+same panel — 20 profiles on the test machine — so delegation targets are discoverable.
+
+**Elicitation** (item 13). `onElicitation` is wired to the dialog bridge as kind
+`elicitation`. URL-mode requests (browser auth) can be approved; form-mode requests carry a
+JSON schema Maestro cannot render, so the dialog says exactly that and only offers Decline.
+Either way the request is answered, where before the SDK declined it silently.
+
+**Attachments** (item 14). Images pasted into the chat input are attached as base64 content
+blocks next to the prompt (5 MB cap, chips above the input to review or remove them). The
+protocol carries them on `send`, so the transcript records how many went with a message.
+
+**Rewind (item 10) is blocked, not skipped.** `Query.rewindFiles(userMessageId)` needs the
+uuid of a user message, and this CLI never surfaces one to an SDK consumer: with
+`enableFileCheckpointing: true` a probe saw **no** user-message replays at all, so there is
+no id to rewind to (`rewindFiles` cannot be called). The only way in would be reading the
+CLI's own transcript JSONL out of `~/.claude/projects/`, which is private storage and
+fragile. It is also the item Maestro needs least: every session runs in its own git
+worktree with a diff view, so `git checkout -- .` already undoes an agent's edits with
+tooling the user can see. Revisit if the SDK starts emitting replays.
 
 ## Explicitly out of scope
 
@@ -164,5 +191,6 @@ output styles), and anything Stage 2/3 owns (escalation, notes, GitHub polling).
 Beyond the standard checks (`cargo fmt/clippy/test`, `lint/typecheck/test/build`, sidecar
 build/lint): each item needs a mock-mode path so it can be exercised without burning quota,
 and a real-SDK smoke run before it counts as done. The mock sidecar already has
-`PERMISSION` / `GATE` / `CRASH` / `ESCALATE`-style keywords — extend that vocabulary
-(`ASK` for the question dialog, `THINK` for thinking blocks, and so on).
+`PERMISSION` / `GATE` / `CRASH` keywords; the S3 rounds added `ASK` (question dialog),
+`PLAN` (plan review), `AUTH` (MCP elicitation), `THINK`, `TOOLS`, `SUBAGENT`, `TODO`,
+`DENY` and `LIMIT`, plus echoed runtime switches and attachment counts.

@@ -38,6 +38,20 @@ export type BusEvent =
       data: { session_id: string; tool_use_id: string; is_error: boolean; text: string };
     }
   | {
+      type: "session.agents";
+      data: {
+        session_id: string;
+        agents: { name: string; description: string; model: string }[];
+      };
+    }
+  | {
+      type: "session.mcp_servers";
+      data: {
+        session_id: string;
+        servers: { name: string; status: string; tool_count: number; detail: string }[];
+      };
+    }
+  | {
       type: "session.todos";
       data: { session_id: string; items: { content: string; status: string }[] };
     }

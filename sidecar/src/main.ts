@@ -55,7 +55,7 @@ async function dispatch(request: SidecarRequest): Promise<void> {
         ack(request.id, false, `unknown session: ${request.session_id}`);
         return;
       }
-      session.send(request.prompt);
+      session.send(request.prompt, request.attachments);
       ack(request.id, true);
       return;
     }
@@ -111,6 +111,20 @@ async function dispatch(request: SidecarRequest): Promise<void> {
         else if (request.type === "set_effort") await session.setEffort(request.effort);
         else if (request.type === "set_thinking") await session.setThinking(request.thinking);
         else await session.setPermissionMode(request.permission_mode);
+        ack(request.id, true);
+      } catch (err) {
+        ack(request.id, false, String(err));
+      }
+      return;
+    }
+    case "mcp_action": {
+      const session = sessions.get(request.session_id);
+      if (!session) {
+        ack(request.id, false, `unknown session: ${request.session_id}`);
+        return;
+      }
+      try {
+        await session.mcpAction(request.server, request.action);
         ack(request.id, true);
       } catch (err) {
         ack(request.id, false, String(err));

@@ -326,7 +326,12 @@ mod tests {
         fn spawn_session(&self, _req: SpawnSessionRequest) -> Result<()> {
             Ok(())
         }
-        fn send_prompt(&self, _session_id: &str, _prompt: &str) -> Result<()> {
+        fn send_prompt(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+            _attachments: &[crate::core::agent::protocol::Attachment],
+        ) -> Result<()> {
             Ok(())
         }
         fn interrupt(&self, _session_id: &str) -> Result<()> {
@@ -357,6 +362,10 @@ mod tests {
         }
 
         fn set_effort(&self, _session_id: &str, _effort: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn mcp_action(&self, _session_id: &str, _server: &str, _action: &str) -> Result<()> {
             Ok(())
         }
 

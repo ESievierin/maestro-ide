@@ -31,7 +31,7 @@ Inventory and per-item detail: `docs/tasks/S3-parity.md`.
 | ------------------------------------------- | -------------------------------------------------------------- |
 | Tier 1 runtime switching + dialogs + models | done — protocol v2, see below                                  |
 | Tier 2 transcript gaps                      | done — protocol v3: thinking, results, subagents, tasks, usage |
-| Tier 3 completeness                         | open — rewind, MCP, agents, elicitation, images                |
+| Tier 3 completeness                         | done except rewind (blocked — see below)                       |
 
 Tier 1 in one paragraph: model / effort / permission mode can be switched **while a
 session runs** (session toolbar selectors, or `/model`, `/effort`, `/permissions` in the
@@ -46,6 +46,13 @@ reasoning, tool results matched to their calls, subagent activity nested under i
 the task checklist, auto-denied calls, and per-session cost plus a context meter. Thinking
 needed a knob of its own: the CLI default produced none, and a budget without
 `display: "summarized"` yields an empty block (see `docs/tasks/S3-parity.md`).
+
+Tier 3 in one paragraph: plan review became a proper dialog (approving it claims the
+branch's writer slot, so a plan cannot be approved into a second writer), MCP servers and
+subagent profiles are listed and controllable per session, MCP elicitations are answerable,
+and pasted images are sent as attachments. **Rewind is blocked**: `rewindFiles` needs a user
+message uuid and this CLI emits no user-message replays to SDK consumers, so there is no
+checkpoint id — and a worktree plus `git checkout` already covers undoing edits.
 
 Stage 2 (cross-agent context) is specified but not started: `docs/tasks/S2-T1-task-notes.md`,
 `docs/tasks/S2-T2-escalation.md`.
@@ -104,7 +111,8 @@ Stage 2 (cross-agent context) is specified but not started: `docs/tasks/S2-T1-ta
   combinations. Alt+1…9 select a worktree, Alt+↑/↓ cycle, Alt+C/Alt+D switch panels.
 - Mock sidecar keywords (`MAESTRO_SIDECAR_MOCK=1`): `PERMISSION` → chat permission
   prompt, `GATE` → push+PR command that the gate intercepts, `ASK` → agent question
-  dialog (single-select + multi-select), `THINK` → streamed reasoning, `TOOLS` → tool call
+  dialog (single-select + multi-select), `PLAN` → plan review, `AUTH` → MCP elicitation,
+  `THINK` → streamed reasoning, `TOOLS` → tool call
   with a result, `SUBAGENT` → nested subagent activity, `TODO` → task checklist, `DENY` →
   auto-denied call, `LIMIT` → rate-limit warning, `CRASH` → kills the process to exercise
   supervisor recovery. Every turn also reports usage, and runtime model / effort / thinking

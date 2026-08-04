@@ -35,8 +35,10 @@ export const FALLBACK_MODELS: ModelOption[] = [
   { id: "claude-haiku-4-5", display_name: "Claude Haiku 4.5" },
 ];
 
-/** The one dialog kind Maestro renders today (see the sidecar's `ASK_USER_QUESTION`). */
+/** Dialog kinds Maestro renders (see the sidecar's constants of the same names). */
 export const DIALOG_ASK_USER_QUESTION = "ask_user_question";
+export const DIALOG_PLAN_APPROVAL = "plan_approval";
+export const DIALOG_ELICITATION = "elicitation";
 
 export interface QuestionOption {
   label: string;
@@ -69,6 +71,43 @@ export interface DialogAnswer {
   answers?: Record<string, string>;
   annotations?: Record<string, { preview?: string; notes?: string }>;
   feedback?: string;
+  /** Approval dialogs (the plan review) answer with this instead of `answers`. */
+  approved?: boolean;
+}
+
+/** What an MCP server is asking for. */
+export interface ElicitationPayload {
+  server: string;
+  message: string;
+  mode: string;
+  url?: string;
+  title?: string;
+  description?: string;
+  /** True when the server wants structured input Maestro cannot render. */
+  form: boolean;
+}
+
+/** Narrow an unknown payload to the elicitation shape, or null. */
+export function asElicitation(payload: unknown): ElicitationPayload | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const p = payload as Partial<ElicitationPayload>;
+  if (typeof p.server !== "string" || typeof p.message !== "string") return null;
+  return {
+    server: p.server,
+    message: p.message,
+    mode: typeof p.mode === "string" ? p.mode : "form",
+    url: typeof p.url === "string" ? p.url : undefined,
+    title: typeof p.title === "string" ? p.title : undefined,
+    description: typeof p.description === "string" ? p.description : undefined,
+    form: p.form === true,
+  };
+}
+
+/** Read the plan out of a `plan_approval` payload, or null when it has no plan text. */
+export function asPlanText(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const plan = (payload as { plan?: unknown }).plan;
+  return typeof plan === "string" && plan.trim().length > 0 ? plan : null;
 }
 
 /** Narrow an unknown dialog payload to the ask-user-question shape, or null. */
@@ -84,6 +123,31 @@ export function asQuestionPayload(payload: unknown): AskUserQuestionPayload | nu
       Array.isArray((q as DialogQuestion).options),
   );
   return valid ? { questions: questions as DialogQuestion[] } : null;
+}
+
+/** An image pasted into the chat, sent to the model alongside the prompt. */
+export interface Attachment {
+  media_type: string;
+  /** Base64 payload, no data-URI prefix. */
+  data: string;
+}
+
+/** Largest image Maestro will attach; bigger pastes are rejected with a message. */
+export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+/** A subagent profile a session can delegate to (`Task` with this type). */
+export interface AgentInfo {
+  name: string;
+  description: string;
+  model: string;
+}
+
+/** Connection state of one MCP server of a session. */
+export interface McpServerInfo {
+  name: string;
+  status: string;
+  tool_count: number;
+  detail: string;
 }
 
 /** One entry of the agent's checklist (CLI tasks, or TodoWrite on older CLIs). */

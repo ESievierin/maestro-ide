@@ -86,6 +86,20 @@ pub enum Event {
         text: String,
     },
 
+    /// Subagent profiles this session can delegate to.
+    #[serde(rename = "session.agents")]
+    SessionAgents {
+        session_id: String,
+        agents: Vec<crate::core::agent::protocol::AgentInfo>,
+    },
+
+    /// MCP servers of this session and their connection state.
+    #[serde(rename = "session.mcp_servers")]
+    SessionMcpServers {
+        session_id: String,
+        servers: Vec<crate::core::agent::protocol::McpServerInfo>,
+    },
+
     /// The agent's checklist as of the latest TodoWrite (replaces the previous one).
     #[serde(rename = "session.todos")]
     SessionTodos {
@@ -229,6 +243,8 @@ impl Event {
             Event::SessionUserDialog { .. } => "session.user_dialog",
             Event::SessionThinkingDelta { .. } => "session.thinking_delta",
             Event::SessionToolResult { .. } => "session.tool_result",
+            Event::SessionAgents { .. } => "session.agents",
+            Event::SessionMcpServers { .. } => "session.mcp_servers",
             Event::SessionTodos { .. } => "session.todos",
             Event::SessionUsage { .. } => "session.usage",
             Event::SessionRateLimit { .. } => "session.rate_limit",

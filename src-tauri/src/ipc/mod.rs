@@ -12,6 +12,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::core::agent::protocol::Attachment;
 use crate::core::attention::{AttentionItem, AttentionManager};
 use crate::core::bus::{Event, EventBus};
 use crate::core::diff::{DiffManager, DiffScope, DiffSnapshot, FileDiff};
@@ -198,10 +199,11 @@ pub async fn send_prompt(
     state: State<'_, AppState>,
     session_id: String,
     prompt: String,
+    attachments: Option<Vec<Attachment>>,
 ) -> Result<(), String> {
     let sessions = state.sessions.clone();
     run_core(state.bus.clone(), move || {
-        sessions.send(&session_id, &prompt)
+        sessions.send(&session_id, &prompt, &attachments.unwrap_or_default())
     })
     .await
 }
@@ -487,6 +489,21 @@ pub async fn set_session_thinking(
     let sessions = state.sessions.clone();
     run_core(state.bus.clone(), move || {
         sessions.set_thinking(&session_id, &thinking)
+    })
+    .await
+}
+
+/// Reconnect or enable/disable one MCP server of a live session.
+#[tauri::command]
+pub async fn mcp_server_action(
+    state: State<'_, AppState>,
+    session_id: String,
+    server: String,
+    action: String,
+) -> Result<(), String> {
+    let sessions = state.sessions.clone();
+    run_core(state.bus.clone(), move || {
+        sessions.mcp_action(&session_id, &server, &action)
     })
     .await
 }

@@ -1886,3 +1886,109 @@ button:active:not(:disabled) {
 .usage-context.warn .usage-fill {
   background: #e0af68;
 }
+
+/* ---------- Plan review ---------- */
+
+.plan-body {
+  max-height: 46vh;
+  overflow: auto;
+  padding: 0.5rem 0.7rem;
+  background: #191c22;
+  border: 1px solid #2a2e37;
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+
+.plan-notes {
+  width: 100%;
+  margin-top: 0.6rem;
+  background: #14161b;
+  color: #e6e8ee;
+  border: 1px solid #2a2e37;
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.8rem;
+  font-family: inherit;
+}
+
+/* ---------- Session capabilities (agents, MCP) ---------- */
+
+.capabilities {
+  border: 1px solid #2a2e37;
+  border-radius: 8px;
+  padding: 0.35rem 0.6rem;
+  margin-bottom: 0.5rem;
+  background: #191c22;
+}
+
+.capabilities > summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.76rem;
+  color: #b9c0cf;
+}
+
+.cap-list {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.cap-list li {
+  display: grid;
+  grid-template-columns: minmax(6rem, auto) 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+}
+
+.cap-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #e6e8ee;
+}
+
+.cap-actions {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+
+/* ---------- Pasted image attachments ---------- */
+
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-bottom: 0.35rem;
+}
+
+.attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.7rem;
+  background: #1c2230;
+  border: 1px solid #33415e;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  color: #b9c0cf;
+}
+
+.elicit-url {
+  display: inline-block;
+  margin-top: 0.25rem;
+  padding: 0.2rem 0.4rem;
+  background: #14161b;
+  border: 1px solid #2a2e37;
+  border-radius: 4px;
+  color: #7aa2f7;
+  font-size: 0.72rem;
+  word-break: break-all;
+  user-select: all;
+}

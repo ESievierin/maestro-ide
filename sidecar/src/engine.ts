@@ -6,6 +6,8 @@
 import {
   query,
   type EffortLevel,
+  type ElicitationRequest,
+  type ElicitationResult,
   type Options,
   type PermissionMode,
   type PermissionResult,
@@ -17,7 +19,10 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 
 import type {
+  AgentInfo,
+  Attachment,
   DialogAnswer,
+  McpServerInfo,
   SessionHandle,
   SidecarEvent,
   SpawnRequest,
@@ -55,6 +60,23 @@ const ASK_TOOL = "AskUserQuestion";
 
 /** Dialog kind Maestro publishes for `AskUserQuestion` (Maestro's own name, not the CLI's). */
 const ASK_USER_QUESTION = "ask_user_question";
+
+/**
+ * Leaving plan mode. Like the question tool, this reaches us as a permission request whose
+ * input is the plan itself, and approving it is what lets the agent start writing — so it
+ * is rendered as its own dialog rather than a JSON blob in a permission prompt.
+ */
+const PLAN_TOOL = "ExitPlanMode";
+
+/** Dialog kind Maestro publishes for `ExitPlanMode`. */
+const PLAN_APPROVAL = "plan_approval";
+
+/**
+ * Dialog kind for an MCP server asking the user for something — typically finishing an
+ * OAuth flow in the browser. Without a host answer the SDK declines it silently, and the
+ * server's tools stay unusable with no explanation.
+ */
+const ELICITATION = "elicitation";
 
 /**
  * Dialog kinds Maestro renders when the CLI raises one itself. The CLI **fails closed** on
@@ -114,6 +136,7 @@ export class AgentSession implements SessionHandle {
       // Answer CLI-raised dialogs too. `supportedDialogKinds` is the actual opt-in — the
       // callback alone receives nothing — so this stays inert until a kind is declared.
       onUserDialog: (request, opts) => this.onUserDialog(request, opts),
+      onElicitation: (request, opts) => this.onElicitation(request, opts),
       ...(SUPPORTED_DIALOG_KINDS.length > 0 && {
         supportedDialogKinds: SUPPORTED_DIALOG_KINDS,
       }),
@@ -140,10 +163,22 @@ export class AgentSession implements SessionHandle {
     }
   }
 
-  send(prompt: string): void {
+  send(prompt: string, attachments: Attachment[] = []): void {
+    // Images ride along as content blocks; a plain string stays a plain string so the
+    // common case looks exactly as it did before.
+    const content =
+      attachments.length === 0
+        ? prompt
+        : [
+            ...(prompt.length > 0 ? [{ type: "text" as const, text: prompt }] : []),
+            ...attachments.map((a) => ({
+              type: "image" as const,
+              source: { type: "base64" as const, media_type: a.media_type, data: a.data },
+            })),
+          ];
     this.input.push({
       type: "user",
-      message: { role: "user", content: prompt },
+      message: { role: "user", content } as SDKUserMessage["message"],
       parent_tool_use_id: null,
     });
     this.emit({ type: "status", session_id: this.sessionId, status: "streaming" });
@@ -198,6 +233,19 @@ export class AgentSession implements SessionHandle {
     }
     // Summarized display, for the same reason as at spawn: omitted content shows nothing.
     await this.q?.setMaxThinkingTokens(budget, "summarized");
+  }
+
+  /**
+   * Reconnect or enable/disable an MCP server. Enabling a failed server is the only way
+   * out of `needs-auth` without restarting the session.
+   */
+  async mcpAction(server: string, action: string): Promise<void> {
+    if (!this.q) throw new Error("session is not running");
+    if (action === "reconnect") await this.q.reconnectMcpServer(server);
+    else if (action === "enable") await this.q.toggleMcpServer(server, true);
+    else if (action === "disable") await this.q.toggleMcpServer(server, false);
+    else throw new Error(`unknown mcp action: ${action}`);
+    await this.reportMcpServers();
   }
 
   async setPermissionMode(mode: string): Promise<void> {
@@ -304,6 +352,8 @@ export class AgentSession implements SessionHandle {
             model: message.model,
           });
           void this.reportCommands();
+          void this.reportAgents();
+          void this.reportMcpServers();
         }
         break;
       }
@@ -468,6 +518,45 @@ export class AgentSession implements SessionHandle {
     });
   }
 
+  /** Subagent profiles this session can delegate to (`Task` targets). */
+  private async reportAgents(): Promise<void> {
+    if (!this.q) return;
+    try {
+      const agents = await this.q.supportedAgents();
+      this.emit({
+        type: "agents",
+        session_id: this.sessionId,
+        agents: agents.map((a): AgentInfo => ({
+          name: a.name,
+          description: a.description,
+          model: a.model ?? "",
+        })),
+      });
+    } catch {
+      // Delegation still works without the list; it is only discoverability.
+    }
+  }
+
+  /** MCP servers and their connection state, so a failed one is visible. */
+  private async reportMcpServers(): Promise<void> {
+    if (!this.q) return;
+    try {
+      const servers = await this.q.mcpServerStatus();
+      this.emit({
+        type: "mcp_servers",
+        session_id: this.sessionId,
+        servers: servers.map((s): McpServerInfo => ({
+          name: s.name,
+          status: s.status,
+          tool_count: Array.isArray(s.tools) ? s.tools.length : 0,
+          detail: s.serverInfo ? `${s.serverInfo.name} ${s.serverInfo.version}` : "",
+        })),
+      });
+    } catch {
+      // A session without MCP servers answers with an error on some CLI builds.
+    }
+  }
+
   /**
    * How full the context window is. A control request, so it costs no tokens; failures are
    * swallowed because a missing meter must never break a turn.
@@ -571,6 +660,102 @@ export class AgentSession implements SessionHandle {
   }
 
   /**
+   * An MCP server wants input. Form-mode requests carry a JSON schema Maestro cannot
+   * render, so those are declined with the reason visible in the UI; URL-mode requests
+   * (browser auth) are the ones a user can actually complete.
+   */
+  private onElicitation(
+    request: ElicitationRequest,
+    opts: { signal: AbortSignal },
+  ): Promise<ElicitationResult> {
+    const requestId = `dialog-${this.sessionId}-${++this.dialogCounter}`;
+    return new Promise<ElicitationResult>((resolve) => {
+      let settled = false;
+      const settle = (behavior: "completed" | "cancelled", answer?: DialogAnswer) => {
+        if (settled) return;
+        settled = true;
+        this.pendingDialogs.delete(requestId);
+        clearTimeout(timer);
+        if (behavior === "completed" && answer?.approved) {
+          resolve({ action: "accept" });
+        } else if (behavior === "cancelled") {
+          resolve({ action: "cancel" });
+        } else {
+          resolve({ action: "decline" });
+        }
+      };
+
+      const timer = setTimeout(() => {
+        this.emit({
+          type: "error",
+          session_id: this.sessionId,
+          message: `${request.serverName} asked for input and was not answered in time`,
+        });
+        settle("cancelled");
+      }, DIALOG_TIMEOUT_MS);
+
+      this.pendingDialogs.set(requestId, { kind: ELICITATION, settle });
+      opts.signal.addEventListener("abort", () => settle("cancelled"));
+
+      this.emit({
+        type: "user_dialog_request",
+        session_id: this.sessionId,
+        request_id: requestId,
+        dialog_kind: ELICITATION,
+        payload: {
+          server: request.serverName,
+          message: request.message,
+          mode: request.mode ?? "form",
+          ...(request.url && { url: request.url }),
+          ...(request.title && { title: request.title }),
+          ...(request.description && { description: request.description }),
+          // A schema means a form Maestro cannot fill in; the UI says so.
+          form: request.requestedSchema !== undefined,
+        },
+      });
+    });
+  }
+
+  /**
+   * Ask the user to approve the plan. Allowing is what takes the session out of plan mode,
+   * so the core gets a say first (the branch's single writer slot); rejecting sends the
+   * user's words back so the agent can revise instead of stopping.
+   */
+  private askApproval(
+    input: Record<string, unknown>,
+    resolve: (result: PermissionResult) => void,
+    signal: AbortSignal,
+  ): void {
+    const requestId = `dialog-${this.sessionId}-${++this.dialogCounter}`;
+    let settled = false;
+    const settle = (behavior: "completed" | "cancelled", answer?: DialogAnswer) => {
+      if (settled) return;
+      settled = true;
+      this.pendingDialogs.delete(requestId);
+      const feedback = answer?.feedback?.trim();
+      if (behavior === "completed" && answer?.approved) {
+        resolve({ behavior: "allow", updatedInput: input });
+      } else {
+        resolve({
+          behavior: "deny",
+          message: feedback || "The user wants to keep planning.",
+        });
+      }
+    };
+
+    this.pendingDialogs.set(requestId, { kind: PLAN_APPROVAL, settle });
+    signal.addEventListener("abort", () => settle("cancelled"));
+
+    this.emit({
+      type: "user_dialog_request",
+      session_id: this.sessionId,
+      request_id: requestId,
+      dialog_kind: PLAN_APPROVAL,
+      payload: input,
+    });
+  }
+
+  /**
    * `AskUserQuestion` arrives as a permission request; render it as a dialog and answer the
    * permission with the user's choices. Allow carries the answers in `updatedInput` (the
    * tool reads them from there); deny with a message routes the user's own words back to
@@ -626,6 +811,10 @@ export class AgentSession implements SessionHandle {
       if (toolName === ASK_TOOL) {
         // Not a question about permission — an actual question for the user.
         this.askQuestion(input, resolve, opts.signal);
+        return;
+      }
+      if (toolName === PLAN_TOOL) {
+        this.askApproval(input, resolve, opts.signal);
         return;
       }
       this.pendingPermissions.set(requestId, resolve);

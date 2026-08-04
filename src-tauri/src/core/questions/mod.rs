@@ -143,7 +143,7 @@ impl LineQuestionManager {
         let session_id = match reuse {
             Some(id) => {
                 self.register_pending(&id, &question_id, branch, path, start, end, false);
-                if let Err(err) = self.sessions.send(&id, &rendered) {
+                if let Err(err) = self.sessions.send(&id, &rendered, &[]) {
                     self.drop_pending(&id);
                     return Err(err);
                 }
@@ -516,7 +516,12 @@ mod tests {
             self.spawns.lock().unwrap().push(req);
             Ok(())
         }
-        fn send_prompt(&self, session_id: &str, prompt: &str) -> Result<()> {
+        fn send_prompt(
+            &self,
+            session_id: &str,
+            prompt: &str,
+            _attachments: &[crate::core::agent::protocol::Attachment],
+        ) -> Result<()> {
             self.sent
                 .lock()
                 .unwrap()
@@ -547,6 +552,10 @@ mod tests {
         }
 
         fn set_effort(&self, _session_id: &str, _effort: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn mcp_action(&self, _session_id: &str, _server: &str, _action: &str) -> Result<()> {
             Ok(())
         }
 

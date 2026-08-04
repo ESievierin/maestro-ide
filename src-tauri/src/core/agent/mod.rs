@@ -19,7 +19,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::error::{MaestroError, Result};
-use protocol::{SidecarEvent, SidecarRequest};
+use protocol::{Attachment, SidecarEvent, SidecarRequest};
 
 /// Everything the session layer needs to know to start a session.
 #[derive(Clone, Debug)]
@@ -48,7 +48,8 @@ pub enum EngineSignal {
 /// progress arrive asynchronously as [`EngineSignal`]s.
 pub trait AgentEngine: Send + Sync {
     fn spawn_session(&self, req: SpawnSessionRequest) -> Result<()>;
-    fn send_prompt(&self, session_id: &str, prompt: &str) -> Result<()>;
+    fn send_prompt(&self, session_id: &str, prompt: &str, attachments: &[Attachment])
+        -> Result<()>;
     fn interrupt(&self, session_id: &str) -> Result<()>;
     fn close_session(&self, session_id: &str) -> Result<()>;
     fn respond_permission(
@@ -69,6 +70,8 @@ pub trait AgentEngine: Send + Sync {
     /// `""`/`default` restores the CLI default, `off` disables thinking, a decimal string
     /// sets a token budget.
     fn set_thinking(&self, session_id: &str, thinking: &str) -> Result<()>;
+    /// `reconnect` | `enable` | `disable` on one of the session's MCP servers.
+    fn mcp_action(&self, session_id: &str, server: &str, action: &str) -> Result<()>;
 
     /// Answer a dialog the CLI asked the host to render.
     fn respond_user_dialog(
@@ -200,6 +203,7 @@ fn request_id(request: &SidecarRequest) -> Option<u64> {
         | SidecarRequest::SetEffort { id, .. }
         | SidecarRequest::SetPermissionMode { id, .. }
         | SidecarRequest::SetThinking { id, .. }
+        | SidecarRequest::McpAction { id, .. }
         | SidecarRequest::UserDialogResponse { id, .. }
         | SidecarRequest::Shutdown { id } => Some(*id),
     }
@@ -370,11 +374,17 @@ impl AgentEngine for SidecarEngine {
         self.write(&request, Some(&req.session_id))
     }
 
-    fn send_prompt(&self, session_id: &str, prompt: &str) -> Result<()> {
+    fn send_prompt(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        attachments: &[Attachment],
+    ) -> Result<()> {
         let request = SidecarRequest::Send {
             id: self.next_request_id(),
             session_id: session_id.to_string(),
             prompt: prompt.to_string(),
+            attachments: attachments.to_vec(),
         };
         self.write(&request, Some(session_id))
     }
@@ -434,6 +444,16 @@ impl AgentEngine for SidecarEngine {
             id: self.next_request_id(),
             session_id: session_id.to_string(),
             effort: effort.to_string(),
+        };
+        self.write(&request, Some(session_id))
+    }
+
+    fn mcp_action(&self, session_id: &str, server: &str, action: &str) -> Result<()> {
+        let request = SidecarRequest::McpAction {
+            id: self.next_request_id(),
+            session_id: session_id.to_string(),
+            server: server.to_string(),
+            action: action.to_string(),
         };
         self.write(&request, Some(session_id))
     }
@@ -548,7 +568,7 @@ mod tests {
 
         // Crash recovery: a CRASH prompt kills the process; we must observe Crashed.
         engine
-            .send_prompt("e2e-1", "please CRASH now")
+            .send_prompt("e2e-1", "please CRASH now", &[])
             .expect("send");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut crashed = false;

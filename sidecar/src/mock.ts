@@ -3,7 +3,9 @@
 //
 // Prompt keywords: "PERMISSION" pauses on a chat permission request; "GATE" asks to run
 // a push+PR command (exercises the T7 approval dialog); "ASK" raises a question dialog
-// (AskUserQuestion path); "THINK" streams a thinking block; "TOOLS" runs a tool with a
+// (AskUserQuestion path); "PLAN" asks the user to approve a plan; "AUTH" raises an MCP
+// elicitation; "THINK" streams a
+// thinking block; "TOOLS" runs a tool with a
 // result; "SUBAGENT" nests subagent output under a Task call; "TODO" publishes a todo
 // list; "DENY" reports an auto-denied tool call; "CRASH" kills the whole sidecar process
 // (supervisor recovery testing). Every turn also reports usage.
@@ -58,6 +60,22 @@ export class MockSession implements SessionHandle {
         { id: "claude-fable-5", display_name: "Claude Fable 5" },
       ],
     });
+    this.emit({
+      type: "agents",
+      session_id: this.sessionId,
+      agents: [
+        { name: "explore", description: "Read-only search agent", model: "" },
+        { name: "plan", description: "Architect agent", model: "claude-opus-5" },
+      ],
+    });
+    this.emit({
+      type: "mcp_servers",
+      session_id: this.sessionId,
+      servers: [
+        { name: "mock-mcp", status: "connected", tool_count: 3, detail: "mock 1.0" },
+        { name: "broken-mcp", status: "needs-auth", tool_count: 0, detail: "" },
+      ],
+    });
     if (req.prompt.trim().length > 0) {
       this.send(req.prompt);
     } else {
@@ -65,8 +83,10 @@ export class MockSession implements SessionHandle {
     }
   }
 
-  send(prompt: string): void {
-    void this.runTurn(prompt);
+  send(prompt: string, attachments: { media_type: string; data: string }[] = []): void {
+    // Echo the attachment count so the UI round trip is observable in mock mode.
+    const suffix = attachments.length > 0 ? ` (+${attachments.length} image)` : "";
+    void this.runTurn(prompt + suffix);
   }
 
   private async runTurn(prompt: string): Promise<void> {
@@ -205,6 +225,52 @@ export class MockSession implements SessionHandle {
       });
     }
 
+    if (prompt.includes("AUTH")) {
+      const requestId = `mock-elicit-${this.sessionId}-${++this.dialogCounter}`;
+      const answer = await new Promise<string>((resolve) => {
+        this.pendingDialogs.set(requestId, resolve);
+        this.emit({
+          type: "user_dialog_request",
+          session_id: this.sessionId,
+          request_id: requestId,
+          dialog_kind: "elicitation",
+          payload: {
+            server: "mock-mcp",
+            message: "Authorise Maestro to read your mock account.",
+            mode: "url",
+            url: "https://example.invalid/oauth/mock",
+            form: false,
+          },
+        });
+      });
+      this.emit({
+        type: "stream_delta",
+        session_id: this.sessionId,
+        text: `Auth verdict: ${answer}. `,
+      });
+    }
+
+    if (prompt.includes("PLAN")) {
+      const requestId = `mock-plan-${this.sessionId}-${++this.dialogCounter}`;
+      const answer = await new Promise<string>((resolve) => {
+        this.pendingDialogs.set(requestId, resolve);
+        this.emit({
+          type: "user_dialog_request",
+          session_id: this.sessionId,
+          request_id: requestId,
+          dialog_kind: "plan_approval",
+          payload: {
+            plan: "## Mock plan\n\n1. Read the protocol\n2. Wire the events\n3. Render them",
+          },
+        });
+      });
+      this.emit({
+        type: "stream_delta",
+        session_id: this.sessionId,
+        text: `Plan verdict: ${answer}. `,
+      });
+    }
+
     if (prompt.includes("ASK")) {
       const requestId = `mock-dialog-${this.sessionId}-${++this.dialogCounter}`;
       const answer = await new Promise<string>((resolve) => {
@@ -321,6 +387,10 @@ export class MockSession implements SessionHandle {
       resolve("(cancelled)");
       return true;
     }
+    if (result?.approved !== undefined) {
+      resolve(result.approved ? "approved" : `rejected: ${result.feedback?.trim() ?? ""}`);
+      return true;
+    }
     if (result?.feedback?.trim()) {
       resolve(`clarify: ${result.feedback.trim()}`);
       return true;
@@ -342,6 +412,22 @@ export class MockSession implements SessionHandle {
 
   async setThinking(thinking: string): Promise<void> {
     this.thinking = thinking;
+  }
+
+  async mcpAction(server: string, action: string): Promise<void> {
+    // Echo the new state so the UI round trip can be tested without a real server.
+    this.emit({
+      type: "mcp_servers",
+      session_id: this.sessionId,
+      servers: [
+        {
+          name: server,
+          status: action === "disable" ? "disabled" : "connected",
+          tool_count: action === "disable" ? 0 : 3,
+          detail: `after ${action}`,
+        },
+      ],
+    });
   }
 
   async setPermissionMode(mode: string): Promise<void> {

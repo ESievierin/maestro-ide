@@ -109,6 +109,10 @@ error that would kill its turn.
   answer from the bus, and answers the tool call with text whatever happens.
 - `core/attention` — the "who needs me?" queue, derived from bus events only; publishes
   `attention.updated`. Escalation sessions are excluded — nobody waits on them.
+- Diff files over 2 MB on either side are refused with a reason instead of being handed to
+  CodeMirror (`MAX_FILE_DIFF_BYTES`): a generated bundle used to freeze the window.
+- `worktree_root` in the config moves new worktrees off the repository's parent directory
+  (a per-repo subdirectory is added, so one root can hold several repositories).
 - `core/config` — `~/.maestro/config.toml`, written with commented defaults on first run
   and applied into the settings table at startup (one lookup path at runtime).
 - `src/state/*` — zustand stores fed by bus events through `onBusEvent`.

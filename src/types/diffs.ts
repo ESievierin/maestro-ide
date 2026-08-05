@@ -23,6 +23,8 @@ export interface FileDiff {
   path: string;
   old: string | null;
   new: string | null;
+  /** Set when the core refused to send the contents; render this, not an empty editor. */
+  too_large: string | null;
 }
 
 export interface BlameLine {

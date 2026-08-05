@@ -203,6 +203,8 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
   const { fetch, refresh, loadFile, loading, error, clearError } = useDiffs();
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [filePair, setFilePair] = useState<{ path: string; old: string; new: string } | null>(null);
+  /** Set when the core refused to send a file's contents (see MAX_FILE_DIFF_BYTES). */
+  const [tooLarge, setTooLarge] = useState<{ path: string; message: string } | null>(null);
 
   const askLineQuestion = useQuestions((s) => s.ask);
   const questions = useQuestions(selectQuestions(branch, selectedPath ?? ""));
@@ -260,9 +262,15 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
     if (!selectedPath) return;
     let stale = false;
     void loadFile(branch, scope, selectedPath).then((diff) => {
-      if (!stale && diff) {
-        setFilePair({ path: diff.path, old: diff.old ?? "", new: diff.new ?? "" });
+      if (stale || !diff) return;
+      if (diff.too_large) {
+        // Do not hand a multi-megabyte side to CodeMirror; say why instead.
+        setTooLarge({ path: diff.path, message: diff.too_large });
+        setFilePair(null);
+        return;
       }
+      setTooLarge(null);
+      setFilePair({ path: diff.path, old: diff.old ?? "", new: diff.new ?? "" });
     });
     return () => {
       stale = true;
@@ -378,7 +386,9 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
             ))}
           </ul>
           <div className="diff-editor">
-            {filePair && filePair.path === selectedPath ? (
+            {tooLarge && tooLarge.path === selectedPath ? (
+              <p className="empty">{tooLarge.message}</p>
+            ) : filePair && filePair.path === selectedPath ? (
               viewMode === "split" ? (
                 <SplitFileDiff
                   path={filePair.path}

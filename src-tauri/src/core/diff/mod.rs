@@ -52,7 +52,15 @@ pub struct FileDiff {
     pub old: Option<String>,
     /// Contents at the branch head; `None` for deleted files.
     pub new: Option<String>,
+    /// Set when the file was too large to send: the viewer shows this instead of trying to
+    /// render it. Generated files and vendored bundles are the usual reason, and CodeMirror
+    /// on a multi-megabyte side is what freezes the window.
+    pub too_large: Option<String>,
 }
+
+/// Largest side of a file diff Maestro will hand to the editor. A real repository has
+/// generated files an order of magnitude past this, and a frozen window helps nobody.
+pub const MAX_FILE_DIFF_BYTES: usize = 2 * 1024 * 1024;
 
 pub struct DiffManager {
     git: Arc<dyn GitProvider>,
@@ -122,10 +130,39 @@ impl DiffManager {
                 std::fs::read_to_string(worktree.join(path)).ok()
             }
         };
+        // Both sides are read before the size check so a huge file still reports *which*
+        // side is huge — the answer to "why can I not see this diff" is the file, not us.
+        let biggest = old
+            .as_ref()
+            .map(|s| s.len())
+            .unwrap_or(0)
+            .max(new.as_ref().map(|s| s.len()).unwrap_or(0));
+        if biggest > MAX_FILE_DIFF_BYTES {
+            tracing::info!(
+                path,
+                bytes = biggest,
+                limit = MAX_FILE_DIFF_BYTES,
+                "file diff too large to render"
+            );
+            return Ok(FileDiff {
+                path: path.to_string(),
+                old: None,
+                new: None,
+                too_large: Some(format!(
+                    "{} is {:.1} MB — too large to diff in the editor (limit {:.0} MB). \
+                     Use git or an editor for this one.",
+                    path,
+                    biggest as f64 / (1024.0 * 1024.0),
+                    MAX_FILE_DIFF_BYTES as f64 / (1024.0 * 1024.0)
+                )),
+            });
+        }
+
         Ok(FileDiff {
             path: path.to_string(),
             old,
             new,
+            too_large: None,
         })
     }
 
@@ -253,6 +290,9 @@ mod tests {
         diff_calls: Mutex<u32>,
         last_base: Mutex<Option<String>>,
         shown_paths: Mutex<Vec<String>>,
+        /// When set, `show_file` returns this many bytes instead of a short string —
+        /// for the oversized-file guard.
+        huge_bytes: Mutex<Option<usize>>,
     }
 
     impl GitProvider for MockGit {
@@ -334,6 +374,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("{rev}:{path}"));
+            if let Some(bytes) = *self.huge_bytes.lock().unwrap() {
+                return Ok(Some("x".repeat(bytes)));
+            }
             Ok(Some(format!("contents of {path} at {rev}")))
         }
         fn worktree_diff(&self, _worktree: &Path, _merge_base: &str) -> Result<String> {
@@ -452,6 +495,34 @@ mod tests {
         .await
         .unwrap_or(false);
         assert!(got, "session done must trigger diff.updated");
+    }
+
+    #[tokio::test]
+    async fn an_oversized_file_is_refused_with_a_reason() {
+        // A generated bundle is the usual case: the editor would freeze on it, so the core
+        // sends the reason instead of the contents.
+        let (diffs, git, _bus, _store) = setup();
+        *git.huge_bytes.lock().unwrap() = Some(MAX_FILE_DIFF_BYTES + 1);
+
+        let file = diffs
+            .file_diff("impl/T-1-x", "src/lib.rs", DiffScope::Branch)
+            .expect("file diff");
+        assert!(
+            file.old.is_none() && file.new.is_none(),
+            "contents withheld"
+        );
+        let message = file.too_large.expect("a reason");
+        assert!(message.contains("src/lib.rs"), "{message}");
+        assert!(message.contains("too large"), "{message}");
+
+        // A normal file still comes through with both sides.
+        *git.huge_bytes.lock().unwrap() = None;
+        diffs.invalidate("impl/T-1-x");
+        let file = diffs
+            .file_diff("impl/T-1-x", "src/lib.rs", DiffScope::Branch)
+            .expect("file diff");
+        assert!(file.too_large.is_none());
+        assert!(file.old.is_some() && file.new.is_some());
     }
 
     #[tokio::test]

@@ -23,6 +23,11 @@ use crate::error::{GitErrorKind, MaestroError, Result};
 pub const SETTING_REPO_PATH: &str = "repo_path";
 pub const SETTING_BRANCH_TEMPLATE: &str = "branch_naming";
 
+/// Where worktrees are created. Empty (the default) means beside the repository, in
+/// `<parent>/<repo-name>.worktrees`. Set it when that directory is inconvenient — a work
+/// repository on a managed path, a different disk, somewhere outside a backup sweep.
+pub const SETTING_WORKTREE_ROOT: &str = "worktree_root";
+
 /// Branch naming convention; configurable via the `branch_naming` setting.
 pub const DEFAULT_BRANCH_TEMPLATE: &str = "{type}/{task-id}-{slug}";
 
@@ -194,7 +199,8 @@ impl WorktreeManager {
             }
         };
 
-        let path = worktree_path(&repo, &branch);
+        let configured_root = self.store.get_setting(SETTING_WORKTREE_ROOT)?;
+        let path = worktree_path(&repo, &branch, configured_root.as_deref());
         if path.exists() {
             return Err(MaestroError::InvalidData {
                 message: format!("worktree path already exists: {}", path.display()),
@@ -301,18 +307,23 @@ fn lock_poisoned() -> MaestroError {
     }
 }
 
-/// Where worktrees live: a sibling directory of the repo,
-/// `<parent>/<repo-name>.worktrees/<branch-with-dashes>`.
-fn worktree_path(repo: &Path, branch: &str) -> PathBuf {
+/// Where worktrees live. By default a sibling directory of the repo,
+/// `<parent>/<repo-name>.worktrees/<branch-with-dashes>`; with `worktree_root` configured,
+/// `<root>/<repo-name>/<branch-with-dashes>` — the repo name stays in the path so one root
+/// can hold the worktrees of several repositories without collisions.
+fn worktree_path(repo: &Path, branch: &str, configured_root: Option<&str>) -> PathBuf {
     let repo_name = repo
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "repo".to_string());
-    let root = repo
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| repo.to_path_buf())
-        .join(format!("{repo_name}.worktrees"));
+    let root = match configured_root.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(root) => PathBuf::from(root).join(&repo_name),
+        None => repo
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| repo.to_path_buf())
+            .join(format!("{repo_name}.worktrees")),
+    };
     root.join(branch.replace('/', "-"))
 }
 
@@ -410,8 +421,25 @@ mod tests {
 
     #[test]
     fn worktree_path_is_sibling_of_repo() {
-        let path = worktree_path(Path::new("C:/work/myrepo"), "impl/T-1-x");
+        let path = worktree_path(Path::new("C:/work/myrepo"), "impl/T-1-x", None);
         assert_eq!(path, Path::new("C:/work/myrepo.worktrees/impl-T-1-x"));
+
+        // A configured root keeps the repo name in the path, so two repositories can share
+        // one root without their branches colliding.
+        let configured = worktree_path(
+            Path::new("C:/work/myrepo"),
+            "impl/T-1-x",
+            Some("D:/maestro-worktrees"),
+        );
+        assert_eq!(
+            configured,
+            Path::new("D:/maestro-worktrees/myrepo/impl-T-1-x")
+        );
+        // Blank or whitespace is "not configured", not a root at the filesystem's mercy.
+        assert_eq!(
+            worktree_path(Path::new("C:/work/myrepo"), "impl/T-1-x", Some("   ")),
+            path
+        );
     }
 
     /// In-memory GitProvider double for manager tests.

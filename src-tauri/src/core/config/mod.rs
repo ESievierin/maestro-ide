@@ -15,7 +15,7 @@ use crate::core::gate::SETTING_GATE_COMMIT;
 use crate::core::questions::SETTING_LINE_QUESTION_TARGET;
 use crate::core::session::manager::{SETTING_NOTES_FINALIZE_TIMEOUT, SETTING_SINGLE_WRITER_POLICY};
 use crate::core::store::Store;
-use crate::core::worktree::SETTING_BRANCH_TEMPLATE;
+use crate::core::worktree::{SETTING_BRANCH_TEMPLATE, SETTING_WORKTREE_ROOT};
 use crate::error::Result;
 
 /// The file written on first run. Values are commented out so the built-in defaults stay
@@ -27,6 +27,10 @@ const DEFAULT_CONFIG: &str = r#"# MaestroIDE configuration (~/.maestro/config.to
 
 # Branch naming convention for new worktrees.
 # branch_naming = "{type}/{task-id}-{slug}"
+
+# Where worktrees are created. Default: beside the repository, in
+# <parent>/<repo-name>.worktrees. A configured root gets a per-repository subdirectory.
+# worktree_root = "D:/maestro-worktrees"
 
 # What happens when a second write-capable session is started on one worktree:
 #   "read_only" (default) — start it in read-only (plan) mode
@@ -53,6 +57,7 @@ const DEFAULT_CONFIG: &str = r#"# MaestroIDE configuration (~/.maestro/config.to
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
     pub branch_naming: Option<String>,
+    pub worktree_root: Option<String>,
     pub single_writer_policy: Option<String>,
     pub line_question_target: Option<String>,
     pub gate_commit: Option<bool>,
@@ -99,6 +104,7 @@ impl Config {
         let mut applied = Vec::new();
         for (key, value) in [
             (SETTING_BRANCH_TEMPLATE, self.branch_naming.clone()),
+            (SETTING_WORKTREE_ROOT, self.worktree_root.clone()),
             (
                 SETTING_SINGLE_WRITER_POLICY,
                 self.single_writer_policy.clone(),
@@ -163,6 +169,7 @@ mod tests {
             gate_commit: Some(true),
             os_notifications: Some(false),
             notes_finalize_timeout_secs: Some(30),
+            worktree_root: Some("D:/wt".into()),
         };
         config.apply(&store).expect("apply");
 

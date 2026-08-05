@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Icon } from "../components/Icon";
 import { usePrompts } from "../state/prompts";
 
 /**
@@ -50,9 +51,11 @@ export function PromptEditor({ onClose }: { onClose: () => void }) {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal prompt-modal" onClick={(e) => e.stopPropagation()}>
         <div className="panel-header">
-          <h3>Prompt templates</h3>
-          <button className="small" onClick={onClose}>
-            Close
+          <h3>
+            <Icon name="file-text" /> Prompt templates
+          </h3>
+          <button className="small icon-only ghost" onClick={onClose} title="Close">
+            <Icon name="close" />
           </button>
         </div>
 
@@ -123,7 +126,7 @@ export function PromptEditor({ onClose }: { onClose: () => void }) {
                       </button>
                     )}
                     <button
-                      className="small"
+                      className="small btn-primary"
                       disabled={busy || !dirty}
                       onClick={() => void doSave()}
                     >

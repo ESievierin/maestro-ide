@@ -667,6 +667,7 @@ function ChatInput({
           }}
         />
         <button
+          className="btn-primary"
           disabled={disabled || (value.trim().length === 0 && attachments.length === 0)}
           onClick={submit}
         >
@@ -732,40 +733,42 @@ function NewSessionForm({
             </option>
           ))}
         </select>
-        <select value={model} onChange={(e) => setModel(e.target.value)}>
-          <option value="">model: default</option>
-          {models
-            .filter((m) => m.id !== "default")
-            .map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.display_name}
+        <div className="segmented">
+          <select value={model} onChange={(e) => setModel(e.target.value)}>
+            <option value="">model: default</option>
+            {models
+              .filter((m) => m.id !== "default")
+              .map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.display_name}
+                </option>
+              ))}
+          </select>
+          <select value={effort} onChange={(e) => setEffort(e.target.value)}>
+            <option value="">effort: default</option>
+            {EFFORTS.map((e) => (
+              <option key={e} value={e}>
+                {e}
               </option>
             ))}
-        </select>
-        <select value={effort} onChange={(e) => setEffort(e.target.value)}>
-          <option value="">effort: default</option>
-          {EFFORTS.map((e) => (
-            <option key={e} value={e}>
-              {e}
-            </option>
-          ))}
-        </select>
-        <select value={permissionMode} onChange={(e) => setPermissionMode(e.target.value)}>
-          <option value="">permissions: default</option>
-          {PERMISSION_MODES.map((m) => (
-            <option key={m} value={m}>
-              {PERMISSION_MODE_LABELS[m] ?? m}
-            </option>
-          ))}
-        </select>
-        <select value={thinking} onChange={(e) => setThinking(e.target.value)}>
-          <option value="">thinking: CLI default</option>
-          {THINKING_OPTIONS.filter((t) => t !== "default").map((t) => (
-            <option key={t} value={t}>
-              {THINKING_LABELS[t] ?? t}
-            </option>
-          ))}
-        </select>
+          </select>
+          <select value={permissionMode} onChange={(e) => setPermissionMode(e.target.value)}>
+            <option value="">permissions: default</option>
+            {PERMISSION_MODES.map((m) => (
+              <option key={m} value={m}>
+                {PERMISSION_MODE_LABELS[m] ?? m}
+              </option>
+            ))}
+          </select>
+          <select value={thinking} onChange={(e) => setThinking(e.target.value)}>
+            <option value="">thinking: CLI default</option>
+            {THINKING_OPTIONS.filter((t) => t !== "default").map((t) => (
+              <option key={t} value={t}>
+                {THINKING_LABELS[t] ?? t}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
       <textarea
         rows={3}
@@ -777,7 +780,11 @@ function NewSessionForm({
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
       />
-      <button disabled={busy || prompt.trim().length === 0} onClick={() => void submit()}>
+      <button
+        className="btn-primary"
+        disabled={busy || prompt.trim().length === 0}
+        onClick={() => void submit()}
+      >
         {busy ? "Starting…" : "Start session"}
       </button>
       {permissionMode === "auto" && (
@@ -820,7 +827,9 @@ function ResumePicker({
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Resume a session</h3>
+        <h3>
+          <Icon name="play" /> Resume a session
+        </h3>
         {resumable.length === 0 ? (
           <p className="hint">No finished sessions with a resumable context on this worktree.</p>
         ) : (
@@ -840,7 +849,9 @@ function ResumePicker({
           </ul>
         )}
         <div className="modal-actions">
-          <button onClick={onClose}>Cancel</button>
+          <button className="ghost" onClick={onClose}>
+            Cancel
+          </button>
         </div>
       </div>
     </div>
@@ -868,7 +879,7 @@ function RuntimeControls({ session }: { session: Session }) {
   const known = models.some((m) => m.id === session.model);
 
   return (
-    <div className="runtime-controls">
+    <div className="runtime-controls segmented">
       <label title="Model used for the next turn">
         <Icon name="sliders" />
         <select

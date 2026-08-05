@@ -20,8 +20,12 @@ use crate::core::store::SqliteStore;
 use crate::core::worktree::{GitCli, WorktreeManager};
 use crate::ipc::AppState;
 
-/// Directory holding all persistent Maestro state (`~/.maestro`).
+/// Directory holding all persistent Maestro state (`~/.maestro`, or `$MAESTRO_HOME` when
+/// set — an isolated profile for a second instance without touching the real one).
 fn maestro_home() -> PathBuf {
+    if let Ok(custom) = std::env::var("MAESTRO_HOME") {
+        return PathBuf::from(custom);
+    }
     dirs::home_dir()
         .map(|home| home.join(".maestro"))
         .unwrap_or_else(|| PathBuf::from(".maestro"))

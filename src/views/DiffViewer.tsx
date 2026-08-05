@@ -281,20 +281,22 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
     <div className="diff-viewer">
       <div className="diff-toolbar">
         <div className="actions">
-          <button
-            className={`small ${scope === "worktree" ? "selected" : ""}`}
-            onClick={() => setScope("worktree")}
-            title="Merge-base → files on disk, including uncommitted and untracked"
-          >
-            Working tree
-          </button>
-          <button
-            className={`small ${scope === "branch" ? "selected" : ""}`}
-            onClick={() => setScope("branch")}
-            title="Merge-base → branch head (committed only)"
-          >
-            Committed
-          </button>
+          <div className="btn-group">
+            <button
+              className={`small ${scope === "worktree" ? "selected" : ""}`}
+              onClick={() => setScope("worktree")}
+              title="Merge-base → files on disk, including uncommitted and untracked"
+            >
+              Working tree
+            </button>
+            <button
+              className={`small ${scope === "branch" ? "selected" : ""}`}
+              onClick={() => setScope("branch")}
+              title="Merge-base → branch head (committed only)"
+            >
+              Committed
+            </button>
+          </div>
         </div>
         <span className="session-meta">
           {snapshot
@@ -304,20 +306,22 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
               : ""}
         </span>
         <div className="actions">
+          <div className="btn-group">
+            <button
+              className={`small ${viewMode === "split" ? "selected" : ""}`}
+              onClick={() => changeViewMode("split")}
+            >
+              Split
+            </button>
+            <button
+              className={`small ${viewMode === "unified" ? "selected" : ""}`}
+              onClick={() => changeViewMode("unified")}
+            >
+              Unified
+            </button>
+          </div>
           <button
-            className={`small ${viewMode === "split" ? "selected" : ""}`}
-            onClick={() => changeViewMode("split")}
-          >
-            Split
-          </button>
-          <button
-            className={`small ${viewMode === "unified" ? "selected" : ""}`}
-            onClick={() => changeViewMode("unified")}
-          >
-            Unified
-          </button>
-          <button
-            className="small"
+            className="small ghost"
             onClick={() => void refresh(branch, scope)}
             disabled={loading}
             title="Recompute this diff"
@@ -325,7 +329,7 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
             <Icon name={loading ? "spinner" : "refresh"} spin={loading} /> Refresh
           </button>
           {selection && !asking && (
-            <button className="small" onClick={() => setAsking(true)}>
+            <button className="small btn-primary" onClick={() => setAsking(true)}>
               Ask about line{selection.start === selection.end ? "" : "s"} {selection.start}
               {selection.start === selection.end ? "" : `–${selection.end}`}
             </button>
@@ -344,14 +348,14 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
           />
           <div className="actions">
             <button
-              className="small"
+              className="small btn-primary"
               onClick={() => void submitQuestion()}
               disabled={!questionText.trim()}
             >
               Ask
             </button>
             <button
-              className="small"
+              className="small ghost"
               onClick={() => {
                 setAsking(false);
                 setQuestionText("");

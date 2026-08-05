@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Icon } from "../components/Icon";
 import { useGates } from "../state/gates";
 import type { PendingGate } from "../types/gates";
 
@@ -30,7 +31,9 @@ function GateModal({ gate, queued }: { gate: PendingGate; queued: number }) {
   return (
     <div className="modal-backdrop">
       <div className="modal gate-modal">
-        <h3>Approval required: {gate.kind}</h3>
+        <h3>
+          <Icon name="shield" /> Approval required: {gate.kind}
+        </h3>
         <p className="gate-context">
           {gate.branch || "unknown branch"} · session {gate.session_id.slice(0, 8)} · {gate.tool}
         </p>
@@ -75,7 +78,7 @@ function GateModal({ gate, queued }: { gate: PendingGate; queued: number }) {
           <button className="danger" disabled={busy} onClick={() => void submit(false)}>
             Deny
           </button>
-          <button disabled={busy} onClick={() => void submit(true)}>
+          <button className="btn-primary" disabled={busy} onClick={() => void submit(true)}>
             Allow
           </button>
         </div>

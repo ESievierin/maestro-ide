@@ -189,21 +189,23 @@ export function WorktreeList() {
                   </span>
                   <StatusBadges wt={wt} />
                 </div>
-                <div className="wt-meta">
-                  {wt.task_id && <span className="wt-task">{wt.task_id}</span>}
-                  {!wt.is_primary && wt.branch && (
-                    <button
-                      className="small danger icon-only"
-                      title="Remove worktree"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void onRemove(wt.branch as string);
-                      }}
-                    >
-                      <Icon name="trash" />
-                    </button>
-                  )}
-                </div>
+                {(wt.task_id || (!wt.is_primary && wt.branch)) && (
+                  <div className="wt-meta">
+                    {wt.task_id && <span className="wt-task">{wt.task_id}</span>}
+                    {!wt.is_primary && wt.branch && (
+                      <button
+                        className="small danger icon-only ghost wt-delete"
+                        title="Remove worktree"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void onRemove(wt.branch as string);
+                        }}
+                      >
+                        <Icon name="trash" />
+                      </button>
+                    )}
+                  </div>
+                )}
               </li>
             ))}
           </ul>

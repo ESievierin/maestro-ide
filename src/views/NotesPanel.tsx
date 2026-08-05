@@ -36,7 +36,7 @@ export function NotesPanel({ worktree }: { worktree: WorktreeInfo }) {
             <span className="count">{new Date(notes.updated_at).toLocaleString()}</span>
           )}
         </h2>
-        <button className="small" disabled={!!loading} onClick={() => void refresh(branch)}>
+        <button className="small ghost" disabled={!!loading} onClick={() => void refresh(branch)}>
           <Icon name="refresh" spin={!!loading} /> Refresh
         </button>
       </div>

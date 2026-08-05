@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Icon } from "../components/Icon";
 import { useWorktrees } from "../state/worktrees";
 import type { RepoInfo } from "../types/worktrees";
 
@@ -45,7 +46,9 @@ export function CreateWorktreeDialog({ repo, onClose }: Props) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>New worktree</h3>
+        <h3>
+          <Icon name="plus" /> New worktree
+        </h3>
 
         {repoIsEmpty && (
           <p className="hint warn">
@@ -129,8 +132,14 @@ export function CreateWorktreeDialog({ repo, onClose }: Props) {
         )}
 
         <div className="modal-actions">
-          <button onClick={onClose}>Cancel</button>
-          <button disabled={!canSubmit || busy} onClick={() => void submit()}>
+          <button className="ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn-primary"
+            disabled={!canSubmit || busy}
+            onClick={() => void submit()}
+          >
             {busy ? "Creating…" : "Create"}
           </button>
         </div>

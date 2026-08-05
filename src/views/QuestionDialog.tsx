@@ -161,11 +161,11 @@ function ElicitationRequestView({
           </p>
         )}
         <div className="modal-actions">
-          <button disabled={busy} onClick={() => void submit(false)}>
+          <button className="ghost" disabled={busy} onClick={() => void submit(false)}>
             Decline
           </button>
           {!request.form && (
-            <button disabled={busy} onClick={() => void submit(true)}>
+            <button className="btn-primary" disabled={busy} onClick={() => void submit(true)}>
               {busy ? "Sending…" : "Approve"}
             </button>
           )}
@@ -209,10 +209,15 @@ function PlanReview({ dialog, plan }: { dialog: UserDialog; plan: string }) {
         />
         <div className="modal-actions">
           <span className="hint">Approving lets this session start writing.</span>
-          <button disabled={busy} onClick={() => void submit({ approved: false, feedback: notes })}>
+          <button
+            className="ghost"
+            disabled={busy}
+            onClick={() => void submit({ approved: false, feedback: notes })}
+          >
             Keep planning
           </button>
           <button
+            className="btn-primary"
             disabled={busy}
             onClick={() =>
               void submit({ approved: true, ...(notes.trim() && { feedback: notes }) })
@@ -300,15 +305,20 @@ export function QuestionDialog({ dialog }: { dialog: UserDialog }) {
           <span className="hint">
             {answered}/{questions.length} answered
           </span>
-          <button disabled={busy} onClick={() => void submit(null)}>
+          <button className="ghost" disabled={busy} onClick={() => void submit(null)}>
             Dismiss
           </button>
           {clarify.trim().length > 0 ? (
-            <button disabled={busy} onClick={() => void submit({ feedback: clarify })}>
+            <button
+              className="btn-primary"
+              disabled={busy}
+              onClick={() => void submit({ feedback: clarify })}
+            >
               Send reply
             </button>
           ) : (
             <button
+              className="btn-primary"
               disabled={busy || answered === 0}
               onClick={() => void submit(buildAnswer(questions, drafts))}
             >

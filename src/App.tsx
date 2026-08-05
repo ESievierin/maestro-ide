@@ -36,7 +36,7 @@ function MainPanel() {
       <div className="worktree-summary">
         <div className="worktree-summary-row">
           <h2>{worktree.branch}</h2>
-          <div className="main-tabs">
+          <div className="main-tabs btn-group">
             <button
               className={`small ${tab === "chat" ? "selected" : ""}`}
               onClick={() => setTab("chat")}
@@ -75,6 +75,7 @@ function MainPanel() {
 
 export default function App() {
   const [showPrompts, setShowPrompts] = useState(false);
+  const [showEventLog, setShowEventLog] = useState(false);
   useHotkeys();
   const [showAttention, setShowAttention] = useState(false);
   const attentionCount = useAttention(selectAttentionCount);
@@ -82,18 +83,31 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>MaestroIDE</h1>
+        <h1>
+          <Icon name="branch" size={16} className="brand-mark" /> MaestroIDE
+        </h1>
         <div className="actions">
           <button
-            className={`small ${attentionCount > 0 ? "attention-alert" : ""}`}
+            className={`small ghost ${attentionCount > 0 ? "attention-alert" : ""}`}
             onClick={() => setShowAttention((open) => !open)}
             title="Everything waiting on you"
           >
             <Icon name="bell" /> Needs you
             {attentionCount > 0 && <span className="count-pill">{attentionCount}</span>}
           </button>
-          <button className="small" onClick={() => setShowPrompts(true)} title="Prompt templates">
+          <button
+            className="small ghost"
+            onClick={() => setShowPrompts(true)}
+            title="Prompt templates"
+          >
             <Icon name="file-text" /> Prompts
+          </button>
+          <button
+            className="small icon-only ghost"
+            onClick={() => setShowEventLog((open) => !open)}
+            title="Event log (debug)"
+          >
+            <Icon name="sliders" />
           </button>
         </div>
       </header>
@@ -104,7 +118,7 @@ export default function App() {
           <MainPanel />
         </main>
       </div>
-      <EventLog />
+      {showEventLog && <EventLog onClose={() => setShowEventLog(false)} />}
       <Toasts />
       <GateDialog />
       {showPrompts && <PromptEditor onClose={() => setShowPrompts(false)} />}

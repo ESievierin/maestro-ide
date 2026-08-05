@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Icon, StatusDot } from "../components/Icon";
+import { SelectMenu, type SelectMenuOption } from "../components/SelectMenu";
 import remarkGfm from "remark-gfm";
 import { activeSessionCount, useSessions } from "../state/sessions";
 import type {
@@ -23,7 +24,6 @@ import {
   PERMISSION_MODES,
   MAX_ATTACHMENT_BYTES,
   READ_ONLY_MODE,
-  SESSION_TYPE_LABELS,
   SESSION_TYPES,
   THINKING_LABELS,
   THINKING_OPTIONS,
@@ -31,6 +31,69 @@ import {
 } from "../types/sessions";
 import type { WorktreeInfo } from "../types/worktrees";
 import { QuestionDialog } from "./QuestionDialog";
+
+const DEFAULT_OPTION: SelectMenuOption = { value: "", label: "Default" };
+
+const SESSION_TYPE_SHORT_LABELS: Record<string, string> = {
+  manual: "Manual",
+  research: "Research",
+  implementation: "Implementation",
+  review_fix: "Review fix",
+};
+const SESSION_TYPE_DESCRIPTIONS: Record<string, string> = {
+  manual: "No extra behaviour",
+  research: "Read-only work",
+  implementation: "Writes TASK_NOTES.md on close",
+  review_fix: "Can ask the original agent",
+};
+const SESSION_TYPE_MENU_OPTIONS: SelectMenuOption[] = SESSION_TYPES.map((t) => ({
+  value: t,
+  label: SESSION_TYPE_SHORT_LABELS[t] ?? t,
+  description: SESSION_TYPE_DESCRIPTIONS[t],
+}));
+
+const EFFORT_DESCRIPTIONS: Record<string, string> = {
+  low: "Fast, spends little on reasoning",
+  medium: "Balanced — the usual choice",
+  high: "Slower, more thorough",
+  xhigh: "Extended reasoning for hard problems",
+  max: "Maximum depth, highest cost",
+};
+const EFFORT_MENU_OPTIONS: SelectMenuOption[] = EFFORTS.map((e) => ({
+  value: e,
+  label: e,
+  description: EFFORT_DESCRIPTIONS[e],
+}));
+
+const PERMISSION_MODE_SHORT_LABELS: Record<string, string> = {
+  default: "Default",
+  acceptEdits: "Accept edits",
+  auto: "Auto",
+  plan: "Plan",
+};
+const PERMISSION_MODE_DESCRIPTIONS: Record<string, string> = {
+  default: "Asks before every risky action",
+  acceptEdits: "Edits auto-approved, commands still ask",
+  auto: "A classifier answers ordinary prompts — the gate still applies",
+  plan: "Read-only: plans first, writes nothing",
+};
+const PERMISSION_MENU_OPTIONS: SelectMenuOption[] = PERMISSION_MODES.map((m) => ({
+  value: m,
+  label: PERMISSION_MODE_SHORT_LABELS[m] ?? m,
+  description: PERMISSION_MODE_DESCRIPTIONS[m],
+}));
+
+const THINKING_SHORT_LABELS: Record<string, string> = {
+  default: "CLI default",
+  off: "Off",
+  "4000": "4k budget",
+  "16000": "16k budget",
+  "32000": "32k budget",
+};
+const THINKING_MENU_OPTIONS: SelectMenuOption[] = THINKING_OPTIONS.map((t) => ({
+  value: t,
+  label: THINKING_SHORT_LABELS[t] ?? t,
+}));
 
 /** Commands handled by Maestro itself, merged into the autocomplete list. */
 const LOCAL_COMMANDS: (CommandInfo & { local: true })[] = [
@@ -101,6 +164,69 @@ function Markdown({ text }: { text: string }) {
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
     </div>
   );
+}
+
+/** A block streaming in must never sit mid-reveal for longer than this. */
+const STREAM_REVEAL_CAP_MS = 3000;
+/** Reveal speed floor — keeps a trickle of new text feeling like typing, not a stall. */
+const STREAM_REVEAL_MIN_CHARS_PER_SEC = 60;
+
+/**
+ * Smooths a growing (streamed) string into a typewriter-style reveal, sped up
+ * for big bursts so any backlog clears within `STREAM_REVEAL_CAP_MS` — a huge
+ * chunk that lands in one event never sits half-shown for seconds, and a
+ * trickle of tokens still reads as a pleasant, steady type-in rather than
+ * popping in all at once. Text that arrives already complete (a resumed
+ * session's history, a tab switch) renders instantly — only *new* growth on an
+ * already-mounted block animates.
+ */
+function useStreamedReveal(target: string): string {
+  const [visible, setVisible] = useState(target);
+  const state = useRef({ visibleLen: target.length, deadline: 0 });
+
+  useEffect(() => {
+    const s = state.current;
+    if (target.length <= s.visibleLen) {
+      // Nothing new (or the block reset, e.g. a fresh session) — show it as-is.
+      s.visibleLen = target.length;
+      s.deadline = 0;
+      setVisible(target);
+      return;
+    }
+    if (s.deadline === 0) {
+      s.deadline = performance.now() + STREAM_REVEAL_CAP_MS;
+    }
+
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = (now - last) / 1000;
+      last = now;
+      const backlog = target.length - s.visibleLen;
+      if (backlog <= 0) {
+        s.deadline = 0;
+        return;
+      }
+      const secondsLeft = Math.max(0.05, (s.deadline - now) / 1000);
+      const rate = Math.max(STREAM_REVEAL_MIN_CHARS_PER_SEC, backlog / secondsLeft);
+      s.visibleLen = Math.min(target.length, s.visibleLen + rate * dt);
+      setVisible(target.slice(0, Math.floor(s.visibleLen)));
+      if (s.visibleLen < target.length) {
+        raf = requestAnimationFrame(tick);
+      } else {
+        s.deadline = 0;
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target]);
+
+  return visible;
+}
+
+/** The agent's reply text, revealed with {@link useStreamedReveal}. */
+function StreamedMarkdown({ text }: { text: string }) {
+  return <Markdown text={useStreamedReveal(text)} />;
 }
 
 function SubagentChild({ child }: { child: ToolChild }) {
@@ -226,8 +352,9 @@ function TodoList({ items }: { items: TodoItem[] }) {
 
 /**
  * What this session can reach: the subagent profiles it may delegate to and its MCP
- * servers. Folded away, but a failed or unauthenticated server is worth surfacing —
- * otherwise its tools are simply missing with no explanation.
+ * servers. A single icon button that pops the detail open, rather than a permanent
+ * full-width bar — a failed or unauthenticated server still needs to be impossible
+ * to miss, so it keeps a badge on the trigger even while collapsed.
  */
 function SessionCapabilities({
   session,
@@ -239,75 +366,89 @@ function SessionCapabilities({
   servers: McpServerInfo[];
 }) {
   const mcpAction = useSessions((s) => s.mcpAction);
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const broken = servers.filter((s) => s.status !== "connected" && s.status !== "disabled");
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [open]);
+
   if (agents.length === 0 && servers.length === 0) return null;
 
   return (
-    <details className="capabilities">
-      <summary>
-        <Icon name="shield" /> Capabilities
-        <span className="count">
-          {agents.length} agents · {servers.length} MCP
-        </span>
-        {broken.length > 0 && (
-          <span className="pill pill-warn">
-            <Icon name="alert" /> {broken.length} need attention
-          </span>
-        )}
-      </summary>
+    <div className={`capabilities-popover ${open ? "open" : ""}`} ref={rootRef}>
+      <button
+        type="button"
+        className={`small ghost ${broken.length > 0 ? "attention-alert" : ""}`}
+        onClick={() => setOpen((o) => !o)}
+        title="Capabilities: agents and MCP servers this session can reach"
+      >
+        <Icon name="shield" />
+        {agents.length} · {servers.length}
+        {broken.length > 0 && <span className="count-pill">{broken.length}</span>}
+      </button>
+      {open && (
+        <div className="capabilities-panel">
+          {servers.length > 0 && (
+            <ul className="cap-list">
+              {servers.map((server) => (
+                <li key={server.name}>
+                  <span className="cap-name">
+                    <StatusDot tone={server.status === "connected" ? "streaming" : "failed"} />
+                    {server.name}
+                  </span>
+                  <span className="ac-desc">
+                    {server.status}
+                    {server.tool_count > 0 && ` · ${server.tool_count} tools`}
+                    {server.detail && ` · ${server.detail}`}
+                  </span>
+                  <span className="cap-actions">
+                    <button
+                      className="small"
+                      onClick={() => void mcpAction(session.id, server.name, "reconnect")}
+                    >
+                      <Icon name="refresh" /> Reconnect
+                    </button>
+                    <button
+                      className="small"
+                      onClick={() =>
+                        void mcpAction(
+                          session.id,
+                          server.name,
+                          server.status === "disabled" ? "enable" : "disable",
+                        )
+                      }
+                    >
+                      {server.status === "disabled" ? "Enable" : "Disable"}
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
 
-      {servers.length > 0 && (
-        <ul className="cap-list">
-          {servers.map((server) => (
-            <li key={server.name}>
-              <span className="cap-name">
-                <StatusDot tone={server.status === "connected" ? "streaming" : "failed"} />
-                {server.name}
-              </span>
-              <span className="ac-desc">
-                {server.status}
-                {server.tool_count > 0 && ` · ${server.tool_count} tools`}
-                {server.detail && ` · ${server.detail}`}
-              </span>
-              <span className="cap-actions">
-                <button
-                  className="small"
-                  onClick={() => void mcpAction(session.id, server.name, "reconnect")}
-                >
-                  <Icon name="refresh" /> Reconnect
-                </button>
-                <button
-                  className="small"
-                  onClick={() =>
-                    void mcpAction(
-                      session.id,
-                      server.name,
-                      server.status === "disabled" ? "enable" : "disable",
-                    )
-                  }
-                >
-                  {server.status === "disabled" ? "Enable" : "Disable"}
-                </button>
-              </span>
-            </li>
-          ))}
-        </ul>
+          {agents.length > 0 && (
+            <ul className="cap-list">
+              {agents.map((agent) => (
+                <li key={agent.name}>
+                  <span className="cap-name">{agent.name}</span>
+                  <span className="ac-desc">
+                    {agent.description}
+                    {agent.model && ` · ${agent.model}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
-
-      {agents.length > 0 && (
-        <ul className="cap-list">
-          {agents.map((agent) => (
-            <li key={agent.name}>
-              <span className="cap-name">{agent.name}</span>
-              <span className="ac-desc">
-                {agent.description}
-                {agent.model && ` · ${agent.model}`}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </details>
+    </div>
   );
 }
 
@@ -402,10 +543,23 @@ function PermissionEntry({
 
 function TranscriptView({ sessionId, items }: { sessionId: string; items: TranscriptItem[] }) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "instant", block: "end" });
   }, [items]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    // The smoothed reveal keeps growing a block's height after `items` itself
+    // last changed — follow that growth too, not just new transcript entries.
+    const observer = new ResizeObserver(() => {
+      bottomRef.current?.scrollIntoView({ behavior: "instant", block: "end" });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   if (items.length === 0) {
     return (
@@ -416,7 +570,7 @@ function TranscriptView({ sessionId, items }: { sessionId: string; items: Transc
   }
 
   return (
-    <div className="transcript">
+    <div className="transcript" ref={containerRef}>
       {items.map((item, i) => {
         switch (item.kind) {
           case "user":
@@ -426,7 +580,7 @@ function TranscriptView({ sessionId, items }: { sessionId: string; items: Transc
               </div>
             );
           case "text":
-            return <Markdown key={i} text={item.text} />;
+            return <StreamedMarkdown key={i} text={item.text} />;
           case "tool_use":
             return <ToolUseEntry key={i} item={item} />;
           case "thinking":
@@ -474,10 +628,16 @@ type Suggestion =
   | { kind: "command"; command: SuggestedCommand }
   | { kind: "value"; command: string; value: string; label: string };
 
+/** How tall the follow-up box grows before it scrolls instead. */
+const MAX_INPUT_HEIGHT = 160;
+
 /**
  * Chat input with slash-command autocomplete. Command names come from the session
  * (the CLI reports them) plus Maestro's own; for Maestro's runtime commands the argument
  * is completed too, which is where the model *ids* become discoverable.
+ *
+ * Enter sends; Shift+Enter (or Ctrl/Cmd+Enter) inserts a newline / force-sends, and
+ * ArrowUp/Down at the edges of the box recall previously sent messages, like a shell.
  */
 function ChatInput({
   disabled,
@@ -499,9 +659,20 @@ function ChatInput({
   const [value, setValue] = useState("");
   const [highlight, setHighlight] = useState(0);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const [suppressAutocompleteFor, setSuppressAutocompleteFor] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, MAX_INPUT_HEIGHT)}px`;
+  }, [value]);
 
   const suggestions = useMemo<Suggestion[]>(() => {
-    if (!value.startsWith("/")) return [];
+    if (!value.startsWith("/") || value === suppressAutocompleteFor) return [];
     const [head, ...rest] = value.slice(1).split(" ");
     if (rest.length === 0) {
       const query = head.toLowerCase();
@@ -518,7 +689,7 @@ function ChatInput({
       )
       .slice(0, 8)
       .map((v) => ({ kind: "value", command: head, value: v.value, label: v.label }));
-  }, [value, commands, models]);
+  }, [value, commands, models, suppressAutocompleteFor]);
 
   const runLocal = (name: string, argument: string) => {
     setValue("");
@@ -558,13 +729,15 @@ function ChatInput({
       }
     }
     onSend(text, attachments);
+    setHistory((h) => (h[h.length - 1] === text ? h : [...h, text]));
+    setHistoryIndex(null);
     setValue("");
     setAttachments([]);
     setHighlight(0);
   };
 
   /** Screenshots go straight from the clipboard to the agent. */
-  const paste = async (event: React.ClipboardEvent<HTMLInputElement>) => {
+  const paste = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const images = [...event.clipboardData.items].filter((i) => i.type.startsWith("image/"));
     if (images.length === 0) return;
     event.preventDefault();
@@ -629,10 +802,13 @@ function ChatInput({
         </div>
       )}
       <div className="follow-up">
-        <input
-          type="text"
+        <textarea
+          ref={textareaRef}
+          rows={1}
           placeholder={
-            disabled ? "Session is finished" : "Message the agent… ( / for commands, paste images)"
+            disabled
+              ? "Session is finished"
+              : "Message the agent… (Enter to send, Shift+Enter for a new line)"
           }
           value={value}
           disabled={disabled}
@@ -640,6 +816,7 @@ function ChatInput({
           onChange={(e) => {
             setValue(e.target.value);
             setHighlight(0);
+            setHistoryIndex(null);
           }}
           onKeyDown={(e) => {
             if (suggestions.length > 0) {
@@ -653,17 +830,55 @@ function ChatInput({
                 setHighlight((h) => (h - 1 + suggestions.length) % suggestions.length);
                 return;
               }
-              if (e.key === "Tab" || e.key === "Enter") {
+              if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
                 e.preventDefault();
                 accept(suggestions[highlight]);
                 return;
               }
               if (e.key === "Escape") {
-                setValue(value + " ");
+                e.preventDefault();
+                setSuppressAutocompleteFor(value);
                 return;
               }
             }
-            if (e.key === "Enter") submit();
+            // Enter sends; Shift+Enter (or Ctrl/Cmd+Enter) inserts a newline / force-sends.
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+              return;
+            }
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault();
+              submit();
+              return;
+            }
+            // History recall (like a shell): only when the caret is already at the
+            // edge the arrow key would otherwise do nothing useful from, so normal
+            // multi-line cursor movement is never hijacked.
+            if (history.length > 0) {
+              const el = e.currentTarget;
+              const atStart = el.selectionStart === 0 && el.selectionEnd === 0;
+              const atEnd = el.selectionStart === value.length && el.selectionEnd === value.length;
+              if (e.key === "ArrowUp" && atStart) {
+                e.preventDefault();
+                const next =
+                  historyIndex === null ? history.length - 1 : Math.max(0, historyIndex - 1);
+                setHistoryIndex(next);
+                setValue(history[next]);
+                return;
+              }
+              if (e.key === "ArrowDown" && atEnd && historyIndex !== null) {
+                e.preventDefault();
+                const next = historyIndex + 1;
+                if (next >= history.length) {
+                  setHistoryIndex(null);
+                  setValue("");
+                } else {
+                  setHistoryIndex(next);
+                  setValue(history[next]);
+                }
+              }
+            }
           }}
         />
         <button
@@ -701,6 +916,16 @@ function NewSessionForm({
     void refreshModels();
   }, [refreshModels]);
 
+  const modelMenuOptions = useMemo<SelectMenuOption[]>(
+    () => [
+      DEFAULT_OPTION,
+      ...models
+        .filter((m) => m.id !== "default")
+        .map((m) => ({ value: m.id, label: m.display_name })),
+    ],
+    [models],
+  );
+
   const submit = async () => {
     setBusy(true);
     const session = await spawn({
@@ -722,52 +947,45 @@ function NewSessionForm({
   return (
     <div className="new-session">
       <div className="new-session-row">
-        <select
-          value={sessionType}
-          onChange={(e) => setSessionType(e.target.value)}
+        <SelectMenu
           title="What kind of work this session is — it decides notes and tools"
-        >
-          {SESSION_TYPES.map((t) => (
-            <option key={t} value={t}>
-              {SESSION_TYPE_LABELS[t] ?? t}
-            </option>
-          ))}
-        </select>
+          value={sessionType}
+          onChange={setSessionType}
+          options={SESSION_TYPE_MENU_OPTIONS}
+        />
         <div className="segmented">
-          <select value={model} onChange={(e) => setModel(e.target.value)}>
-            <option value="">model: default</option>
-            {models
-              .filter((m) => m.id !== "default")
-              .map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.display_name}
-                </option>
-              ))}
-          </select>
-          <select value={effort} onChange={(e) => setEffort(e.target.value)}>
-            <option value="">effort: default</option>
-            {EFFORTS.map((e) => (
-              <option key={e} value={e}>
-                {e}
-              </option>
-            ))}
-          </select>
-          <select value={permissionMode} onChange={(e) => setPermissionMode(e.target.value)}>
-            <option value="">permissions: default</option>
-            {PERMISSION_MODES.map((m) => (
-              <option key={m} value={m}>
-                {PERMISSION_MODE_LABELS[m] ?? m}
-              </option>
-            ))}
-          </select>
-          <select value={thinking} onChange={(e) => setThinking(e.target.value)}>
-            <option value="">thinking: CLI default</option>
-            {THINKING_OPTIONS.filter((t) => t !== "default").map((t) => (
-              <option key={t} value={t}>
-                {THINKING_LABELS[t] ?? t}
-              </option>
-            ))}
-          </select>
+          <SelectMenu
+            icon="sliders"
+            title="Model for this session"
+            value={model}
+            onChange={setModel}
+            options={modelMenuOptions}
+          />
+          <SelectMenu
+            title="Reasoning effort"
+            value={effort}
+            onChange={setEffort}
+            options={[DEFAULT_OPTION, ...EFFORT_MENU_OPTIONS]}
+          />
+          <SelectMenu
+            icon="shield"
+            title="Permission mode"
+            value={permissionMode}
+            onChange={setPermissionMode}
+            options={[
+              DEFAULT_OPTION,
+              ...PERMISSION_MENU_OPTIONS.filter((o) => o.value !== "default"),
+            ]}
+          />
+          <SelectMenu
+            title="Thinking budget"
+            value={thinking}
+            onChange={setThinking}
+            options={[
+              { value: "", label: "CLI default" },
+              ...THINKING_MENU_OPTIONS.filter((o) => o.value !== "default"),
+            ]}
+          />
         </div>
       </div>
       <textarea
@@ -878,63 +1096,58 @@ function RuntimeControls({ session }: { session: Session }) {
   // The CLI may report a model this list doesn't have (an alias, or a newer build).
   const known = models.some((m) => m.id === session.model);
 
+  const modelMenuOptions = useMemo<SelectMenuOption[]>(
+    () => [
+      { value: "", label: !known && session.model ? `Default (${session.model})` : "Default" },
+      ...models
+        .filter((m) => m.id !== "default")
+        .map((m) => ({ value: m.id, label: m.display_name, description: m.id })),
+    ],
+    [models, known, session.model],
+  );
+  const permissionMenuOptions = useMemo<SelectMenuOption[]>(
+    () =>
+      session.permission_mode === null
+        ? [DEFAULT_OPTION, ...PERMISSION_MENU_OPTIONS.filter((o) => o.value !== "default")]
+        : PERMISSION_MENU_OPTIONS,
+    [session.permission_mode],
+  );
+  const thinkingMenuOptions = useMemo<SelectMenuOption[]>(
+    () => [
+      ...(session.thinking === null ? [{ value: "", label: "CLI default" }] : []),
+      ...THINKING_MENU_OPTIONS,
+    ],
+    [session.thinking],
+  );
+
   return (
     <div className="runtime-controls segmented">
-      <label title="Model used for the next turn">
-        <Icon name="sliders" />
-        <select
-          value={known ? (session.model ?? "") : ""}
-          onChange={(e) => void setModel(session.id, e.target.value)}
-        >
-          <option value="">default{!known && session.model ? ` (${session.model})` : ""}</option>
-          {models
-            .filter((m) => m.id !== "default")
-            .map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.display_name} — {m.id}
-              </option>
-            ))}
-        </select>
-      </label>
-      <label title="Reasoning effort">
-        <select
-          value={session.effort ?? ""}
-          onChange={(e) => void setEffort(session.id, e.target.value)}
-        >
-          <option value="">effort: default</option>
-          {EFFORTS.map((e) => (
-            <option key={e} value={e}>
-              {e}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label title="Permission mode">
-        <select
-          value={session.permission_mode ?? ""}
-          onChange={(e) => void setPermissionMode(session.id, e.target.value)}
-        >
-          {session.permission_mode === null && <option value="">permissions: default</option>}
-          {PERMISSION_MODES.map((m) => (
-            <option key={m} value={m}>
-              {PERMISSION_MODE_LABELS[m] ?? m}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label title="Thinking budget — the CLI default often produces none at all">
-        <select
-          value={session.thinking ?? ""}
-          onChange={(e) => void setThinking(session.id, e.target.value || "default")}
-        >
-          {session.thinking === null && <option value="">thinking: CLI default</option>}
-          {THINKING_OPTIONS.map((t) => (
-            <option key={t} value={t}>
-              {THINKING_LABELS[t] ?? t}
-            </option>
-          ))}
-        </select>
-      </label>
+      <SelectMenu
+        icon="sliders"
+        title="Model used for the next turn"
+        value={known ? (session.model ?? "") : ""}
+        onChange={(v) => void setModel(session.id, v)}
+        options={modelMenuOptions}
+      />
+      <SelectMenu
+        title="Reasoning effort"
+        value={session.effort ?? ""}
+        onChange={(v) => void setEffort(session.id, v)}
+        options={[DEFAULT_OPTION, ...EFFORT_MENU_OPTIONS]}
+      />
+      <SelectMenu
+        icon="shield"
+        title="Permission mode"
+        value={session.permission_mode ?? ""}
+        onChange={(v) => void setPermissionMode(session.id, v)}
+        options={permissionMenuOptions}
+      />
+      <SelectMenu
+        title="Thinking budget — the CLI default often produces none at all"
+        value={session.thinking ?? ""}
+        onChange={(v) => void setThinking(session.id, v || "default")}
+        options={thinkingMenuOptions}
+      />
     </div>
   );
 }
@@ -1056,6 +1269,13 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
               <RuntimeControls session={selected} />
             )}
             {usage[selected.id] && <UsageMeter usage={usage[selected.id]} />}
+            {!isTerminalStatus(selected.status) && (
+              <SessionCapabilities
+                session={selected}
+                agents={agents[selected.id] ?? []}
+                servers={mcpServers[selected.id] ?? []}
+              />
+            )}
             <div className="actions">
               {isTerminalStatus(selected.status) ? (
                 <>
@@ -1096,13 +1316,6 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
               )}
             </div>
           </div>
-          {!isTerminalStatus(selected.status) && (
-            <SessionCapabilities
-              session={selected}
-              agents={agents[selected.id] ?? []}
-              servers={mcpServers[selected.id] ?? []}
-            />
-          )}
           <TranscriptView sessionId={selected.id} items={transcripts[selected.id] ?? []} />
           {(todos[selected.id]?.length ?? 0) > 0 && <TodoList items={todos[selected.id]} />}
           <ChatInput

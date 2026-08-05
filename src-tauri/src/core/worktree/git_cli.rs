@@ -33,6 +33,13 @@ impl GitCli {
         Ok(self.output(cwd, args)?.status.success())
     }
 
+    /// Configured remote names (`origin`, etc.), empty for a purely local repo.
+    fn remotes(&self, cwd: &Path) -> Vec<String> {
+        self.run(cwd, &["remote"])
+            .map(|out| out.lines().map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
     fn output(&self, cwd: &Path, args: &[&str]) -> Result<std::process::Output> {
         let mut cmd = Command::new("git");
         cmd.args(args)
@@ -161,6 +168,51 @@ impl GitProvider for GitCli {
             .run(repo, &["merge-base", base, branch])?
             .trim()
             .to_string())
+    }
+
+    fn fresh_base_ref(&self, repo: &Path, base: &str) -> String {
+        let remotes = self.remotes(repo);
+        if remotes.is_empty() {
+            return base.to_string();
+        }
+        // `base` may already be `<remote>/<rest>` (picked from the remote-branch
+        // list at worktree-creation time) — recognize that against the repo's
+        // actual remotes rather than guessing from the first '/', since a plain
+        // local branch name can itself contain slashes (`feature/x`).
+        let (remote, short) = remotes
+            .iter()
+            .find_map(|r| {
+                base.strip_prefix(&format!("{r}/"))
+                    .map(|rest| (r.clone(), rest.to_string()))
+            })
+            .unwrap_or_else(|| {
+                let remote = if remotes.iter().any(|r| r == "origin") {
+                    "origin".to_string()
+                } else {
+                    remotes[0].clone()
+                };
+                (remote, base.to_string())
+            });
+        // Best-effort: an offline machine or a branch with no upstream must never
+        // break the diff — just fall through to whatever is already on disk.
+        let _ = self.run(repo, &["fetch", "--quiet", &remote, &short]);
+        let candidate = format!("{remote}/{short}");
+        let exists = self
+            .succeeds(
+                repo,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{candidate}^{{commit}}"),
+                ],
+            )
+            .unwrap_or(false);
+        if exists {
+            candidate
+        } else {
+            base.to_string()
+        }
     }
 
     fn changed_files(&self, repo: &Path, branch: &str, base: &str) -> Result<Vec<ChangedFile>> {
@@ -546,6 +598,94 @@ mod tests {
             assert_eq!(cli.list_worktrees(&repo).expect("list").len(), 1);
             // The branch survives worktree removal.
             assert!(cli.branch_exists(&repo, "impl/T-1-x").expect("exists"));
+        }
+
+        #[test]
+        fn fresh_base_ref_is_a_no_op_without_a_remote() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).expect("mkdir");
+            init_repo(&repo);
+
+            let cli = GitCli;
+            assert_eq!(cli.fresh_base_ref(&repo, "main"), "main");
+        }
+
+        /// The exact bug report: a worktree's base branch moves on the remote after
+        /// the worktree was created, and the diff must pick that up rather than
+        /// stay frozen at whatever `develop` looked like at creation time.
+        #[test]
+        fn fresh_base_ref_fetches_before_returning_the_remote_tracking_ref() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+
+            // A bare "origin" with a develop branch at commit A.
+            let remote = tmp.path().join("remote.git");
+            git(
+                tmp.path(),
+                &["init", "--bare", "-b", "develop", remote.to_str().unwrap()],
+            );
+
+            // A throwaway clone used only to push into the remote, standing in for
+            // a teammate's machine.
+            let seed = tmp.path().join("seed");
+            git(
+                tmp.path(),
+                &["clone", remote.to_str().unwrap(), seed.to_str().unwrap()],
+            );
+            git(&seed, &["config", "user.email", "test@maestro.local"]);
+            git(&seed, &["config", "user.name", "Maestro Test"]);
+            fs::write(seed.join("a.txt"), "a\n").expect("write");
+            git(&seed, &["add", "."]);
+            git(&seed, &["commit", "-m", "commit A"]);
+            git(&seed, &["push", "origin", "develop"]);
+
+            // The repo Maestro actually operates on: cloned once, then never
+            // fetched again on its own — exactly how a worktree sits for however
+            // long the user works on its branch.
+            let repo = tmp.path().join("repo");
+            git(
+                tmp.path(),
+                &["clone", remote.to_str().unwrap(), repo.to_str().unwrap()],
+            );
+            git(&repo, &["config", "user.email", "test@maestro.local"]);
+            git(&repo, &["config", "user.name", "Maestro Test"]);
+
+            let cli = GitCli;
+            let wt = tmp.path().join("wt");
+            cli.create_worktree(&repo, &wt, "impl/T-1-x", Some("develop"))
+                .expect("create worktree");
+
+            // Someone else advances develop on the remote after the worktree
+            // exists — time passing, the scenario the bug report describes.
+            fs::write(seed.join("b.txt"), "b\n").expect("write");
+            git(&seed, &["add", "."]);
+            git(&seed, &["commit", "-m", "commit B"]);
+            git(&seed, &["push", "origin", "develop"]);
+
+            // The repo's own local refs are still frozen at commit A: neither
+            // `develop` nor `origin/develop` has moved without an explicit fetch.
+            assert_eq!(
+                cli.show_file(&repo, "develop", "b.txt").expect("show"),
+                None,
+                "local develop must still be stale before fetching"
+            );
+
+            let fresh = cli.fresh_base_ref(&repo, "develop");
+            assert_eq!(
+                fresh, "origin/develop",
+                "resolves to the remote-tracking ref"
+            );
+            assert_eq!(
+                cli.show_file(&repo, &fresh, "b.txt").expect("show"),
+                Some("b\n".to_string()),
+                "must have fetched — b.txt only exists after commit B"
+            );
+
+            // An already-remote-qualified base behaves the same way.
+            assert_eq!(
+                cli.fresh_base_ref(&repo, "origin/develop"),
+                "origin/develop"
+            );
         }
     }
 }

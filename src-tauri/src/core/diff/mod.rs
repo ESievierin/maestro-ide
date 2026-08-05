@@ -211,7 +211,12 @@ impl DiffManager {
 
     fn compute_and_cache(&self, branch: &str, scope: DiffScope) -> Result<Arc<DiffSnapshot>> {
         let repo = self.require_repo()?;
-        let base = self.base_for(branch)?;
+        let stored_base = self.base_for(branch)?;
+        // Freshen the base against its remote before diffing — otherwise this
+        // compares against whatever the local ref happened to point at whenever it
+        // was last fetched, which in practice is often frozen at around
+        // worktree-creation time.
+        let base = self.git.fresh_base_ref(&repo, &stored_base);
         let merge_base = self.git.merge_base(&repo, &base, branch)?;
         let (files, unified) = match scope {
             DiffScope::Branch => (
@@ -349,6 +354,9 @@ mod tests {
         }
         fn merge_base(&self, _repo: &Path, _base: &str, _branch: &str) -> Result<String> {
             Ok("mb00000000000000000000000000000000000000".into())
+        }
+        fn fresh_base_ref(&self, _repo: &Path, base: &str) -> String {
+            base.to_string()
         }
         fn changed_files(
             &self,

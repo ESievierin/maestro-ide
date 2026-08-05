@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EditorState, type Extension } from "@codemirror/state";
-import { EditorView, lineNumbers } from "@codemirror/view";
-import { MergeView, unifiedMergeView } from "@codemirror/merge";
+import { EditorView, keymap, lineNumbers } from "@codemirror/view";
+import { MergeView, goToNextChunk, goToPreviousChunk, unifiedMergeView } from "@codemirror/merge";
 import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { oneDark } from "@codemirror/theme-one-dark";
@@ -17,6 +17,61 @@ import {
   selectionListener,
   setLineQuestions,
 } from "./diffQuestions";
+import { parseDiffStats, parseFileHunks, type FileDiffStats, type HunkRange } from "./diffStats";
+
+/** A slim strip beside the editor marking where every change sits in the
+ * file — the same "you are here, and here's what else changed" overview
+ * IDE diff viewers (Rider, VS Code) show next to the scrollbar. */
+function ChangeOverview({
+  hunks,
+  totalLines,
+  onJump,
+}: {
+  hunks: readonly HunkRange[];
+  totalLines: number;
+  onJump: (line: number) => void;
+}) {
+  if (totalLines <= 0 || hunks.length === 0) return null;
+  return (
+    <div className="diff-minimap">
+      {hunks.map((h, i) => {
+        const top = ((h.start - 1) / totalLines) * 100;
+        const height = Math.max(0.8, ((h.end - h.start + 1) / totalLines) * 100);
+        return (
+          <button
+            key={i}
+            type="button"
+            className="diff-minimap-mark"
+            style={{ top: `${top}%`, height: `${height}%` }}
+            title={`Line ${h.start}${h.end > h.start ? `–${h.end}` : ""}`}
+            onClick={() => onJump(h.start)}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/** Reviewing a diff is mostly "walk the changes": jump to the next/previous
+ * changed chunk, and when there isn't one, move to the next/previous file. */
+function chunkNavKeymap(onBoundary: (direction: 1 | -1) => void) {
+  return keymap.of([
+    {
+      key: "Mod-ArrowDown",
+      run: (view) => {
+        if (!goToNextChunk(view)) onBoundary(1);
+        return true;
+      },
+    },
+    {
+      key: "Mod-ArrowUp",
+      run: (view) => {
+        if (!goToPreviousChunk(view)) onBoundary(-1);
+        return true;
+      },
+    },
+  ]);
+}
 
 type ViewMode = "split" | "unified";
 
@@ -48,19 +103,42 @@ function readOnlyExtensions(language: Extension | null): Extension[] {
 
 function FileRow({
   file,
+  stats,
   selected,
+  viewed,
   onClick,
+  onToggleViewed,
 }: {
   file: ChangedFile;
+  stats?: FileDiffStats;
   selected: boolean;
+  viewed: boolean;
   onClick: () => void;
+  onToggleViewed: () => void;
 }) {
   return (
-    <li className={selected ? "selected" : ""} onClick={onClick}>
+    <li className={`${selected ? "selected" : ""} ${viewed ? "viewed" : ""}`} onClick={onClick}>
+      <button
+        type="button"
+        className="file-viewed-toggle"
+        title={viewed ? "Mark as not viewed" : "Mark as viewed"}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleViewed();
+        }}
+      >
+        <Icon name={viewed ? "check" : "circle"} size={12} />
+      </button>
       <span className={`file-status file-status-${file.status}`}>{file.status}</span>
       <span className="file-path" title={file.path}>
         {file.old_path ? `${file.old_path} → ${file.path}` : file.path}
       </span>
+      {stats && (stats.additions > 0 || stats.deletions > 0) && (
+        <span className="file-stats">
+          {stats.additions > 0 && <span className="file-stat-add">+{stats.additions}</span>}
+          {stats.deletions > 0 && <span className="file-stat-del">−{stats.deletions}</span>}
+        </span>
+      )}
     </li>
   );
 }
@@ -73,12 +151,16 @@ function UnifiedFileDiff({
   newText,
   questions,
   onSelectionChange,
+  onViewReady,
+  onBoundaryChunk,
 }: {
   path: string;
   oldText: string;
   newText: string;
   questions: readonly LineQuestion[];
   onSelectionChange: (range: LineRange | null) => void;
+  onViewReady: (view: EditorView | null) => void;
+  onBoundaryChunk: (direction: 1 | -1) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -99,23 +181,27 @@ function UnifiedFileDiff({
             ...readOnlyExtensions(language),
             lineQuestionsField,
             selectionListener(onSelectionChange),
+            chunkNavKeymap(onBoundaryChunk),
             unifiedMergeView({
               original: oldText,
               mergeControls: false,
               highlightChanges: false,
               gutter: true,
+              collapseUnchanged: {},
             }),
           ],
         }),
         parent: host,
       });
       viewRef.current = view;
+      onViewReady(view);
       view.dispatch({ effects: setLineQuestions.of(questions) });
     })();
 
     return () => {
       cancelled = true;
       viewRef.current = null;
+      onViewReady(null);
       view?.destroy();
     };
   }, [path, oldText, newText]);
@@ -135,12 +221,16 @@ function SplitFileDiff({
   newText,
   questions,
   onSelectionChange,
+  onViewReady,
+  onBoundaryChunk,
 }: {
   path: string;
   oldText: string;
   newText: string;
   questions: readonly LineQuestion[];
   onSelectionChange: (range: LineRange | null) => void;
+  onViewReady: (view: EditorView | null) => void;
+  onBoundaryChunk: (direction: 1 | -1) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const viewRef = useRef<MergeView | null>(null);
@@ -165,20 +255,24 @@ function SplitFileDiff({
             ...readOnlyExtensions(language),
             lineQuestionsField,
             selectionListener(onSelectionChange),
+            chunkNavKeymap(onBoundaryChunk),
           ],
         },
         parent: host,
         gutter: true,
         // In split view, in-line change highlighting is what makes it readable.
         highlightChanges: true,
+        collapseUnchanged: {},
       });
       viewRef.current = view;
+      onViewReady(view.b);
       view.b.dispatch({ effects: setLineQuestions.of(questions) });
     })();
 
     return () => {
       cancelled = true;
       viewRef.current = null;
+      onViewReady(null);
       view?.destroy();
     };
   }, [path, oldText, newText]);
@@ -213,11 +307,94 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
   const [questionText, setQuestionText] = useState("");
   const handleSelectionChange = useCallback((range: LineRange | null) => setSelection(range), []);
 
+  const [search, setSearch] = useState("");
+  const [viewed, setViewed] = useState<Set<string>>(new Set());
+  const activeViewRef = useRef<EditorView | null>(null);
+  const handleViewReady = useCallback((view: EditorView | null) => {
+    activeViewRef.current = view;
+  }, []);
+
+  const stats = useMemo(() => parseDiffStats(snapshot?.unified ?? ""), [snapshot?.unified]);
+  const hunks = useMemo(
+    () => parseFileHunks(snapshot?.unified ?? "", selectedPath ?? ""),
+    [snapshot?.unified, selectedPath],
+  );
+  const totalLines = filePair?.new ? filePair.new.split("\n").length : 0;
+  const jumpToLine = useCallback((line: number) => {
+    const view = activeViewRef.current;
+    if (!view) return;
+    const clamped = Math.min(Math.max(1, line), view.state.doc.lines);
+    const pos = view.state.doc.line(clamped).from;
+    view.dispatch({
+      selection: { anchor: pos },
+      effects: EditorView.scrollIntoView(pos, { y: "center" }),
+    });
+    view.focus();
+  }, []);
+  const totals = useMemo(
+    () =>
+      Object.values(stats).reduce(
+        (acc, s) => ({
+          additions: acc.additions + s.additions,
+          deletions: acc.deletions + s.deletions,
+        }),
+        { additions: 0, deletions: 0 },
+      ),
+    [stats],
+  );
+  const filteredFiles = useMemo(() => {
+    const files = snapshot?.files ?? [];
+    const q = search.trim().toLowerCase();
+    if (!q) return files;
+    return files.filter(
+      (f) => f.path.toLowerCase().includes(q) || f.old_path?.toLowerCase().includes(q),
+    );
+  }, [snapshot?.files, search]);
+  const viewedCount = useMemo(
+    () => (snapshot?.files ?? []).filter((f) => viewed.has(f.path)).length,
+    [snapshot?.files, viewed],
+  );
+
+  const toggleViewed = useCallback((path: string) => {
+    setViewed((v) => {
+      const next = new Set(v);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  /** Move to the next/previous file in the (filtered) list, wrapping around —
+   * called directly from the toolbar, and as the fallback when a within-file
+   * chunk-navigation command runs out of chunks in the current file. */
+  const selectAdjacentFile = useCallback(
+    (direction: 1 | -1) => {
+      if (filteredFiles.length === 0) return;
+      const idx = filteredFiles.findIndex((f) => f.path === selectedPath);
+      const next = idx === -1 ? 0 : (idx + direction + filteredFiles.length) % filteredFiles.length;
+      setSelectedPath(filteredFiles[next].path);
+    },
+    [filteredFiles, selectedPath],
+  );
+
+  const goToNextChange = useCallback(() => {
+    const view = activeViewRef.current;
+    if (view && !goToNextChunk(view)) selectAdjacentFile(1);
+    else if (!view) selectAdjacentFile(1);
+  }, [selectAdjacentFile]);
+  const goToPreviousChange = useCallback(() => {
+    const view = activeViewRef.current;
+    if (view && !goToPreviousChunk(view)) selectAdjacentFile(-1);
+    else if (!view) selectAdjacentFile(-1);
+  }, [selectAdjacentFile]);
+
   useEffect(() => {
     // fetch is a stable zustand action; snapshot comes from the core cache.
     void fetch(branch, scope);
     setSelectedPath(null);
     setFilePair(null);
+    setSearch("");
+    setViewed(new Set());
   }, [branch, scope, fetch]);
 
   // Selecting a different file — or the file content changing under us (agent edits,
@@ -299,13 +476,44 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
           </div>
         </div>
         <span className="session-meta">
-          {snapshot
-            ? `vs ${snapshot.base} (merge-base ${snapshot.merge_base.slice(0, 8)}) · ${snapshot.files.length} files`
-            : loading
-              ? "computing…"
-              : ""}
+          {snapshot ? (
+            <>
+              vs {snapshot.base} (merge-base {snapshot.merge_base.slice(0, 8)}) ·{" "}
+              {snapshot.files.length} files
+              {(totals.additions > 0 || totals.deletions > 0) && (
+                <>
+                  {" · "}
+                  <span className="file-stat-add">+{totals.additions}</span>{" "}
+                  <span className="file-stat-del">−{totals.deletions}</span>
+                </>
+              )}
+              {snapshot.files.length > 0 && ` · ${viewedCount}/${snapshot.files.length} viewed`}
+            </>
+          ) : loading ? (
+            "computing…"
+          ) : (
+            ""
+          )}
         </span>
         <div className="actions">
+          <div className="btn-group">
+            <button
+              className="small icon-only"
+              onClick={goToPreviousChange}
+              disabled={!snapshot || snapshot.files.length === 0}
+              title="Previous change (Ctrl+↑)"
+            >
+              <Icon name="arrow-up" size={13} />
+            </button>
+            <button
+              className="small icon-only"
+              onClick={goToNextChange}
+              disabled={!snapshot || snapshot.files.length === 0}
+              title="Next change (Ctrl+↓)"
+            >
+              <Icon name="arrow-down" size={13} />
+            </button>
+          </div>
           <div className="btn-group">
             <button
               className={`small ${viewMode === "split" ? "selected" : ""}`}
@@ -379,37 +587,61 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
         </div>
       ) : (
         <div className="diff-body">
-          <ul className="diff-files">
-            {snapshot?.files.map((file) => (
-              <FileRow
-                key={file.path}
-                file={file}
-                selected={file.path === selectedPath}
-                onClick={() => setSelectedPath(file.path)}
+          <div className="diff-files-panel">
+            {snapshot && snapshot.files.length > 4 && (
+              <input
+                type="text"
+                className="diff-files-search"
+                placeholder="Filter files…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
               />
-            ))}
-          </ul>
+            )}
+            <ul className="diff-files">
+              {filteredFiles.map((file) => (
+                <FileRow
+                  key={file.path}
+                  file={file}
+                  stats={stats[file.path]}
+                  selected={file.path === selectedPath}
+                  viewed={viewed.has(file.path)}
+                  onClick={() => setSelectedPath(file.path)}
+                  onToggleViewed={() => toggleViewed(file.path)}
+                />
+              ))}
+              {filteredFiles.length === 0 && (
+                <li className="diff-files-empty">No files match “{search}”.</li>
+              )}
+            </ul>
+          </div>
           <div className="diff-editor">
             {tooLarge && tooLarge.path === selectedPath ? (
               <p className="empty">{tooLarge.message}</p>
             ) : filePair && filePair.path === selectedPath ? (
-              viewMode === "split" ? (
-                <SplitFileDiff
-                  path={filePair.path}
-                  oldText={filePair.old}
-                  newText={filePair.new}
-                  questions={questions}
-                  onSelectionChange={handleSelectionChange}
-                />
-              ) : (
-                <UnifiedFileDiff
-                  path={filePair.path}
-                  oldText={filePair.old}
-                  newText={filePair.new}
-                  questions={questions}
-                  onSelectionChange={handleSelectionChange}
-                />
-              )
+              <div className="diff-editor-body">
+                {viewMode === "split" ? (
+                  <SplitFileDiff
+                    path={filePair.path}
+                    oldText={filePair.old}
+                    newText={filePair.new}
+                    questions={questions}
+                    onSelectionChange={handleSelectionChange}
+                    onViewReady={handleViewReady}
+                    onBoundaryChunk={selectAdjacentFile}
+                  />
+                ) : (
+                  <UnifiedFileDiff
+                    path={filePair.path}
+                    oldText={filePair.old}
+                    newText={filePair.new}
+                    questions={questions}
+                    onSelectionChange={handleSelectionChange}
+                    onViewReady={handleViewReady}
+                    onBoundaryChunk={selectAdjacentFile}
+                  />
+                )}
+                <ChangeOverview hunks={hunks} totalLines={totalLines} onJump={jumpToLine} />
+              </div>
             ) : selectedPath ? (
               <p className="empty">Loading {selectedPath}…</p>
             ) : (

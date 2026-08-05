@@ -531,6 +531,9 @@ mod tests {
         fn merge_base(&self, _repo: &Path, _base: &str, _branch: &str) -> Result<String> {
             Ok("mb00000000000000000000000000000000000000".into())
         }
+        fn fresh_base_ref(&self, _repo: &Path, base: &str) -> String {
+            base.to_string()
+        }
         fn changed_files(
             &self,
             _repo: &Path,

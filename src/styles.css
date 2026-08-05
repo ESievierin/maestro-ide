@@ -66,9 +66,10 @@
   --space-8: 2rem; /* 32 */
 
   /* ---------- radius ---------- */
-  --radius-sm: 5px;
-  --radius-md: 8px;
-  --radius-lg: 11px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
   --radius-pill: 999px;
 
   /* ---------- type scale ---------- */
@@ -486,8 +487,10 @@ input[type="checkbox"] {
   accent-color: var(--accent);
 }
 
-/* A tight cluster of selects that should read as one control, not four
-   floating boxes: shared border, dividers instead of gaps. */
+/* A tight cluster of pickers that should read as one control, not four
+   floating boxes: shared border, dividers instead of gaps. No `overflow:
+   hidden` here — a SelectMenu's popup needs to escape this box, so the
+   rounded-corner illusion is done per edge-child instead of by clipping. */
 .segmented {
   display: inline-flex;
   align-items: stretch;
@@ -496,7 +499,6 @@ input[type="checkbox"] {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-recessed);
-  overflow: hidden;
 }
 
 .segmented > * {
@@ -507,6 +509,18 @@ input[type="checkbox"] {
 
 .segmented > *:not(:last-child) {
   border-right: 1px solid var(--border) !important;
+}
+
+.segmented > *:first-child,
+.segmented > *:first-child .select-menu-trigger {
+  border-top-left-radius: var(--radius-sm) !important;
+  border-bottom-left-radius: var(--radius-sm) !important;
+}
+
+.segmented > *:last-child,
+.segmented > *:last-child .select-menu-trigger {
+  border-top-right-radius: var(--radius-sm) !important;
+  border-bottom-right-radius: var(--radius-sm) !important;
 }
 
 .segmented select,
@@ -535,6 +549,143 @@ input[type="checkbox"] {
 .segmented select:focus {
   outline: none;
   background: var(--surface-3) !important;
+}
+
+/* ---------- SelectMenu: a themed dropdown standing in for native <select> ---------- */
+
+.select-menu {
+  position: relative;
+  min-width: 0;
+}
+
+.select-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  background: var(--surface-recessed);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.select-menu-trigger:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.select-menu-trigger:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.select-menu-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.select-menu-icon {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.select-menu-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-menu-chevron {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: transform var(--fast) var(--ease);
+}
+
+.select-menu.open .select-menu-chevron {
+  transform: rotate(180deg);
+}
+
+.select-menu-list {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 0.3rem);
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: 320px;
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.3rem;
+  list-style: none;
+  background: var(--surface-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  animation: select-menu-in var(--fast) var(--ease) both;
+}
+
+@keyframes select-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.select-menu-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.select-menu-option.highlight {
+  background: var(--surface-3);
+}
+
+.select-menu-option.selected {
+  color: var(--accent);
+}
+
+.select-menu-option-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.select-menu-option-desc {
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+  white-space: normal;
+}
+
+/* Inside a .segmented cluster, the trigger loses its own border and reads as
+   one merged control, matching what the native-select treatment did. */
+.segmented .select-menu-trigger {
+  border: none;
+  background: transparent;
+}
+
+.segmented .select-menu-trigger:focus-visible {
+  background: var(--surface-3);
 }
 
 /* Button group acting as tabs (scope / view mode toggles). */
@@ -678,9 +829,10 @@ input[type="checkbox"] {
 
 .session-tab {
   font-size: var(--text-xs);
-  padding: 0.32rem 0.65rem;
+  padding: 0.36rem 0.8rem;
   background: var(--surface-2);
-  border-color: var(--border-subtle);
+  border-color: transparent;
+  border-radius: var(--radius-pill);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -703,8 +855,8 @@ input[type="checkbox"] {
   gap: var(--space-3);
   flex-wrap: wrap;
   background: var(--surface-2);
-  border-radius: var(--radius-md);
-  padding: 0.45rem 0.6rem;
+  border-radius: var(--radius-lg);
+  padding: 0.55rem 0.7rem;
 }
 
 .session-meta {
@@ -716,9 +868,10 @@ input[type="checkbox"] {
   flex: 1;
   min-height: 120px;
   overflow: auto;
-  background: var(--surface-2);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
   font-size: var(--text-sm);
 }
 
@@ -798,13 +951,16 @@ input[type="checkbox"] {
   margin: 0.85rem 0 0.3rem;
 }
 
-/* User message bubble */
+/* User message bubble — a real bubble, not a full-width banner: narrower than
+   the column, softly rounded, with the accent kept as a slim left edge. */
 .t-user {
   border-left: 3px solid var(--accent);
   background: var(--accent-bg);
-  border-radius: 0 var(--radius-md) var(--radius-md) 0;
-  padding: 0.5rem 0.8rem;
-  margin: 0.65rem 0;
+  border-radius: var(--radius-lg);
+  padding: 0.65rem 0.95rem;
+  margin: 0.85rem 0;
+  max-width: 88%;
+  box-shadow: var(--shadow-sm);
 }
 
 /* Collapsible tool use */
@@ -926,12 +1082,23 @@ input[type="checkbox"] {
 
 .follow-up {
   display: flex;
+  align-items: flex-end;
   gap: var(--space-2);
 }
 
-.follow-up input {
+.follow-up textarea {
   flex: 1;
   padding: 0.55rem 0.75rem;
+  resize: none;
+  font: inherit;
+  line-height: 1.4;
+  max-height: 160px;
+  overflow-y: auto;
+  transition: height var(--fast) var(--ease);
+}
+
+.follow-up .btn-primary {
+  flex-shrink: 0;
 }
 
 .chat-input {
@@ -1065,12 +1232,26 @@ input[type="checkbox"] {
   min-height: 0;
 }
 
+.diff-files-panel {
+  width: 260px;
+  min-width: 200px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-height: 0;
+}
+
+.diff-files-search {
+  padding: 0.35rem 0.6rem;
+  font-size: var(--text-xs);
+}
+
 .diff-files {
   list-style: none;
   margin: 0;
   padding: 0;
-  width: 250px;
-  min-width: 190px;
+  flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -1083,7 +1264,7 @@ input[type="checkbox"] {
 .diff-files li {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
   padding: 0.3rem 0.5rem;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -1097,6 +1278,43 @@ input[type="checkbox"] {
 .diff-files li.selected {
   background: var(--accent-bg);
   color: var(--accent);
+}
+
+.diff-files li.viewed {
+  opacity: 0.55;
+}
+
+.diff-files li.viewed .file-path {
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
+}
+
+.diff-files-empty {
+  color: var(--text-tertiary);
+  cursor: default !important;
+  justify-content: center;
+}
+
+.diff-files-empty:hover {
+  background: transparent !important;
+}
+
+.file-viewed-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  background: none;
+  border: none;
+  padding: 0.1rem;
+  cursor: pointer;
+}
+
+.file-viewed-toggle:hover {
+  color: var(--success);
+}
+
+.diff-files li.viewed .file-viewed-toggle {
+  color: var(--success);
 }
 
 .file-status {
@@ -1128,6 +1346,24 @@ input[type="checkbox"] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.file-stats {
+  flex-shrink: 0;
+  display: inline-flex;
+  gap: 0.35rem;
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.file-stat-add {
+  color: var(--success);
+}
+
+.file-stat-del {
+  color: var(--danger);
 }
 
 .diff-editor {
@@ -1140,15 +1376,119 @@ input[type="checkbox"] {
   flex-direction: column;
 }
 
+.diff-editor-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
 .cm-host {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
+}
+
+/* Change-overview strip: a slim always-visible map of where the changes are
+   in the whole file, click a mark to jump straight to it. */
+.diff-minimap {
+  position: relative;
+  width: 10px;
+  flex-shrink: 0;
+  background: var(--surface-1);
+  border-left: 1px solid var(--border-subtle);
+}
+
+.diff-minimap-mark {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  min-height: 3px;
+  padding: 0;
+  border: none;
+  border-radius: 1px;
+  background: var(--warning);
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.diff-minimap-mark:hover {
+  opacity: 1;
+  filter: brightness(1.2);
 }
 
 .cm-host .cm-editor {
   height: 100%;
   font-size: var(--text-sm);
+}
+
+.cm-host .cm-editor,
+.cm-host .cm-content {
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, "SF Mono", Menlo, monospace;
+}
+
+.cm-host .cm-line {
+  line-height: 1.55;
+}
+
+/* Change coloring, themed to match the app's own success/danger/warning
+   tokens instead of the library's generic defaults — the same language
+   `.badge-*`/`.file-status-*` already use elsewhere. */
+.cm-host .cm-insertedLine {
+  background-color: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.cm-host .cm-deletedLine,
+.cm-host .cm-deletedChunk {
+  background-color: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.cm-host .cm-changedLine {
+  background-color: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+
+.cm-host .cm-changedText,
+.cm-host .cm-inlineChangedLine {
+  background-color: color-mix(in srgb, var(--warning) 30%, transparent);
+  border-radius: 2px;
+}
+
+.cm-host .cm-deletedText {
+  background-color: color-mix(in srgb, var(--danger) 32%, transparent);
+  border-radius: 2px;
+}
+
+.cm-host .cm-changeGutter {
+  width: 4px;
+}
+
+.cm-host .cm-changedLineGutter {
+  background-color: var(--warning);
+}
+
+.cm-host .cm-deletedLineGutter {
+  background-color: var(--danger);
+}
+
+.cm-host [class*="cm-insertedLineGutter"] {
+  background-color: var(--success);
+}
+
+/* The "N unchanged lines" fold placeholder from `collapseUnchanged` — styled
+   as a clickable divider instead of the library's plain default. */
+.cm-host .cm-collapsedLines {
+  margin: 0.15rem 0;
+  padding: 0.15rem 0.7rem;
+  color: var(--text-tertiary);
+  background: var(--surface-1);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+}
+
+.cm-host .cm-collapsedLines:hover {
+  color: var(--text-secondary);
+  background: var(--surface-3);
 }
 
 /* Side-by-side merge view: both panes fill the host and scroll in sync. */
@@ -2230,29 +2570,42 @@ button:active:not(:disabled) {
 
 /* ---------- Session capabilities (agents, MCP) ---------- */
 
-.capabilities {
-  border-radius: var(--radius-md);
-  padding: 0.4rem 0.65rem;
-  background: var(--surface-2);
+.capabilities-popover {
+  position: relative;
   flex-shrink: 0;
 }
 
-.capabilities > summary {
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
+.capabilities-panel {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 0.4rem);
+  left: 0;
+  width: max-content;
+  min-width: 320px;
+  max-width: 420px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 0.6rem 0.7rem;
+  background: var(--surface-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  animation: select-menu-in var(--fast) var(--ease) both;
 }
 
 .cap-list {
   list-style: none;
-  margin: 0.45rem 0 0;
+  margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
+}
+
+.cap-list + .cap-list {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .cap-list li {

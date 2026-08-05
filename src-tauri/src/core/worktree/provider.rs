@@ -93,6 +93,17 @@ pub trait GitProvider: Send + Sync {
     /// The merge-base commit of `base` and `branch`.
     fn merge_base(&self, repo: &Path, base: &str, branch: &str) -> Result<String>;
 
+    /// Best-effort: bring `base`'s remote-tracking ref up to date with its remote
+    /// (default `origin` when `base` is a plain branch name, not already
+    /// `<remote>/<branch>`), then return the ref to actually diff against — the
+    /// freshened remote-tracking ref when one exists, `base` unchanged otherwise.
+    ///
+    /// Never fails the caller: offline, no such remote, or a purely local repo all
+    /// just fall back to whatever `base` already resolves to. Without this, a diff
+    /// compares against whatever the local ref happened to point at whenever it was
+    /// last fetched — in practice, often frozen at around worktree-creation time.
+    fn fresh_base_ref(&self, repo: &Path, base: &str) -> String;
+
     /// Files changed between the merge-base and `branch` (rename detection on).
     fn changed_files(&self, repo: &Path, branch: &str, base: &str) -> Result<Vec<ChangedFile>>;
 

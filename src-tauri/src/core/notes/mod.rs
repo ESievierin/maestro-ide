@@ -301,6 +301,111 @@ mod tests {
 - none yet
 ";
 
+    /// A real repo, because the whole point of this module is finding the file in a
+    /// worktree — a mocked path would test nothing that can break.
+    fn repo_with_manager() -> (tempfile::TempDir, Arc<NotesManager>, String) {
+        use crate::core::worktree::{GitCli, WorktreeManager};
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).expect("mkdir");
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "test@maestro.local"],
+            vec!["config", "user.name", "Maestro Test"],
+        ] {
+            let out = Command::new("git")
+                .current_dir(&repo)
+                .args(&args)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?} failed");
+        }
+        std::fs::write(
+            repo.join("README.md"),
+            "hello
+",
+        )
+        .expect("write");
+        for args in [vec!["add", "."], vec!["commit", "-m", "init"]] {
+            Command::new("git")
+                .current_dir(&repo)
+                .args(&args)
+                .output()
+                .expect("git");
+        }
+
+        let bus = EventBus::new();
+        let store = Arc::new(crate::core::store::SqliteStore::open_in_memory().unwrap());
+        let worktrees = Arc::new(WorktreeManager::new(
+            Arc::new(GitCli),
+            store.clone(),
+            bus.clone(),
+        ));
+        worktrees.set_repo(&repo).expect("select repo");
+        let branch = worktrees
+            .list()
+            .expect("list")
+            .into_iter()
+            .find_map(|w| w.branch)
+            .expect("the primary worktree's branch");
+        (tmp, Arc::new(NotesManager::new(worktrees, bus)), branch)
+    }
+
+    #[test]
+    fn notes_round_trip_through_a_real_worktree() {
+        let (_tmp, notes, branch) = repo_with_manager();
+
+        // Nothing written yet: a state, not an error, and the path is known.
+        let empty = notes.read(&branch).expect("read");
+        assert!(!empty.exists);
+        assert!(empty.unavailable.is_none());
+        assert!(empty.path.unwrap().ends_with(NOTES_FILE));
+        assert_eq!(notes.current_text(&branch), None);
+
+        let written = notes.write(&branch, WELL_FORMED).expect("write");
+        assert!(written.exists);
+        assert_eq!(written.sections.len(), 4);
+        assert!(written.updated_at.is_some());
+        assert!(notes.current_text(&branch).is_some());
+
+        // The Q&A archive lands in the file, next to what was already there.
+        let updated = notes
+            .append_qa(
+                &branch,
+                "src.rs:1-2",
+                "why three retries?",
+                "The gateway retries twice.",
+            )
+            .expect("append");
+        assert!(updated.raw.contains("## Q&A"));
+        assert!(updated.raw.contains("### src.rs:1-2"));
+        assert!(updated.raw.contains("The gateway retries twice."));
+        assert!(updated
+            .raw
+            .contains("- Chose SQLite over a file, because queries."));
+        // And it really is on disk, not just in the returned struct.
+        let on_disk = std::fs::read_to_string(updated.path.unwrap()).expect("read file");
+        assert_eq!(on_disk, updated.raw);
+    }
+
+    #[test]
+    fn an_unknown_branch_is_unavailable_rather_than_an_error() {
+        let (_tmp, notes, _branch) = repo_with_manager();
+        let notes_for_ghost = notes.read("impl/does-not-exist").expect("read");
+        assert!(!notes_for_ghost.exists);
+        assert!(notes_for_ghost
+            .unavailable
+            .expect("a reason")
+            .contains("no worktree"));
+        // Writing there is an error, because the caller asked for something impossible.
+        assert!(notes.write("impl/does-not-exist", "x").is_err());
+        assert!(notes
+            .append_qa("impl/does-not-exist", "a", "b", "c")
+            .is_err());
+    }
+
     #[test]
     fn a_qa_entry_creates_the_section_when_it_is_missing() {
         let updated = insert_into_qa(

@@ -3,7 +3,8 @@
 //
 // Prompt keywords: "PERMISSION" pauses on a chat permission request; "GATE" asks to run
 // a push+PR command (exercises the T7 approval dialog); "ASK" raises a question dialog
-// (AskUserQuestion path); "ESCALATE" asks the original agent through the core;
+// (AskUserQuestion path); "HOOKCHECK" runs a push command through the PreToolUse gate;
+// "ESCALATE" asks the original agent through the core;
 // "PLAN" asks the user to approve a plan; "AUTH" raises an MCP
 // elicitation; "THINK" streams a
 // thinking block; "TOOLS" runs a tool with a
@@ -31,6 +32,8 @@ export class MockSession implements SessionHandle {
   private readonly pending = new Map<string, (allow: boolean) => void>();
   private readonly pendingDialogs = new Map<string, (answer: string) => void>();
   private readonly pendingEscalations = new Map<string, (result: string) => void>();
+  private readonly pendingGates = new Map<string, (verdict: string) => void>();
+  private gateCounter = 0;
   private escalationCounter = 0;
 
   constructor(
@@ -228,6 +231,28 @@ export class MockSession implements SessionHandle {
       });
     }
 
+    if (prompt.includes("HOOKCHECK")) {
+      // Exercises the PreToolUse path: the core decides before the "tool" runs.
+      const requestId = `mock-gate-${this.sessionId}-${++this.gateCounter}`;
+      const verdict = await new Promise<string>((resolve) => {
+        this.pendingGates.set(requestId, resolve);
+        this.emit({
+          type: "gate_check",
+          session_id: this.sessionId,
+          request_id: requestId,
+          tool: "Bash",
+          args: {
+            command: 'git push -u origin HEAD && gh pr create --title "Mock PR" --body "Body"',
+          },
+        });
+      });
+      this.emit({
+        type: "stream_delta",
+        session_id: this.sessionId,
+        text: `Gate verdict: ${verdict}. `,
+      });
+    }
+
     if (prompt.includes("ESCALATE")) {
       const requestId = `mock-esc-${this.sessionId}-${++this.escalationCounter}`;
       const result = await new Promise<string>((resolve) => {
@@ -386,6 +411,8 @@ export class MockSession implements SessionHandle {
     this.pendingDialogs.clear();
     for (const [, resolve] of this.pendingEscalations) resolve("(session closed)");
     this.pendingEscalations.clear();
+    for (const [, resolve] of this.pendingGates) resolve("pass");
+    this.pendingGates.clear();
     this.emit({ type: "session_closed", session_id: this.sessionId, reason: "closed" });
     this.onEnd(this.sessionId);
   }
@@ -395,6 +422,19 @@ export class MockSession implements SessionHandle {
     if (!resolve) return false;
     this.pending.delete(requestId);
     resolve(allow);
+    return true;
+  }
+
+  respondGate(
+    requestId: string,
+    decision: string,
+    _updatedArgs?: Record<string, unknown>,
+    message?: string,
+  ): boolean {
+    const resolve = this.pendingGates.get(requestId);
+    if (!resolve) return false;
+    this.pendingGates.delete(requestId);
+    resolve(`${decision}${message ? `: ${message}` : ""}`);
     return true;
   }
 

@@ -622,6 +622,16 @@ mod tests {
             Ok(())
         }
 
+        fn respond_gate_check(
+            &self,
+            _request_id: &str,
+            _decision: &str,
+            _updated_args: Option<Value>,
+            _message: Option<String>,
+        ) -> Result<()> {
+            Ok(())
+        }
+
         fn respond_escalation(&self, _request_id: &str, _result: &str) -> Result<()> {
             Ok(())
         }

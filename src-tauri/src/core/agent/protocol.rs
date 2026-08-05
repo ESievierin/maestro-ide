@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Requests sent to the sidecar. Every request carries an `id`; the sidecar
 /// answers with an `ack` event carrying the same id.
@@ -91,6 +91,17 @@ pub enum SidecarRequest {
         behavior: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<Value>,
+    },
+    /// The verdict on a paused tool call. `pass` hands it back to the CLI's own permission
+    /// handling; `allow`/`deny` are final in every permission mode.
+    GateDecision {
+        id: u64,
+        request_id: String,
+        decision: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        updated_args: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
     },
     /// Answer an `ask_original_agent` call. Always a readable result, including failures.
     EscalationResponse {
@@ -223,6 +234,14 @@ pub enum SidecarEvent {
         tool_use_id: String,
         is_error: bool,
         text: String,
+    },
+    /// A tool is about to run and is paused until the core answers with a `GateDecision`.
+    /// Fires in every permission mode, which is why the commit/push gate lives here.
+    GateCheck {
+        session_id: String,
+        request_id: String,
+        tool: String,
+        args: Value,
     },
     /// The session asked the agent that implemented this branch about its reasoning.
     EscalationRequest {

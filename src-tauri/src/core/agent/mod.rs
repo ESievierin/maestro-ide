@@ -78,6 +78,15 @@ pub trait AgentEngine: Send + Sync {
     fn mcp_action(&self, session_id: &str, server: &str, action: &str) -> Result<()>;
     /// Answer an `ask_original_agent` call with text the asking agent can read.
     fn respond_escalation(&self, request_id: &str, result: &str) -> Result<()>;
+    /// Answer a paused tool call: `pass` (not gated), `allow` (optionally with edited
+    /// arguments) or `deny` with a message for the agent.
+    fn respond_gate_check(
+        &self,
+        request_id: &str,
+        decision: &str,
+        updated_args: Option<Value>,
+        message: Option<String>,
+    ) -> Result<()>;
 
     /// Answer a dialog the CLI asked the host to render.
     fn respond_user_dialog(
@@ -211,6 +220,7 @@ fn request_id(request: &SidecarRequest) -> Option<u64> {
         | SidecarRequest::SetThinking { id, .. }
         | SidecarRequest::McpAction { id, .. }
         | SidecarRequest::EscalationResponse { id, .. }
+        | SidecarRequest::GateDecision { id, .. }
         | SidecarRequest::UserDialogResponse { id, .. }
         | SidecarRequest::Shutdown { id } => Some(*id),
     }
@@ -466,6 +476,23 @@ impl AgentEngine for SidecarEngine {
             effort: effort.to_string(),
         };
         self.write(&request, Some(session_id))
+    }
+
+    fn respond_gate_check(
+        &self,
+        request_id: &str,
+        decision: &str,
+        updated_args: Option<Value>,
+        message: Option<String>,
+    ) -> Result<()> {
+        let request = SidecarRequest::GateDecision {
+            id: self.next_request_id(),
+            request_id: request_id.to_string(),
+            decision: decision.to_string(),
+            updated_args,
+            message,
+        };
+        self.write(&request, None)
     }
 
     fn respond_escalation(&self, request_id: &str, result: &str) -> Result<()> {

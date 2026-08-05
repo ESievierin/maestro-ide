@@ -117,6 +117,23 @@ async function dispatch(request: SidecarRequest): Promise<void> {
       }
       return;
     }
+    case "gate_decision": {
+      for (const session of sessions.values()) {
+        if (
+          session.respondGate(
+            request.request_id,
+            request.decision,
+            request.updated_args,
+            request.message,
+          )
+        ) {
+          ack(request.id, true);
+          return;
+        }
+      }
+      ack(request.id, false, `unknown gate check: ${request.request_id}`);
+      return;
+    }
     case "escalation_response": {
       for (const session of sessions.values()) {
         if (session.respondEscalation(request.request_id, request.result)) {
@@ -174,6 +191,19 @@ async function dispatch(request: SidecarRequest): Promise<void> {
       sessions.clear();
       ack(request.id, true);
       process.exit(0);
+      break;
+    }
+    default: {
+      // A newer core talking to an older sidecar: say so instead of silently ignoring the
+      // request, which used to leave the core waiting for an ack forever. Events travel the
+      // other way — the Rust reader skips unknown event types with a warning.
+      const unknown = request as { type?: string; id?: number };
+      ack(
+        typeof unknown.id === "number" ? unknown.id : 0,
+        false,
+        `unknown request type: ${unknown.type ?? "(none)"} — is the sidecar stale?`,
+      );
+      return;
     }
   }
 }

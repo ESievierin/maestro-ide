@@ -18,7 +18,6 @@ import type {
 } from "../types/sessions";
 import {
   EFFORTS,
-  GATE_UNSAFE_MODES,
   isTerminalStatus,
   PERMISSION_MODE_LABELS,
   PERMISSION_MODES,
@@ -781,11 +780,11 @@ function NewSessionForm({
       <button disabled={busy || prompt.trim().length === 0} onClick={() => void submit()}>
         {busy ? "Starting…" : "Start session"}
       </button>
-      {GATE_UNSAFE_MODES.includes(permissionMode) && (
-        <p className="hint warn">
-          <Icon name="alert" /> In <code>auto</code> a classifier answers permission prompts, and
-          what it approves never reaches the commit/push/PR gate — a push can happen without the
-          approval dialog. Avoid it where that matters.
+      {permissionMode === "auto" && (
+        <p className="hint">
+          In <code>auto</code> a classifier answers ordinary permission prompts. Commits, pushes and
+          PRs still stop at the approval dialog — the gate runs before every tool call, in every
+          mode.
         </p>
       )}
       {sessionType === "implementation" && (
@@ -925,11 +924,6 @@ function RuntimeControls({ session }: { session: Session }) {
           ))}
         </select>
       </label>
-      {GATE_UNSAFE_MODES.includes(session.permission_mode ?? "") && (
-        <span className="pill pill-warn" title="A classifier may approve gated commands">
-          <Icon name="alert" /> gate not guaranteed
-        </span>
-      )}
     </div>
   );
 }

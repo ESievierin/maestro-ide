@@ -181,6 +181,29 @@ fragile. It is also the item Maestro needs least: every session runs in its own 
 worktree with a diff view, so `git checkout -- .` already undoes an agent's edits with
 tooling the user can see. Revisit if the SDK starts emitting replays.
 
+## The gate moved to a `PreToolUse` hook (2026-08-05)
+
+The `auto` caveat in Tier 1 is gone. Gating used to hang off `canUseTool`, which `auto`
+never calls for anything its classifier approves — so a commit or a push could execute
+without the approval dialog. The gate now runs as a `PreToolUse` hook, which fires before
+every tool call in every permission mode.
+
+- The sidecar pauses each tool call on a `gate_check` and waits for the core's
+  `gate_decision`: `pass` (not gated — the CLI carries on as it would), `allow` (with the
+  gate's edited parameters substituted) or `deny` with a message for the agent.
+- `PendingGate` records which channel it arrived on, so a verdict always goes back the way
+  the call came in. The `canUseTool` path remains as a backstop for a CLI whose hook never
+  fires, and a marker (session + tool + args, consumed on use) keeps one call from raising
+  two dialogs.
+- A call the core does not answer proceeds to its normal permission handling after a
+  generous timeout: the gate is a checkpoint, not a lock, and a hung core must not wedge a
+  session forever.
+- Verified against the real CLI in `auto` mode: **zero** permission requests reached the
+  host, the `gate_check` fired with `git push origin main`, and the deny took effect. That
+  is the exact hole this was for.
+- Protocol v5. `bypassPermissions`/`dontAsk` remain unoffered — unnecessary now, and
+  unverified against the hook.
+
 ## Explicitly out of scope
 
 Terminal-only affordances that make no sense here (IDE integrations, `/vim`, status line,

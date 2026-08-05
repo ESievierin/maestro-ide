@@ -442,6 +442,16 @@ mod tests {
         fn set_thinking(&self, _s: &str, _t: &str) -> Result<()> {
             Ok(())
         }
+        fn respond_gate_check(
+            &self,
+            _request_id: &str,
+            _decision: &str,
+            _updated_args: Option<serde_json::Value>,
+            _message: Option<String>,
+        ) -> Result<()> {
+            Ok(())
+        }
+
         fn respond_escalation(&self, request_id: &str, result: &str) -> Result<()> {
             self.answers
                 .lock()

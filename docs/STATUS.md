@@ -32,6 +32,7 @@ Inventory and per-item detail: `docs/tasks/S3-parity.md`.
 | Tier 1 runtime switching + dialogs + models | done — protocol v2, see below                                  |
 | Tier 2 transcript gaps                      | done — protocol v3: thinking, results, subagents, tasks, usage |
 | Tier 3 completeness                         | done except rewind (blocked — see below)                       |
+| Gate on `PreToolUse`                        | done — `auto` is gate-safe, verified against the real CLI      |
 
 Tier 1 in one paragraph: model / effort / permission mode can be switched **while a
 session runs** (session toolbar selectors, or `/model`, `/effort`, `/permissions` in the
@@ -193,13 +194,25 @@ Findings and the full fix list live in `docs/tasks/T6-fixes.md` and
   with a `note` instead of misleading editable fields.
 - Pending gates are cancelled when their session closes/crashes/is swept, and every
   departure publishes `gate.resolved` — otherwise a dead gate wedged the blocking modal.
-- `bypassPermissions` is deliberately absent from the UI: it skips `canUseTool`, so the
-  gate would never see a push.
+- **The gate runs as a `PreToolUse` hook, not on `canUseTool`.** That is what makes it
+  hold in every permission mode: in `auto` a classifier answers ordinary prompts and
+  `canUseTool` is never called (verified — a real `auto` session produced zero permission
+  requests), but the hook still fires and a `git push` still stops at the approval dialog.
+  The permission path keeps a backstop for a CLI whose hook never fires, deduplicated by
+  a short-lived marker so one call cannot raise two dialogs.
+- `bypassPermissions` and `dontAsk` stay out of the UI: not needed now that `auto` is
+  gate-safe, and neither has been verified against the hook.
 - T6 answer attribution is core-driven: a queued question arms only when its own turn
   starts, so an unrelated turn's `awaiting_input` can no longer close it with the wrong
   text, and deltas are routed by `question_id` instead of "first unfinished per file".
 
 ## Verification commands
+
+The sidecar has a protocol smoke suite (`cd sidecar && npm run smoke`, also run in CI): it
+drives the built sidecar in mock mode over the real wire — every dialog kind, the gate hook,
+escalation, attachments, runtime switches, and the nack for an unknown request. It exists
+because green unit tests have twice hidden a broken wire, and it has already caught one:
+unknown requests used to be dropped silently instead of nacked.
 
 ```sh
 cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test

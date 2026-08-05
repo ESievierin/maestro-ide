@@ -1,7 +1,7 @@
 // Rust ↔ sidecar protocol. NDJSON over stdio: one JSON object per line.
 // Keep in sync with src-tauri/src/core/agent/protocol.rs.
 
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 // ---------- Requests (core → sidecar) ----------
 
@@ -138,6 +138,25 @@ export interface UserDialogResponseRequest {
 }
 
 /**
+ * The core's verdict on a tool call, before it runs.
+ *
+ * `pass` means "not my business" — the CLI carries on with whatever its permission mode
+ * would have done. `allow` and `deny` are final and apply in **every** permission mode,
+ * which is the whole reason gating moved to a hook: a classifier-approved call in `auto`
+ * never reaches `canUseTool`, but it does reach `PreToolUse`.
+ */
+export interface GateDecisionRequest {
+  type: "gate_decision";
+  id: number;
+  request_id: string;
+  decision: "pass" | "allow" | "deny";
+  /** Substituted into the tool call on `allow` (the gate's editable params). */
+  updated_args?: Record<string, unknown>;
+  /** Shown to the agent on `deny`. */
+  message?: string;
+}
+
+/**
  * The core's answer to an `escalation_request`. Always a result the asking agent can read —
  * including the failures, which arrive as plain text rather than as a thrown tool error.
  */
@@ -178,6 +197,7 @@ export type SidecarRequest =
   | SetPermissionModeRequest
   | UserDialogResponseRequest
   | EscalationResponseRequest
+  | GateDecisionRequest
   | McpActionRequest
   | SpawnRequest
   | SendRequest
@@ -261,6 +281,17 @@ export type SidecarEvent =
       tool_use_id: string;
       is_error: boolean;
       text: string;
+    }
+  /**
+   * A tool is about to run. The core answers with a `gate_decision`; until then the call
+   * is paused. Unlike a permission request this fires in every permission mode.
+   */
+  | {
+      type: "gate_check";
+      session_id: string;
+      request_id: string;
+      tool: string;
+      args: Record<string, unknown>;
     }
   /**
    * The session called `ask_original_agent`: it wants the reasoning of the agent that
@@ -374,5 +405,12 @@ export interface SessionHandle {
   mcpAction(server: string, action: string): Promise<void>;
   /** Returns false when the escalation id is unknown to this session. */
   respondEscalation(requestId: string, result: string): boolean;
+  /** Returns false when the gate check id is unknown to this session. */
+  respondGate(
+    requestId: string,
+    decision: string,
+    updatedArgs?: Record<string, unknown>,
+    message?: string,
+  ): boolean;
   setPermissionMode(mode: string): Promise<void>;
 }

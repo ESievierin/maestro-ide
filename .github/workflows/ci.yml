@@ -95,3 +95,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+      # Drives the built sidecar in mock mode over the real protocol: every dialog,
+      # the gate hook, escalation, attachments, runtime switches. Green unit tests have
+      # twice hidden a broken wire.
+      - run: npm run smoke

@@ -8,6 +8,8 @@ import {
   query,
   tool,
   type EffortLevel,
+  type HookInput,
+  type HookJSONOutput,
   type ElicitationRequest,
   type ElicitationResult,
   type Options,
@@ -84,6 +86,15 @@ const REVIEW_PROFILE = "review";
 const ESCALATION_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
+ * How long a tool call waits for the core's gate verdict before running anyway.
+ *
+ * Generous on purpose: the verdict can require a human answering an approval dialog. If the
+ * core never answers, the call proceeds to its normal permission handling rather than
+ * hanging the session forever — the gate is a checkpoint, not a lock.
+ */
+const GATE_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
  * Dialog kind for an MCP server asking the user for something — typically finishing an
  * OAuth flow in the browser. Without a host answer the SDK declines it silently, and the
  * server's tools stay unusable with no explanation.
@@ -104,6 +115,13 @@ export const SUPPORTED_DIALOG_KINDS: string[] = [];
  * A question waiting on the user. `settle` is built by whichever channel raised it, so one
  * answer from the UI resolves either a permission decision or a CLI dialog result.
  */
+/** The core's verdict on a paused tool call. */
+interface GateVerdict {
+  decision: string;
+  updatedArgs?: Record<string, unknown>;
+  message?: string;
+}
+
 interface PendingDialog {
   kind: string;
   settle: (behavior: "completed" | "cancelled", answer?: DialogAnswer) => void;
@@ -130,6 +148,9 @@ export class AgentSession implements SessionHandle {
   /** In-flight `ask_original_agent` calls, waiting for the core's answer. */
   private readonly pendingEscalations = new Map<string, (result: string) => void>();
   private escalationCounter = 0;
+  /** Tool calls paused on a gate verdict from the core. */
+  private readonly pendingGates = new Map<string, (decision: GateVerdict) => void>();
+  private gateCounter = 0;
   private q: Query | null = null;
   private closedByRequest = false;
 
@@ -148,6 +169,12 @@ export class AgentSession implements SessionHandle {
       settingSources: ["user", "project", "local"],
       systemPrompt: { type: "preset", preset: "claude_code" },
       canUseTool: (toolName, input, opts) => this.onPermissionRequest(toolName, input, opts),
+      // The gate lives here, not in `canUseTool`: a PreToolUse hook fires whatever the
+      // permission mode is, so `auto` (whose classifier answers prompts itself) can no
+      // longer wave a commit or a push past the approval dialog.
+      hooks: {
+        PreToolUse: [{ hooks: [(input) => this.onPreToolUse(input)] }],
+      },
       // Answer CLI-raised dialogs too. `supportedDialogKinds` is the actual opt-in — the
       // callback alone receives nothing — so this stays inert until a kind is declared.
       onUserDialog: (request, opts) => this.onUserDialog(request, opts),
@@ -276,6 +303,19 @@ export class AgentSession implements SessionHandle {
     await this.q?.setPermissionMode(mode as PermissionMode);
   }
 
+  respondGate(
+    requestId: string,
+    decision: string,
+    updatedArgs?: Record<string, unknown>,
+    message?: string,
+  ): boolean {
+    const resolve = this.pendingGates.get(requestId);
+    if (!resolve) return false;
+    this.pendingGates.delete(requestId);
+    resolve({ decision, updatedArgs, message });
+    return true;
+  }
+
   respondEscalation(requestId: string, result: string): boolean {
     const resolve = this.pendingEscalations.get(requestId);
     if (!resolve) return false;
@@ -304,6 +344,11 @@ export class AgentSession implements SessionHandle {
       pending.settle("cancelled");
     }
     this.pendingDialogs.clear();
+    // A closing session's paused tool calls are let go; the query is unwinding anyway.
+    for (const [, resolve] of this.pendingGates) {
+      resolve({ decision: "pass" });
+    }
+    this.pendingGates.clear();
     // Escalations resolve with an explanation rather than hanging the asking turn.
     for (const [, resolve] of this.pendingEscalations) {
       resolve("Context unavailable: the asking session was closed.");
@@ -691,6 +736,69 @@ export class AgentSession implements SessionHandle {
         tool_use_id: request.toolUseID,
       });
     });
+  }
+
+  /**
+   * Ask the core about a tool call before it runs. Anything the core does not claim
+   * (`pass`, a timeout, an unparseable input) continues to the CLI's normal permission
+   * handling, so this hook can only ever *add* a checkpoint, never remove one.
+   */
+  private async onPreToolUse(input: HookInput): Promise<HookJSONOutput> {
+    if (input.hook_event_name !== "PreToolUse") return {};
+    const args =
+      typeof input.tool_input === "object" && input.tool_input !== null
+        ? (input.tool_input as Record<string, unknown>)
+        : {};
+
+    const requestId = `gate-${this.sessionId}-${++this.gateCounter}`;
+    const verdict = await new Promise<GateVerdict>((resolve) => {
+      let settled = false;
+      const settle = (v: GateVerdict) => {
+        if (settled) return;
+        settled = true;
+        this.pendingGates.delete(requestId);
+        clearTimeout(timer);
+        resolve(v);
+      };
+      const timer = setTimeout(() => {
+        this.emit({
+          type: "error",
+          session_id: this.sessionId,
+          message: `gate check for ${input.tool_name} was not answered; the call proceeds`,
+        });
+        settle({ decision: "pass" });
+      }, GATE_TIMEOUT_MS);
+      this.pendingGates.set(requestId, settle);
+      this.emit({
+        type: "gate_check",
+        session_id: this.sessionId,
+        request_id: requestId,
+        tool: input.tool_name,
+        args,
+      });
+    });
+
+    if (verdict.decision === "deny") {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: verdict.message ?? "Denied by the Maestro gate.",
+        },
+      };
+    }
+    if (verdict.decision === "allow") {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "allow",
+          permissionDecisionReason: "Approved in Maestro.",
+          ...(verdict.updatedArgs && { updatedInput: verdict.updatedArgs }),
+        },
+      };
+    }
+    // `pass`: the CLI decides as it normally would.
+    return {};
   }
 
   /**

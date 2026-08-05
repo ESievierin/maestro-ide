@@ -123,6 +123,10 @@ pub fn build_registry(store: &dyn Store) -> GateRegistry {
 pub struct PendingGate {
     pub gate_id: String,
     pub request_id: String,
+    /// Which channel this call arrived on, because that decides how it is answered:
+    /// `hook` → a `PreToolUse` verdict (works in every permission mode), `permission` →
+    /// the `canUseTool` decision (the backstop, for CLIs without the hook).
+    pub via: GateChannel,
     pub session_id: String,
     pub branch: String,
     pub rule_id: String,
@@ -136,13 +140,34 @@ pub struct PendingGate {
     pub created_at: DateTime<Utc>,
 }
 
+/// How a gated call reached the core, and therefore how its verdict goes back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateChannel {
+    /// `PreToolUse` hook: fires whatever the permission mode is. The normal path.
+    Hook,
+    /// `canUseTool`: the backstop for a tool call the hook never saw.
+    Permission,
+}
+
 /// Owns the registry and the pending-gate map; resolves gates against the
 /// agent engine's permission channel.
+/// How many recent hook-seen markers to keep. The window only needs to span one tool
+/// call's hook → permission handoff; this is generous even with parallel agents.
+const HOOK_SEEN_CAPACITY: usize = 64;
+
+/// Identity of a tool call as both channels see it.
+fn call_key(session_id: &str, tool: &str, args: &Value) -> String {
+    format!("{session_id}|{tool}|{args}")
+}
+
 pub struct GateManager {
     registry: GateRegistry,
     engine: Arc<dyn AgentEngine>,
     bus: EventBus,
     pending: Mutex<HashMap<String, PendingGate>>,
+    /// Calls the `PreToolUse` hook already examined (see `note_hook_seen`).
+    hook_seen: Mutex<std::collections::VecDeque<String>>,
 }
 
 impl GateManager {
@@ -152,6 +177,7 @@ impl GateManager {
             engine,
             bus,
             pending: Mutex::new(HashMap::new()),
+            hook_seen: Mutex::new(std::collections::VecDeque::new()),
         }
     }
 
@@ -167,6 +193,7 @@ impl GateManager {
         request_id: &str,
         tool: &str,
         args: &Value,
+        via: GateChannel,
     ) -> bool {
         let Some((rule, gate_match)) = self.registry.match_tool(tool, args) else {
             return false;
@@ -174,6 +201,7 @@ impl GateManager {
         let gate = PendingGate {
             gate_id: uuid::Uuid::new_v4().to_string(),
             request_id: request_id.to_string(),
+            via,
             session_id: session_id.to_string(),
             branch: branch.to_string(),
             rule_id: rule.id().to_string(),
@@ -239,19 +267,37 @@ impl GateManager {
             }
         })?;
 
-        if allow {
-            let rule =
-                self.registry
-                    .rule(&gate.rule_id)
-                    .ok_or_else(|| MaestroError::InvalidData {
-                        message: format!("gate rule not registered: {}", gate.rule_id),
-                    })?;
-            let updated_args = rule.apply(&gate.original_args, edited);
-            self.engine
-                .respond_permission(&gate.request_id, true, Some(updated_args), None)?;
-        } else {
-            self.engine
-                .respond_permission(&gate.request_id, false, None, feedback)?;
+        // The verdict goes back on the channel the call arrived on. A hook verdict is
+        // final in every permission mode; a permission verdict is what it always was.
+        match (gate.via, allow) {
+            (GateChannel::Hook, true) => {
+                let rule = self.rule_for(&gate)?;
+                let updated_args = rule.apply(&gate.original_args, edited);
+                self.engine.respond_gate_check(
+                    &gate.request_id,
+                    "allow",
+                    Some(updated_args),
+                    None,
+                )?;
+            }
+            (GateChannel::Hook, false) => {
+                self.engine.respond_gate_check(
+                    &gate.request_id,
+                    "deny",
+                    None,
+                    Some(feedback.unwrap_or_else(|| "Denied in Maestro.".to_string())),
+                )?;
+            }
+            (GateChannel::Permission, true) => {
+                let rule = self.rule_for(&gate)?;
+                let updated_args = rule.apply(&gate.original_args, edited);
+                self.engine
+                    .respond_permission(&gate.request_id, true, Some(updated_args), None)?;
+            }
+            (GateChannel::Permission, false) => {
+                self.engine
+                    .respond_permission(&gate.request_id, false, None, feedback)?;
+            }
         }
 
         self.lock_pending()?.remove(gate_id);
@@ -261,6 +307,48 @@ impl GateManager {
             reason: if allow { "allowed" } else { "denied" }.into(),
         });
         Ok(())
+    }
+
+    fn rule_for(&self, gate: &PendingGate) -> Result<&dyn GateRule> {
+        self.registry
+            .rule(&gate.rule_id)
+            .ok_or_else(|| MaestroError::InvalidData {
+                message: format!("gate rule not registered: {}", gate.rule_id),
+            })
+    }
+
+    /// Remember that the hook already examined this exact call, so the `canUseTool`
+    /// backstop does not gate it a second time and show two dialogs.
+    ///
+    /// Keyed by session + tool + arguments because that is all both channels share; the
+    /// map is pruned to the newest entries, since a marker is only useful for the moments
+    /// between the hook and the permission request for the same call.
+    pub fn note_hook_seen(&self, session_id: &str, tool: &str, args: &Value) {
+        let key = call_key(session_id, tool, args);
+        if let Ok(mut seen) = self.hook_seen.lock() {
+            seen.push_back(key);
+            while seen.len() > HOOK_SEEN_CAPACITY {
+                seen.pop_front();
+            }
+        }
+    }
+
+    /// Did the hook already see this call? Consumes the marker: the same call is only
+    /// ever paired once.
+    pub fn hook_already_saw(&self, session_id: &str, tool: &str, args: &Value) -> bool {
+        let key = call_key(session_id, tool, args);
+        match self.hook_seen.lock() {
+            Ok(mut seen) => {
+                if let Some(at) = seen.iter().position(|k| *k == key) {
+                    seen.remove(at);
+                    true
+                } else {
+                    false
+                }
+            }
+            // A poisoned marker map must not disable the backstop.
+            Err(_) => false,
+        }
     }
 
     /// Drop every gate belonging to `session_id`. Called when a session closes,
@@ -316,10 +404,15 @@ mod tests {
     /// `(request_id, allow, updated_args, message)` as passed to the engine.
     type PermissionCall = (String, bool, Option<Value>, Option<String>);
 
+    /// `(request_id, decision, updated_args, message)` from the hook channel.
+    type GateCall = (String, String, Option<Value>, Option<String>);
+
     /// Engine double that records permission responses.
     #[derive(Default)]
     struct MockEngine {
         perms: Mutex<Vec<PermissionCall>>,
+        /// `(request_id, decision, updated_args, message)` from the hook channel.
+        gate_calls: Mutex<Vec<GateCall>>,
     }
 
     impl AgentEngine for MockEngine {
@@ -362,6 +455,22 @@ mod tests {
         }
 
         fn set_effort(&self, _session_id: &str, _effort: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn respond_gate_check(
+            &self,
+            request_id: &str,
+            decision: &str,
+            updated_args: Option<Value>,
+            message: Option<String>,
+        ) -> Result<()> {
+            self.gate_calls.lock().unwrap().push((
+                request_id.to_string(),
+                decision.to_string(),
+                updated_args,
+                message,
+            ));
             Ok(())
         }
 
@@ -411,7 +520,14 @@ mod tests {
         let mut rx = bus.subscribe();
 
         let args = json!({ "command": "git push origin main" });
-        assert!(gates.intercept("s-1", "impl/T-7-x", "req-1", "Bash", &args));
+        assert!(gates.intercept(
+            "s-1",
+            "impl/T-7-x",
+            "req-1",
+            "Bash",
+            &args,
+            GateChannel::Hook
+        ));
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.name(), "gate.pending");
@@ -432,8 +548,22 @@ mod tests {
     #[test]
     fn intercept_lets_unmatched_calls_fall_through() {
         let (gates, _engine, _bus) = manager_with(vec![Box::new(GitPushRule)]);
-        assert!(!gates.intercept("s-1", "b", "req-1", "Bash", &json!({ "command": "ls -la" })));
-        assert!(!gates.intercept("s-1", "b", "req-2", "Read", &json!({ "file_path": "x" })));
+        assert!(!gates.intercept(
+            "s-1",
+            "b",
+            "req-1",
+            "Bash",
+            &json!({ "command": "ls -la" }),
+            GateChannel::Hook
+        ));
+        assert!(!gates.intercept(
+            "s-1",
+            "b",
+            "req-2",
+            "Read",
+            &json!({ "file_path": "x" }),
+            GateChannel::Hook
+        ));
         assert!(gates.list().unwrap().is_empty());
     }
 
@@ -441,7 +571,7 @@ mod tests {
     fn respond_allow_substitutes_edited_params() {
         let (gates, engine, _bus) = manager_with(vec![Box::new(GhPrCreateRule)]);
         let args = json!({ "command": "gh pr create --title old --body draft" });
-        assert!(gates.intercept("s-1", "b", "req-7", "Bash", &args));
+        assert!(gates.intercept("s-1", "b", "req-7", "Bash", &args, GateChannel::Hook));
 
         let gate_id = gates.list().unwrap()[0].gate_id.clone();
         let mut edited = gates.list().unwrap()[0].params.clone();
@@ -452,14 +582,20 @@ mod tests {
         }
         gates.respond(&gate_id, true, &edited, None).unwrap();
 
-        let perms = engine.perms.lock().unwrap();
-        let (request_id, allow, updated_args, message) = &perms[0];
+        // A hook-channel gate answers the hook, so the verdict applies in every
+        // permission mode — including `auto`, where canUseTool is never consulted.
+        let calls = engine.gate_calls.lock().unwrap();
+        let (request_id, decision, updated_args, message) = &calls[0];
         assert_eq!(request_id, "req-7");
-        assert!(*allow);
+        assert_eq!(decision, "allow");
         assert!(message.is_none());
         let command = updated_args.as_ref().unwrap()["command"].as_str().unwrap();
         assert!(command.contains("--title 'approved title'"), "{command}");
-        drop(perms);
+        assert!(
+            engine.perms.lock().unwrap().is_empty(),
+            "the permission channel is not used for a hook gate"
+        );
+        drop(calls);
 
         assert!(gates.list().unwrap().is_empty(), "entry removed");
     }
@@ -468,7 +604,7 @@ mod tests {
     fn respond_deny_returns_feedback_to_the_agent() {
         let (gates, engine, _bus) = manager_with(vec![Box::new(GitPushRule)]);
         let args = json!({ "command": "git push --force" });
-        assert!(gates.intercept("s-1", "b", "req-9", "Bash", &args));
+        assert!(gates.intercept("s-1", "b", "req-9", "Bash", &args, GateChannel::Hook));
         let gate_id = gates.list().unwrap()[0].gate_id.clone();
 
         gates
@@ -480,12 +616,48 @@ mod tests {
             )
             .unwrap();
 
-        let perms = engine.perms.lock().unwrap();
-        let (request_id, allow, updated_args, message) = &perms[0];
+        let calls = engine.gate_calls.lock().unwrap();
+        let (request_id, decision, updated_args, message) = &calls[0];
         assert_eq!(request_id, "req-9");
-        assert!(!*allow);
+        assert_eq!(decision, "deny");
         assert!(updated_args.is_none());
         assert_eq!(message.as_deref(), Some("rebase first, no force pushes"));
+    }
+
+    #[test]
+    fn the_permission_backstop_still_answers_on_its_own_channel() {
+        // A CLI whose PreToolUse hook never fires must still be gated, and its verdict
+        // goes back through canUseTool — the channel the call arrived on.
+        let (gates, engine, _bus) = manager_with(vec![Box::new(GitPushRule)]);
+        let args = json!({ "command": "git push origin main" });
+        assert!(gates.intercept("s-1", "b", "req-11", "Bash", &args, GateChannel::Permission));
+        let gate_id = gates.list().unwrap()[0].gate_id.clone();
+        gates.respond(&gate_id, true, &[], None).unwrap();
+
+        let perms = engine.perms.lock().unwrap();
+        assert_eq!(perms[0].0, "req-11");
+        assert!(perms[0].1, "allowed");
+        assert!(
+            engine.gate_calls.lock().unwrap().is_empty(),
+            "a permission gate must not answer the hook"
+        );
+    }
+
+    #[test]
+    fn a_call_the_hook_saw_is_not_gated_twice() {
+        let (gates, _engine, _bus) = manager_with(vec![Box::new(GitPushRule)]);
+        let args = json!({ "command": "git push origin main" });
+
+        gates.note_hook_seen("s-1", "Bash", &args);
+        assert!(
+            gates.hook_already_saw("s-1", "Bash", &args),
+            "the permission path must recognise the hook's call"
+        );
+        // The marker is consumed: a second, identical call is a new call.
+        assert!(!gates.hook_already_saw("s-1", "Bash", &args));
+        // And another session's identical command is unrelated.
+        gates.note_hook_seen("s-1", "Bash", &args);
+        assert!(!gates.hook_already_saw("s-2", "Bash", &args));
     }
 
     #[test]

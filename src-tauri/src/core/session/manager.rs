@@ -864,6 +864,42 @@ impl SessionManager {
                     text,
                 });
             }
+            SidecarEvent::GateCheck {
+                session_id,
+                request_id,
+                tool,
+                args,
+            } => {
+                // This fires before every tool call, in every permission mode — the whole
+                // point of moving the gate here. Not-gated calls are handed straight back.
+                let gated = match &self.gates {
+                    Some(gates) => {
+                        gates.note_hook_seen(&session_id, &tool, &args);
+                        let branch = self
+                            .lock_runtime()
+                            .ok()
+                            .and_then(|r| r.get(&session_id).map(|s| s.branch.clone()))
+                            .unwrap_or_default();
+                        gates.intercept(
+                            &session_id,
+                            &branch,
+                            &request_id,
+                            &tool,
+                            &args,
+                            crate::core::gate::GateChannel::Hook,
+                        )
+                    }
+                    None => false,
+                };
+                if !gated {
+                    if let Err(err) =
+                        self.engine
+                            .respond_gate_check(&request_id, "pass", None, None)
+                    {
+                        crate::error::report(&self.bus, &err);
+                    }
+                }
+            }
             SidecarEvent::EscalationRequest {
                 session_id,
                 request_id,
@@ -1003,16 +1039,26 @@ impl SessionManager {
                     }
                     return;
                 }
-                // Gated operations pause here (gate.pending) instead of the
-                // plain permission prompt; everything else is unchanged.
+                // Backstop only: the `PreToolUse` hook is the gate's real home, and it
+                // has already had its say on this call. Gating here too would show two
+                // dialogs — but a CLI whose hook never fires still gets gated.
                 if let Some(gates) = &self.gates {
-                    let branch = self
-                        .lock_runtime()
-                        .ok()
-                        .and_then(|r| r.get(&session_id).map(|s| s.branch.clone()))
-                        .unwrap_or_default();
-                    if gates.intercept(&session_id, &branch, &request_id, &tool, &args) {
-                        return;
+                    if !gates.hook_already_saw(&session_id, &tool, &args) {
+                        let branch = self
+                            .lock_runtime()
+                            .ok()
+                            .and_then(|r| r.get(&session_id).map(|s| s.branch.clone()))
+                            .unwrap_or_default();
+                        if gates.intercept(
+                            &session_id,
+                            &branch,
+                            &request_id,
+                            &tool,
+                            &args,
+                            crate::core::gate::GateChannel::Permission,
+                        ) {
+                            return;
+                        }
                     }
                 }
                 self.bus.publish(Event::SessionPermissionRequest {
@@ -1315,6 +1361,20 @@ mod tests {
                 .push(format!("set_effort:{session_id}:{effort}"));
             Ok(())
         }
+        fn respond_gate_check(
+            &self,
+            request_id: &str,
+            decision: &str,
+            _updated_args: Option<Value>,
+            _message: Option<String>,
+        ) -> Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("gate_decision:{request_id}:{decision}"));
+            Ok(())
+        }
+
         fn respond_escalation(&self, request_id: &str, result: &str) -> Result<()> {
             self.calls
                 .lock()

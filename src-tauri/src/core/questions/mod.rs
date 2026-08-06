@@ -471,7 +471,9 @@ mod tests {
     use super::*;
     use crate::core::agent::{AgentEngine, SpawnSessionRequest};
     use crate::core::store::SqliteStore;
-    use crate::core::worktree::{BlameLine, BranchStatus, ChangedFile, GitProvider, WorktreeEntry};
+    use crate::core::worktree::{
+        BlameLine, BranchStatus, ChangedFile, GitProvider, MergeOutcome, WorktreeEntry,
+    };
     use serde_json::Value;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex as StdMutex;
@@ -555,6 +557,17 @@ mod tests {
             _merge_base: &str,
         ) -> Result<Vec<ChangedFile>> {
             Ok(Vec::new())
+        }
+        fn merge_branch(
+            &self,
+            _target_worktree: &Path,
+            _source_branch: &str,
+        ) -> Result<MergeOutcome> {
+            Ok(MergeOutcome {
+                merged: true,
+                conflicts: Vec::new(),
+                message: String::new(),
+            })
         }
         fn blame_range(
             &self,

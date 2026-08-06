@@ -33,3 +33,11 @@ export interface CreateWorktreeRequest {
 }
 
 export type RemoveOutcome = { outcome: "removed" } | { outcome: "dirty_confirmation_required" };
+
+export interface MergeOutcome {
+  merged: boolean;
+  /** Paths with conflict markers, when `merged` is false because of a conflict. */
+  conflicts: string[];
+  /** Git's own stdout/stderr, shown verbatim on an unexpected (non-conflict) failure. */
+  message: string;
+}

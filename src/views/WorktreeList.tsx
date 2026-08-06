@@ -6,6 +6,7 @@ import { activeSessionCount, useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
 import type { WorktreeInfo } from "../types/worktrees";
 import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
+import { MergeDialog } from "./MergeDialog";
 
 /**
  * At-a-glance state of one worktree, in the order that matters when four agents run:
@@ -125,6 +126,7 @@ export function WorktreeList() {
     useWorktrees();
   const [showCreate, setShowCreate] = useState(false);
   const [switchingRepo, setSwitchingRepo] = useState(false);
+  const [mergeSource, setMergeSource] = useState<WorktreeInfo | null>(null);
 
   useEffect(() => {
     // refresh is a stable zustand action; run once on mount.
@@ -189,21 +191,35 @@ export function WorktreeList() {
                   </span>
                   <StatusBadges wt={wt} />
                 </div>
-                {(wt.task_id || (!wt.is_primary && wt.branch)) && (
+                {(wt.task_id || wt.branch) && (
                   <div className="wt-meta">
                     {wt.task_id && <span className="wt-task">{wt.task_id}</span>}
-                    {!wt.is_primary && wt.branch && (
-                      <button
-                        className="small danger icon-only ghost wt-delete"
-                        title="Remove worktree"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void onRemove(wt.branch as string);
-                        }}
-                      >
-                        <Icon name="trash" />
-                      </button>
-                    )}
+                    <span className="wt-actions">
+                      {wt.branch && worktrees.length > 1 && (
+                        <button
+                          className="small icon-only ghost wt-merge"
+                          title="Merge into…"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMergeSource(wt);
+                          }}
+                        >
+                          <Icon name="arrow-up" />
+                        </button>
+                      )}
+                      {!wt.is_primary && wt.branch && (
+                        <button
+                          className="small danger icon-only ghost wt-delete"
+                          title="Remove worktree"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void onRemove(wt.branch as string);
+                          }}
+                        >
+                          <Icon name="trash" />
+                        </button>
+                      )}
+                    </span>
                   </div>
                 )}
               </li>
@@ -214,6 +230,13 @@ export function WorktreeList() {
 
       {showCreate && repo && (
         <CreateWorktreeDialog repo={repo} onClose={() => setShowCreate(false)} />
+      )}
+      {mergeSource && (
+        <MergeDialog
+          source={mergeSource}
+          worktrees={worktrees}
+          onClose={() => setMergeSource(null)}
+        />
       )}
     </aside>
   );

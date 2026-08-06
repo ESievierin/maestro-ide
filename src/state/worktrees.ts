@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CreateWorktreeRequest,
+  MergeOutcome,
   RemoveOutcome,
   RepoInfo,
   WorktreeInfo,
@@ -25,6 +26,7 @@ interface WorktreesState {
   setRepo: (path: string) => Promise<boolean>;
   create: (request: CreateWorktreeRequest) => Promise<boolean>;
   remove: (branch: string, force: boolean) => Promise<RemoveOutcome | null>;
+  merge: (sourceBranch: string, targetBranch: string) => Promise<MergeOutcome | null>;
   select: (branch: string | null) => void;
   setTab: (tab: MainTab) => void;
   clearError: () => void;
@@ -95,6 +97,22 @@ export const useWorktrees = create<WorktreesState>((set, get) => ({
     }
   },
 
+  merge: async (sourceBranch, targetBranch) => {
+    try {
+      const outcome = await invoke<MergeOutcome>("merge_worktree", {
+        sourceBranch,
+        targetBranch,
+      });
+      if (outcome.merged) {
+        await get().refresh();
+      }
+      return outcome;
+    } catch (e) {
+      set({ error: String(e) });
+      return null;
+    }
+  },
+
   select: (branch) => set({ selected: branch }),
   setTab: (tab) => set({ tab }),
   clearError: () => set({ error: null }),
@@ -102,7 +120,11 @@ export const useWorktrees = create<WorktreesState>((set, get) => ({
 
 // Keep the list in sync with core events without polling.
 onBusEvent((event) => {
-  if (event.type === "worktree.created" || event.type === "worktree.removed") {
+  if (
+    event.type === "worktree.created" ||
+    event.type === "worktree.removed" ||
+    event.type === "worktree.merged"
+  ) {
     void useWorktrees.getState().refresh();
   }
 });

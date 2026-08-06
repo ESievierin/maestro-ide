@@ -11,6 +11,7 @@ export type SessionType = "research" | "implementation" | "review_fix" | "manual
 export type BusEvent =
   | { type: "worktree.created"; data: { branch: string; path: string } }
   | { type: "worktree.removed"; data: { branch: string } }
+  | { type: "worktree.merged"; data: { source: string; target: string } }
   | {
       type: "session.status_changed";
       data: { session_id: string; branch: string; status: SessionStatus };

@@ -62,6 +62,17 @@ pub struct FileDiff {
 /// generated files an order of magnitude past this, and a frozen window helps nobody.
 pub const MAX_FILE_DIFF_BYTES: usize = 2 * 1024 * 1024;
 
+/// `\r\n` → `\n`. A worktree checkout on Windows with `core.autocrlf` disagrees with
+/// a git blob's usually-LF content, and the frontend's own diff of these two plain
+/// strings has no CRLF awareness of its own — see `DiffManager::file_diff`.
+fn normalize_line_endings(text: String) -> String {
+    if text.contains('\r') {
+        text.replace("\r\n", "\n")
+    } else {
+        text
+    }
+}
+
 pub struct DiffManager {
     git: Arc<dyn GitProvider>,
     store: Arc<dyn Store>,
@@ -122,12 +133,27 @@ impl DiffManager {
         let entry = snapshot.files.iter().find(|f| f.path == path);
         // Renames read the old side from the original path.
         let old_path = entry.and_then(|f| f.old_path.as_deref()).unwrap_or(path);
-        let old = self.git.show_file(&repo, &snapshot.merge_base, old_path)?;
+        // `git show` returns blobs as committed (typically LF-normalized), but a
+        // worktree checkout on Windows with core.autocrlf is CRLF — the editor
+        // re-diffs `old`/`new` itself on the frontend, and a line-ending mismatch
+        // alone makes every line look changed even when only one word differs.
+        // Normalizing both sides here is what git's own diff already effectively
+        // does (via its own CRLF-aware comparison), just made explicit for the
+        // plain strings we hand to CodeMirror.
+        let old = self
+            .git
+            .show_file(&repo, &snapshot.merge_base, old_path)?
+            .map(normalize_line_endings);
         let new = match scope {
-            DiffScope::Branch => self.git.show_file(&repo, branch, path)?,
+            DiffScope::Branch => self
+                .git
+                .show_file(&repo, branch, path)?
+                .map(normalize_line_endings),
             DiffScope::Worktree => {
                 let worktree = self.worktree_path(branch)?;
-                std::fs::read_to_string(worktree.join(path)).ok()
+                std::fs::read_to_string(worktree.join(path))
+                    .ok()
+                    .map(normalize_line_endings)
             }
         };
         // Both sides are read before the size check so a huge file still reports *which*
@@ -287,7 +313,7 @@ impl DiffManager {
 mod tests {
     use super::*;
     use crate::core::store::SqliteStore;
-    use crate::core::worktree::{BranchStatus, WorktreeEntry};
+    use crate::core::worktree::{BranchStatus, MergeOutcome, WorktreeEntry};
     use std::path::{Path, PathBuf};
 
     #[derive(Default)]
@@ -401,6 +427,17 @@ mod tests {
                 status: "A".into(),
                 old_path: None,
             }])
+        }
+        fn merge_branch(
+            &self,
+            _target_worktree: &Path,
+            _source_branch: &str,
+        ) -> Result<MergeOutcome> {
+            Ok(MergeOutcome {
+                merged: true,
+                conflicts: Vec::new(),
+                message: String::new(),
+            })
         }
         fn blame_range(
             &self,
@@ -531,6 +568,25 @@ mod tests {
             .expect("file diff");
         assert!(file.too_large.is_none());
         assert!(file.old.is_some() && file.new.is_some());
+    }
+
+    /// The exact bug report: a Windows worktree checkout has CRLF while the git
+    /// blob it's diffed against is LF, so the frontend's own re-diff of these two
+    /// plain strings sees every line as changed even when only one word differs.
+    #[test]
+    fn crlf_checkout_is_not_reported_as_edited() {
+        assert_eq!(
+            normalize_line_endings("fn main() {\r\n    old();\r\n}\r\n".into()),
+            "fn main() {\n    old();\n}\n",
+        );
+        // Already-LF content passes through unchanged (and cheaply — no realloc).
+        assert_eq!(
+            normalize_line_endings("fn main() {\n    old();\n}\n".into()),
+            "fn main() {\n    old();\n}\n",
+        );
+        // A bare `\r` (old Mac-style) is left alone — only `\r\n` is a checkout
+        // artifact here; rewriting lone `\r` would be a different, unrelated fix.
+        assert_eq!(normalize_line_endings("a\rb".into()), "a\rb");
     }
 
     #[tokio::test]

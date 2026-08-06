@@ -128,4 +128,26 @@ pub trait GitProvider: Send + Sync {
     /// (reported with status `A`).
     fn worktree_changed_files(&self, worktree: &Path, merge_base: &str)
         -> Result<Vec<ChangedFile>>;
+
+    /// Merge `source_branch` into whatever is checked out at `target_worktree`
+    /// (`git merge --no-ff --no-edit`). The caller must ensure `target_worktree`
+    /// is clean first — this only runs the merge itself. A conflict is reported
+    /// as `MergeOutcome { merged: false, .. }`, not an error: it is a normal,
+    /// recoverable stopping point, and the working tree is left exactly as git
+    /// itself leaves it (conflict markers in place, resolvable with any git tool).
+    fn merge_branch(&self, target_worktree: &Path, source_branch: &str) -> Result<MergeOutcome>;
+}
+
+/// Outcome of a merge attempt.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct MergeOutcome {
+    /// True if the merge completed (a fast-forward or a new merge commit).
+    pub merged: bool,
+    /// Paths with conflict markers, when `merged` is false because of a conflict.
+    /// Empty (with `merged: false`) means git failed for some other reason —
+    /// see `message`.
+    pub conflicts: Vec<String>,
+    /// Git's own stdout/stderr, shown verbatim so an unexpected failure is never
+    /// silently swallowed.
+    pub message: String,
 }

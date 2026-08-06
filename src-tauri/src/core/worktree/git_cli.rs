@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::core::worktree::provider::{
-    BlameLine, BranchStatus, ChangedFile, GitProvider, WorktreeEntry,
+    BlameLine, BranchStatus, ChangedFile, GitProvider, MergeOutcome, WorktreeEntry,
 };
 use crate::error::{GitErrorKind, MaestroError, Result};
 
@@ -268,6 +268,32 @@ impl GitProvider for GitCli {
             }
         }
         Ok(files)
+    }
+
+    fn merge_branch(&self, target_worktree: &Path, source_branch: &str) -> Result<MergeOutcome> {
+        let output = self.output(
+            target_worktree,
+            &["merge", "--no-ff", "--no-edit", source_branch],
+        )?;
+        if output.status.success() {
+            return Ok(MergeOutcome {
+                merged: true,
+                conflicts: Vec::new(),
+                message: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            });
+        }
+        // Conflicts leave `U` (unmerged) entries in `git diff --diff-filter=U`;
+        // any other failure (e.g. a merge already in progress) leaves this empty,
+        // and `message` carries git's own explanation instead.
+        let conflicts = self
+            .run(target_worktree, &["diff", "--name-only", "--diff-filter=U"])
+            .map(|out| out.lines().map(str::to_string).collect())
+            .unwrap_or_default();
+        Ok(MergeOutcome {
+            merged: false,
+            conflicts,
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
     }
 }
 
@@ -598,6 +624,60 @@ mod tests {
             assert_eq!(cli.list_worktrees(&repo).expect("list").len(), 1);
             // The branch survives worktree removal.
             assert!(cli.branch_exists(&repo, "impl/T-1-x").expect("exists"));
+        }
+
+        #[test]
+        fn merge_branch_fast_forwards_cleanly() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).expect("mkdir");
+            init_repo(&repo);
+
+            let cli = GitCli;
+            let wt = tmp.path().join("wt");
+            cli.create_worktree(&repo, &wt, "impl/T-1-x", Some("main"))
+                .expect("create worktree");
+            fs::write(wt.join("new.txt"), "x\n").expect("write");
+            git(&wt, &["add", "."]);
+            git(&wt, &["commit", "-m", "add new.txt"]);
+
+            // `repo` is the primary worktree — "main" is checked out there.
+            let outcome = cli.merge_branch(&repo, "impl/T-1-x").expect("merge");
+            assert!(outcome.merged, "{outcome:?}");
+            assert!(outcome.conflicts.is_empty());
+            assert!(repo.join("new.txt").exists(), "merge landed the new file");
+        }
+
+        #[test]
+        fn merge_branch_reports_conflicting_files_and_leaves_markers() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).expect("mkdir");
+            init_repo(&repo);
+
+            let cli = GitCli;
+            let wt = tmp.path().join("wt");
+            cli.create_worktree(&repo, &wt, "impl/T-1-x", Some("main"))
+                .expect("create worktree");
+
+            // Two branches edit the same line differently: main gets one edit,
+            // the feature branch (already forked before that) gets another.
+            fs::write(wt.join("README.md"), "feature change\n").expect("write");
+            git(&wt, &["add", "."]);
+            git(&wt, &["commit", "-m", "feature edits README"]);
+
+            fs::write(repo.join("README.md"), "main change\n").expect("write");
+            git(&repo, &["add", "."]);
+            git(&repo, &["commit", "-m", "main edits README"]);
+
+            let outcome = cli.merge_branch(&repo, "impl/T-1-x").expect("merge");
+            assert!(!outcome.merged, "{outcome:?}");
+            assert_eq!(outcome.conflicts, vec!["README.md".to_string()]);
+
+            // git's own working tree really is mid-conflict, not a fabricated result.
+            let contents = fs::read_to_string(repo.join("README.md")).expect("read");
+            assert!(contents.contains("<<<<<<<"), "{contents}");
+            git(&repo, &["merge", "--abort"]);
         }
 
         #[test]

@@ -23,7 +23,8 @@ use crate::core::questions::{LineQuestionInfo, LineQuestionManager};
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
 use crate::core::store::{Branch, Store};
 use crate::core::worktree::{
-    BlameLine, CreateWorktreeRequest, RemoveOutcome, RepoInfo, WorktreeInfo, WorktreeManager,
+    BlameLine, CreateWorktreeRequest, MergeOutcome, RemoveOutcome, RepoInfo, WorktreeInfo,
+    WorktreeManager,
 };
 use crate::error::MaestroError;
 
@@ -139,6 +140,21 @@ pub async fn remove_worktree(
 ) -> Result<RemoveOutcome, String> {
     let mgr = state.worktrees.clone();
     run_core(state.bus.clone(), move || mgr.remove(&branch, force)).await
+}
+
+/// Merge `source_branch` into whatever branch `target_branch`'s worktree has
+/// checked out.
+#[tauri::command]
+pub async fn merge_worktree(
+    state: State<'_, AppState>,
+    source_branch: String,
+    target_branch: String,
+) -> Result<MergeOutcome, String> {
+    let mgr = state.worktrees.clone();
+    run_core(state.bus.clone(), move || {
+        mgr.merge_into(&source_branch, &target_branch)
+    })
+    .await
 }
 
 // ---------- sessions ----------

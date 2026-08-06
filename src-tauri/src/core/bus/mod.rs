@@ -24,6 +24,11 @@ pub enum Event {
     #[serde(rename = "worktree.removed")]
     WorktreeRemoved { branch: String },
 
+    /// A merge into `target`'s worktree completed (a fast-forward or a new merge
+    /// commit) — not published on conflict, since nothing there changed yet.
+    #[serde(rename = "worktree.merged")]
+    WorktreeMerged { source: String, target: String },
+
     #[serde(rename = "session.status_changed")]
     SessionStatusChanged {
         session_id: String,
@@ -267,6 +272,7 @@ impl Event {
         match self {
             Event::WorktreeCreated { .. } => "worktree.created",
             Event::WorktreeRemoved { .. } => "worktree.removed",
+            Event::WorktreeMerged { .. } => "worktree.merged",
             Event::SessionStatusChanged { .. } => "session.status_changed",
             Event::SessionStreamDelta { .. } => "session.stream_delta",
             Event::SessionToolUse { .. } => "session.tool_use",

@@ -254,13 +254,16 @@ body {
   background: var(--accent-bg);
 }
 
-.worktree-items li .wt-delete {
+.worktree-items li .wt-delete,
+.worktree-items li .wt-merge {
   opacity: 0;
   transition: opacity var(--fast) var(--ease);
 }
 
 .worktree-items li:hover .wt-delete,
-.worktree-items li:focus-within .wt-delete {
+.worktree-items li:focus-within .wt-delete,
+.worktree-items li:hover .wt-merge,
+.worktree-items li:focus-within .wt-merge {
   opacity: 1;
 }
 
@@ -300,6 +303,13 @@ body {
 .wt-task {
   font-size: var(--text-2xs);
   color: var(--text-tertiary);
+}
+
+.wt-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  margin-left: auto;
 }
 
 .badges {
@@ -726,6 +736,10 @@ input[type="checkbox"] {
 
 .hint.warn {
   color: var(--warning);
+}
+
+.hint.success {
+  color: var(--success);
 }
 
 .hint code,
@@ -1572,6 +1586,36 @@ input[type="checkbox"] {
   gap: 0.3rem;
   font-size: var(--text-xs);
   color: var(--text-secondary);
+}
+
+.merge-result {
+  margin-top: var(--space-3);
+  padding: 0.6rem 0.75rem;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm);
+}
+
+.merge-result-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--danger);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  margin: 0;
+}
+
+.merge-conflicts {
+  list-style: none;
+  margin: 0.5rem 0;
+  padding: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.merge-conflicts li {
+  padding: 0.15rem 0;
 }
 
 .modal-actions {

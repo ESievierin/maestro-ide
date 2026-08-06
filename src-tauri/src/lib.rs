@@ -169,6 +169,7 @@ pub fn run() {
             ipc::list_worktrees,
             ipc::create_worktree,
             ipc::remove_worktree,
+            ipc::merge_worktree,
             ipc::spawn_session,
             ipc::send_prompt,
             ipc::interrupt_session,

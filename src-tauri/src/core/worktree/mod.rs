@@ -8,7 +8,9 @@ mod git_cli;
 mod provider;
 
 pub use git_cli::GitCli;
-pub use provider::{BlameLine, BranchStatus, ChangedFile, GitProvider, WorktreeEntry};
+pub use provider::{
+    BlameLine, BranchStatus, ChangedFile, GitProvider, MergeOutcome, WorktreeEntry,
+};
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -277,6 +279,55 @@ impl WorktreeManager {
         Ok(RemoveOutcome::Removed)
     }
 
+    /// Merge `source_branch`'s commits into whatever branch is checked out at
+    /// `target_branch`'s worktree (`git merge --no-ff`). The target worktree
+    /// must be clean — refused outright rather than mixing a merge into the
+    /// user's own uncommitted work. The source's own worktree, if dirty, is
+    /// not checked here: that only means its uncommitted work won't be part of
+    /// the merge, which the frontend surfaces as a heads-up, not a hard error.
+    pub fn merge_into(&self, source_branch: &str, target_branch: &str) -> Result<MergeOutcome> {
+        if source_branch == target_branch {
+            return Err(MaestroError::InvalidData {
+                message: "cannot merge a branch into itself".into(),
+            });
+        }
+        let repo = self.require_repo()?;
+        let target = self
+            .git
+            .list_worktrees(&repo)?
+            .into_iter()
+            .find(|e| e.branch.as_deref() == Some(target_branch))
+            .ok_or_else(|| MaestroError::InvalidData {
+                message: format!("no worktree has '{target_branch}' checked out"),
+            })?;
+
+        let status = self.git.branch_status(&target.path)?;
+        if status.dirty {
+            return Err(MaestroError::InvalidData {
+                message: format!(
+                    "'{target_branch}' has uncommitted changes — commit or discard them before merging"
+                ),
+            });
+        }
+
+        let outcome = self.git.merge_branch(&target.path, source_branch)?;
+        if outcome.merged {
+            self.bus.publish(Event::WorktreeMerged {
+                source: source_branch.to_string(),
+                target: target_branch.to_string(),
+            });
+            tracing::info!(source_branch, target_branch, "worktree merged");
+        } else {
+            tracing::warn!(
+                source_branch,
+                target_branch,
+                conflicts = outcome.conflicts.len(),
+                "merge stopped short"
+            );
+        }
+        Ok(outcome)
+    }
+
     fn repo_info_for(&self, path: &Path) -> Result<RepoInfo> {
         Ok(RepoInfo {
             path: path.to_path_buf(),
@@ -453,6 +504,8 @@ mod tests {
         branches: HashSet<String>,
         worktrees: Vec<WorktreeEntry>,
         dirty: HashSet<PathBuf>,
+        merge_calls: Vec<(PathBuf, String)>,
+        merge_outcome: Option<MergeOutcome>,
     }
 
     impl MockGit {
@@ -567,6 +620,20 @@ mod tests {
         ) -> Result<Vec<provider::BlameLine>> {
             Ok(Vec::new())
         }
+        fn merge_branch(
+            &self,
+            target_worktree: &Path,
+            source_branch: &str,
+        ) -> Result<MergeOutcome> {
+            let mut st = self.state.lock().unwrap();
+            st.merge_calls
+                .push((target_worktree.to_path_buf(), source_branch.to_string()));
+            Ok(st.merge_outcome.clone().unwrap_or(MergeOutcome {
+                merged: true,
+                conflicts: Vec::new(),
+                message: "Fast-forward".into(),
+            }))
+        }
     }
 
     fn manager() -> (WorktreeManager, EventBus) {
@@ -675,5 +742,83 @@ mod tests {
     fn remove_primary_is_rejected() {
         let (mgr, _bus) = manager();
         assert!(mgr.remove("main", false).is_err());
+    }
+
+    /// A manager plus a directly-held `Arc<MockGit>`, so a test can both drive
+    /// `WorktreeManager` and reach into the mock's state (flip dirty, set the
+    /// next merge outcome, inspect recorded calls).
+    fn manager_with_git() -> (WorktreeManager, Arc<MockGit>, EventBus) {
+        let bus = EventBus::new();
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let git = Arc::new(MockGit::with_repo());
+        let mgr = WorktreeManager::new(git.clone(), store, bus.clone());
+        mgr.set_repo(Path::new("/repo")).unwrap();
+        (mgr, git, bus)
+    }
+
+    #[test]
+    fn merge_into_rejects_merging_a_branch_into_itself() {
+        let (mgr, _git, _bus) = manager_with_git();
+        let err = mgr.merge_into("main", "main").unwrap_err();
+        assert!(err.to_string().contains("itself"), "{err}");
+    }
+
+    #[test]
+    fn merge_into_requires_the_target_to_have_a_checked_out_worktree() {
+        let (mgr, _git, _bus) = manager_with_git();
+        let err = mgr.merge_into("impl/T-1-x", "develop").unwrap_err();
+        assert!(err.to_string().contains("develop"), "{err}");
+    }
+
+    #[test]
+    fn merge_into_refuses_a_dirty_target_without_attempting_the_merge() {
+        let (mgr, git, _bus) = manager_with_git();
+        git.state
+            .lock()
+            .unwrap()
+            .dirty
+            .insert(PathBuf::from("/repo"));
+
+        let err = mgr.merge_into("impl/T-1-x", "main").unwrap_err();
+        assert!(err.to_string().contains("uncommitted"), "{err}");
+        assert!(
+            git.state.lock().unwrap().merge_calls.is_empty(),
+            "must not touch a dirty target"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_into_runs_the_merge_and_publishes_on_success() {
+        let (mgr, git, bus) = manager_with_git();
+        let mut rx = bus.subscribe();
+
+        let outcome = mgr.merge_into("impl/T-1-x", "main").unwrap();
+        assert!(outcome.merged);
+        assert_eq!(
+            git.state.lock().unwrap().merge_calls,
+            vec![(PathBuf::from("/repo"), "impl/T-1-x".to_string())]
+        );
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.name(), "worktree.merged");
+    }
+
+    #[test]
+    fn merge_into_reports_conflicts_without_pretending_to_have_merged() {
+        let (mgr, git, bus) = manager_with_git();
+        let mut rx = bus.subscribe();
+        git.state.lock().unwrap().merge_outcome = Some(MergeOutcome {
+            merged: false,
+            conflicts: vec!["src/lib.rs".into()],
+            message: "CONFLICT (content): Merge conflict in src/lib.rs".into(),
+        });
+
+        let outcome = mgr.merge_into("impl/T-1-x", "main").unwrap();
+        assert!(!outcome.merged);
+        assert_eq!(outcome.conflicts, vec!["src/lib.rs".to_string()]);
+        assert!(
+            rx.try_recv().is_err(),
+            "a conflicted merge must not publish worktree.merged"
+        );
     }
 }

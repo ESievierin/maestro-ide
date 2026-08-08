@@ -1,6 +1,7 @@
 import { Icon, type IconName } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useAttention } from "../state/attention";
+import { useUI } from "../state/ui";
 import { useWorktrees } from "../state/worktrees";
 import type { AttentionItem } from "../types/attention";
 import { KIND_LABEL } from "../types/attention";
@@ -14,8 +15,10 @@ import { KIND_LABEL } from "../types/attention";
 const KIND_ICON: Record<AttentionItem["kind"], IconName> = {
   gate: "shield",
   permission_request: "question",
+  question: "question",
   session_failed: "alert",
   line_question: "chat",
+  pr_review_ready: "reply",
 };
 
 export function AttentionPanel({ onClose }: { onClose: () => void }) {
@@ -28,7 +31,11 @@ export function AttentionPanel({ onClose }: { onClose: () => void }) {
   const navigate = (item: AttentionItem) => {
     if (item.branch) {
       select(item.branch);
-      setTab(item.target === "diff" ? "diff" : "chat");
+      if (item.target === "pr_replies") {
+        useUI.getState().openDialog("replies");
+      } else {
+        setTab(item.target === "diff" ? "diff" : "chat");
+      }
     }
     if (item.target !== "gate") {
       // The gate dialog stays until answered; other items are handled by looking.

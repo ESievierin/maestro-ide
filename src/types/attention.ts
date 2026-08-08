@@ -1,8 +1,14 @@
 // Mirrors src-tauri/src/core/attention/mod.rs.
 
-export type AttentionKind = "permission_request" | "gate" | "session_failed" | "line_question";
+export type AttentionKind =
+  | "permission_request"
+  | "question"
+  | "gate"
+  | "session_failed"
+  | "line_question"
+  | "pr_review_ready";
 
-export type AttentionTarget = "chat" | "gate" | "diff";
+export type AttentionTarget = "chat" | "gate" | "diff" | "pr_replies";
 
 export interface AttentionItem {
   id: string;
@@ -17,6 +23,8 @@ export interface AttentionItem {
 export const KIND_LABEL: Record<AttentionKind, string> = {
   gate: "approval",
   permission_request: "permission",
+  question: "question",
   session_failed: "failed",
   line_question: "answer",
+  pr_review_ready: "reply ready",
 };

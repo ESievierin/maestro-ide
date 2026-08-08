@@ -29,6 +29,8 @@ pub enum AttentionTarget {
     Gate,
     /// The diff viewer of the branch (line-question answer waiting inline).
     Diff,
+    /// The PR-replies dialog for the branch (a daemon review plan is ready).
+    PrReplies,
 }
 
 /// What kind of situation is waiting. Kept as a string-ish enum so the UI can label and
@@ -42,6 +44,8 @@ pub enum AttentionKind {
     Gate,
     SessionFailed,
     LineQuestion,
+    /// A daemon-prepared PR-comment reply plan is awaiting_input, ready to review.
+    PrReviewReady,
 }
 
 impl AttentionKind {
@@ -52,6 +56,7 @@ impl AttentionKind {
             AttentionKind::Gate => 3,
             AttentionKind::Question => 3,
             AttentionKind::PermissionRequest => 2,
+            AttentionKind::PrReviewReady => 2,
             AttentionKind::SessionFailed => 1,
             AttentionKind::LineQuestion => 0,
         }
@@ -64,6 +69,7 @@ impl AttentionKind {
             | AttentionKind::Question
             | AttentionKind::SessionFailed => AttentionTarget::Chat,
             AttentionKind::LineQuestion => AttentionTarget::Diff,
+            AttentionKind::PrReviewReady => AttentionTarget::PrReplies,
         }
     }
 }
@@ -261,7 +267,13 @@ impl AttentionManager {
                 message,
             } => {
                 // Line questions announce completion here; the UI decides whether the
-                // user is still looking at that diff.
+                // user is still looking at that diff. `source` also carries other
+                // one-off announcements (the daemon's "plan ready") that need a
+                // different kind/target than the line-question default.
+                let kind = match source.as_str() {
+                    "pr_review_ready" => AttentionKind::PrReviewReady,
+                    _ => AttentionKind::LineQuestion,
+                };
                 let id = match (&session_id, &branch) {
                     (Some(session), _) => format!("{source}:{session}"),
                     (None, Some(branch)) => format!("{source}:{branch}"),
@@ -269,8 +281,8 @@ impl AttentionManager {
                 };
                 self.add(AttentionItem {
                     id,
-                    kind: AttentionKind::LineQuestion,
-                    target: AttentionKind::LineQuestion.target(),
+                    kind,
+                    target: kind.target(),
                     branch,
                     session_id,
                     message,

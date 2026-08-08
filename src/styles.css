@@ -2431,6 +2431,16 @@ kbd {
   background: var(--success-bg);
 }
 
+.attention-kind-question {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.attention-kind-pr_review_ready {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
 .badge-failed {
   color: var(--danger);
   background: var(--danger-bg);

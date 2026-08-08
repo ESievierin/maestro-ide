@@ -428,19 +428,68 @@ impl DaemonManager {
             if self.exec.worktree_for_branch(&pull.head_ref)?.is_none() {
                 continue;
             }
+            let resolved = self
+                .gh
+                .resolved_comment_ids(&token, &slug, pull.number)
+                .unwrap_or_else(|err| {
+                    tracing::debug!(error = %err, pr = pull.number, "could not check resolved threads; treating all comments as unresolved");
+                    Default::default()
+                });
+            // One task per review, not per comment: a reviewer submitting three
+            // comments at once should get one plan covering all three, not three
+            // sessions each blind to the other two.
+            let mut by_review: Vec<(Option<u64>, Vec<github::GhComment>)> = Vec::new();
             for comment in self.gh.pull_comments(&token, &slug, pull.number)? {
-                let key = format!("pr-comment:{slug}#{}:{}", pull.number, comment.id);
+                if resolved.contains(&comment.id) {
+                    continue;
+                }
+                match by_review
+                    .iter_mut()
+                    .find(|(rid, _)| *rid == comment.review_id)
+                {
+                    Some((_, list)) => list.push(comment),
+                    None => by_review.push((comment.review_id, vec![comment])),
+                }
+            }
+            for (review_id, mut comments) in by_review {
+                comments.sort_by_key(|c| c.id);
+                let key = match review_id {
+                    Some(rid) => format!("pr-comment:{slug}#{}:{rid}", pull.number),
+                    None => format!(
+                        "pr-comment:{slug}#{}:c{}",
+                        pull.number,
+                        comments
+                            .iter()
+                            .map(|c| c.id.to_string())
+                            .collect::<Vec<_>>()
+                            .join("-")
+                    ),
+                };
                 let payload = serde_json::json!({
                     "pr": pull.number,
                     "pr_title": pull.title,
                     "head_ref": pull.head_ref,
-                    "comment_id": comment.id,
-                    "author": comment.author,
-                    "path": comment.path,
-                    "body": comment.body,
-                    "url": comment.url,
+                    "comments": comments.iter().map(|c| serde_json::json!({
+                        "comment_id": c.id,
+                        "author": c.author,
+                        "path": c.path,
+                        "body": c.body,
+                        "url": c.url,
+                    })).collect::<Vec<_>>(),
                 });
-                let title = format!("PR #{} review comment by {}", pull.number, comment.author);
+                let authors = comments
+                    .iter()
+                    .map(|c| c.author.as_str())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let title = format!(
+                    "PR #{} — {} review comment{} ({authors})",
+                    pull.number,
+                    comments.len(),
+                    if comments.len() == 1 { "" } else { "s" },
+                );
                 if self.enqueue(&key, "pr_comment", &title, &payload)? {
                     new_tasks += 1;
                 }
@@ -695,25 +744,59 @@ impl DaemonManager {
         };
 
         let pr = payload.get("pr").and_then(|n| n.as_u64()).unwrap_or(0);
-        let author = payload.get("author").and_then(|a| a.as_str()).unwrap_or("");
-        let path = payload.get("path").and_then(|p| p.as_str()).unwrap_or("");
-        let body = payload.get("body").and_then(|b| b.as_str()).unwrap_or("");
-        let url = payload.get("url").and_then(|u| u.as_str()).unwrap_or("");
+        let comments = payload
+            .get("comments")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default();
 
-        let prompt = format!(
-            "A review comment arrived on PR #{pr} (branch {branch}).\n\n\
-             Author: {author}\nFile: {path}\n{url}\n\nComment:\n{body}\n\n\
-             Read the relevant code (read-only) and judge whether the comment is actionable \
-             and correct. Write REVIEW_PLAN.md in the worktree root with: your verdict, a \
-             concrete resolution plan if action is needed, and a draft reply to the reviewer. \
-             Do NOT modify any other files, do NOT commit, and do NOT post anything to GitHub — \
-             a human reviews the plan first."
+        // Group by file for the same reason PrRepliesDialog's own prompt does:
+        // a reviewer's comments almost always cluster by file, and reading them
+        // together is how a human would triage a review too.
+        let mut by_path: Vec<(String, Vec<&serde_json::Value>)> = Vec::new();
+        for comment in &comments {
+            let path = comment
+                .get("path")
+                .and_then(|p| p.as_str())
+                .unwrap_or("(general)")
+                .to_string();
+            match by_path.iter_mut().find(|(p, _)| p == &path) {
+                Some((_, list)) => list.push(comment),
+                None => by_path.push((path, vec![comment])),
+            }
+        }
+        let mut prompt = format!(
+            "{} review comment(s) arrived on PR #{pr}.\n\n",
+            comments.len()
+        );
+        for (path, list) in &by_path {
+            prompt.push_str(&format!("## {path}\n"));
+            for c in list {
+                let id = c.get("comment_id").and_then(|v| v.as_u64()).unwrap_or(0);
+                let author = c
+                    .get("author")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let body = c.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                let url = c.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                prompt.push_str(&format!("[comment {id}] {author}:\n{body}\n{url}\n\n"));
+            }
+        }
+        prompt.push_str(
+            "Read the relevant code (read-only) and judge whether each comment is actionable \
+             and correct. Write REVIEW_PLAN.md in the worktree root with: your verdict per \
+             comment, a concrete resolution plan for anything needing action, and a draft \
+             reply to the reviewer for each. Do NOT modify any other files, do NOT commit, \
+             and do NOT post anything to GitHub — a human reviews the plan first.",
         );
         let (model, effort) = self.verify_model_effort();
         let session_id = self.exec.spawn(SpawnParams {
             branch: branch.clone(),
             cwd,
-            session_type: SessionType::Research,
+            // review_fix, not research: this is the exact session type the manual
+            // reply dialog looks for on the branch, so its plan is already there
+            // (and resumable) instead of being invisible to it.
+            session_type: SessionType::ReviewFix,
             model,
             effort,
             permission_mode: Some("plan".into()),
@@ -726,7 +809,7 @@ impl DaemonManager {
 
         self.store
             .update_daemon_task(&task.key, "running", Some(&branch), Some(&session_id))?;
-        tracing::info!(key = %task.key, branch, session_id, "daemon verification started");
+        tracing::info!(key = %task.key, branch, session_id, comments = comments.len(), "daemon verification started");
         Ok(())
     }
 
@@ -747,6 +830,19 @@ impl DaemonManager {
             title: running.title.clone(),
             ok,
         });
+        // A PR-comment plan is ready for a human to look at — put it in the
+        // attention queue, not just the daemon panel, so it surfaces the same
+        // way a permission prompt or gate does.
+        if ok && running.kind == "pr_comment" {
+            if let Some(branch) = running.branch.clone() {
+                self.bus.publish(Event::AttentionRequired {
+                    source: "pr_review_ready".to_string(),
+                    branch: Some(branch),
+                    session_id: running.session_id.clone(),
+                    message: format!("Reply plan ready: {}", running.title),
+                });
+            }
+        }
         self.bus.publish(Event::DaemonUpdated {});
         tracing::info!(key = %running.key, ok, "daemon task finished");
         // Something else may be waiting.
@@ -880,6 +976,7 @@ mod tests {
     struct MockGh {
         pulls: Vec<GhPull>,
         comments: Vec<GhComment>,
+        resolved: Vec<u64>,
         token_fails: bool,
     }
 
@@ -909,6 +1006,14 @@ mod tests {
         }
         fn pull_comments(&self, _t: &str, _s: &str, _n: u64) -> Result<Vec<GhComment>> {
             Ok(self.comments.clone())
+        }
+        fn resolved_comment_ids(
+            &self,
+            _t: &str,
+            _s: &str,
+            _n: u64,
+        ) -> Result<std::collections::HashSet<u64>> {
+            Ok(self.resolved.iter().copied().collect())
         }
     }
 
@@ -1023,6 +1128,17 @@ mod tests {
         GhPull {
             requested_reviewers: vec!["personal".into()],
             ..pull(number, title, head_ref)
+        }
+    }
+
+    fn comment(id: u64, review_id: Option<u64>, pr: u64, path: &str) -> GhComment {
+        GhComment {
+            id,
+            body: format!("Comment {id}"),
+            author: "reviewer".into(),
+            path: Some(path.into()),
+            url: format!("https://github.com/owner/repo/pull/{pr}#discussion_r{id}"),
+            review_id,
         }
     }
 
@@ -1153,13 +1269,7 @@ mod tests {
                 pull(12, "Add retry", "impl/T-1-x"),
                 pull(13, "Not ours", "someone/elses-branch"),
             ],
-            comments: vec![GhComment {
-                id: 501,
-                body: "This loop never terminates".into(),
-                author: "reviewer".into(),
-                path: Some("src/retry.rs".into()),
-                url: "https://github.com/owner/repo/pull/12#discussion_r501".into(),
-            }],
+            comments: vec![comment(501, Some(900), 12, "src/retry.rs")],
             ..Default::default()
         };
         let exec = MockExec {
@@ -1172,15 +1282,103 @@ mod tests {
         // Only PR 12's comment is queued: PR 13's head has no worktree here.
         let tasks = mgr.list_tasks().unwrap();
         assert_eq!(tasks.len(), 1);
-        assert!(tasks[0].key.contains("#12:501"));
+        assert!(tasks[0].key.contains("#12:900"));
 
         mgr.drive_queue();
         let spawned = exec.spawned.lock().unwrap();
         assert_eq!(spawned.len(), 1);
         assert_eq!(spawned[0].branch, "impl/T-1-x");
+        assert_eq!(spawned[0].session_type, SessionType::ReviewFix);
         assert_eq!(spawned[0].permission_mode.as_deref(), Some("plan"));
         assert!(spawned[0].prompt.contains("REVIEW_PLAN.md"));
         assert!(spawned[0].prompt.contains("do NOT post anything"));
+    }
+
+    #[test]
+    fn comments_from_the_same_review_become_one_task_not_several() {
+        let gh = MockGh {
+            pulls: vec![pull(12, "Add retry", "impl/T-1-x")],
+            comments: vec![
+                comment(501, Some(900), 12, "src/retry.rs"),
+                comment(502, Some(900), 12, "src/retry.rs"),
+                comment(503, Some(900), 12, "src/lib.rs"),
+            ],
+            ..Default::default()
+        };
+        let exec = MockExec {
+            worktrees: vec!["impl/T-1-x".into()],
+            ..Default::default()
+        };
+        let (mgr, exec, _bus) = manager(gh, exec);
+
+        mgr.poll_once();
+        let tasks = mgr.list_tasks().unwrap();
+        assert_eq!(
+            tasks.len(),
+            1,
+            "one review, one task, regardless of comment count"
+        );
+        assert!(tasks[0].key.contains("#12:900"));
+
+        mgr.drive_queue();
+        let spawned = exec.spawned.lock().unwrap();
+        assert_eq!(spawned.len(), 1);
+        // All three comments made it into the one prompt.
+        assert!(spawned[0].prompt.contains("[comment 501]"));
+        assert!(spawned[0].prompt.contains("[comment 502]"));
+        assert!(spawned[0].prompt.contains("[comment 503]"));
+        assert!(spawned[0].prompt.contains("## src/retry.rs"));
+        assert!(spawned[0].prompt.contains("## src/lib.rs"));
+    }
+
+    #[test]
+    fn comments_from_different_reviews_become_separate_tasks() {
+        let gh = MockGh {
+            pulls: vec![pull(12, "Add retry", "impl/T-1-x")],
+            comments: vec![
+                comment(501, Some(900), 12, "src/retry.rs"),
+                comment(601, Some(901), 12, "src/retry.rs"),
+            ],
+            ..Default::default()
+        };
+        let exec = MockExec {
+            worktrees: vec!["impl/T-1-x".into()],
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager(gh, exec);
+
+        mgr.poll_once();
+        let tasks = mgr.list_tasks().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert!(tasks.iter().any(|t| t.key.contains("#12:900")));
+        assert!(tasks.iter().any(|t| t.key.contains("#12:901")));
+    }
+
+    #[test]
+    fn a_resolved_comment_thread_is_never_queued() {
+        let gh = MockGh {
+            pulls: vec![pull(12, "Add retry", "impl/T-1-x")],
+            comments: vec![
+                comment(501, Some(900), 12, "src/retry.rs"),
+                comment(502, Some(901), 12, "src/lib.rs"),
+            ],
+            resolved: vec![501],
+            ..Default::default()
+        };
+        let exec = MockExec {
+            worktrees: vec!["impl/T-1-x".into()],
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager(gh, exec);
+
+        mgr.poll_once();
+        let tasks = mgr.list_tasks().unwrap();
+        assert_eq!(
+            tasks.len(),
+            1,
+            "only the unresolved comment's review is queued"
+        );
+        assert!(tasks[0].key.contains("#12:901"));
     }
 
     #[test]
@@ -1305,6 +1503,62 @@ mod tests {
             1,
             "the finished task is recorded as done"
         );
+    }
+
+    #[test]
+    fn a_finished_pr_comment_task_raises_an_attention_item() {
+        let gh = MockGh {
+            pulls: vec![pull(12, "Add retry", "impl/T-1-x")],
+            comments: vec![comment(501, Some(900), 12, "src/retry.rs")],
+            ..Default::default()
+        };
+        let exec = MockExec {
+            worktrees: vec!["impl/T-1-x".into()],
+            ..Default::default()
+        };
+        let (mgr, exec, bus) = manager(gh, exec);
+        let mut rx = bus.subscribe();
+        mgr.poll_once();
+        mgr.drive_queue();
+        assert_eq!(exec.spawned.lock().unwrap().len(), 1);
+
+        mgr.on_session_finished("sess-1", true);
+
+        let mut saw_it = false;
+        while let Ok(event) = rx.try_recv() {
+            if let Event::AttentionRequired { source, branch, .. } = event {
+                assert_eq!(source, "pr_review_ready");
+                assert_eq!(branch.as_deref(), Some("impl/T-1-x"));
+                saw_it = true;
+            }
+        }
+        assert!(saw_it, "a finished pr_comment task should raise attention");
+    }
+
+    #[test]
+    fn a_failed_pr_comment_task_does_not_raise_attention() {
+        let gh = MockGh {
+            pulls: vec![pull(12, "Add retry", "impl/T-1-x")],
+            comments: vec![comment(501, Some(900), 12, "src/retry.rs")],
+            ..Default::default()
+        };
+        let exec = MockExec {
+            worktrees: vec!["impl/T-1-x".into()],
+            ..Default::default()
+        };
+        let (mgr, _exec, bus) = manager(gh, exec);
+        let mut rx = bus.subscribe();
+        mgr.poll_once();
+        mgr.drive_queue();
+
+        mgr.on_session_finished("sess-1", false);
+
+        while let Ok(event) = rx.try_recv() {
+            assert!(
+                !matches!(event, Event::AttentionRequired { .. }),
+                "a failed plan is nothing to review"
+            );
+        }
     }
 
     #[test]

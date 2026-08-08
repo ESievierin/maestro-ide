@@ -150,7 +150,9 @@ impl PrManager {
     }
 
     /// Review comments of the open PR whose head is `branch` (empty when the
-    /// branch has no open PR).
+    /// branch has no open PR). Comments whose thread is already resolved on
+    /// GitHub are left out — there is nothing to reply to on a thread the
+    /// author or reviewer already marked done.
     pub fn comments(&self, branch: &str) -> Result<Vec<PrComment>> {
         let (_, token) = self.token()?;
         let slug = self.slug()?;
@@ -162,10 +164,15 @@ impl PrManager {
         else {
             return Ok(Vec::new());
         };
+        let resolved = self
+            .gh
+            .resolved_comment_ids(&token, &slug, pull.number)
+            .unwrap_or_default();
         Ok(self
             .gh
             .pull_comments(&token, &slug, pull.number)?
             .into_iter()
+            .filter(|c| !resolved.contains(&c.id))
             .map(|c| PrComment {
                 pr: pull.number,
                 id: c.id,
@@ -226,7 +233,12 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    struct StubGh;
+    #[derive(Default)]
+    struct StubGh {
+        pulls: Vec<GhPull>,
+        comments: Vec<GhComment>,
+        resolved: Vec<u64>,
+    }
     impl GhProvider for StubGh {
         fn accounts(&self) -> Result<Vec<GhAccount>> {
             Ok(vec![GhAccount {
@@ -238,10 +250,18 @@ mod tests {
             Ok("tok".into())
         }
         fn open_pulls(&self, _t: &str, _s: &str) -> Result<Vec<GhPull>> {
-            Ok(Vec::new())
+            Ok(self.pulls.clone())
         }
         fn pull_comments(&self, _t: &str, _s: &str, _n: u64) -> Result<Vec<GhComment>> {
-            Ok(Vec::new())
+            Ok(self.comments.clone())
+        }
+        fn resolved_comment_ids(
+            &self,
+            _t: &str,
+            _s: &str,
+            _n: u64,
+        ) -> Result<std::collections::HashSet<u64>> {
+            Ok(self.resolved.iter().copied().collect())
         }
     }
 
@@ -255,6 +275,14 @@ mod tests {
     }
 
     fn setup() -> (PrManager, String, tempfile::TempDir) {
+        setup_with_gh(|_branch| StubGh::default())
+    }
+
+    /// `build_gh` sees the freshly created branch name, so a test can point a
+    /// `GhPull.head_ref` at it before the `PrManager` is built.
+    fn setup_with_gh(
+        build_gh: impl FnOnce(&str) -> StubGh,
+    ) -> (PrManager, String, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path().join("repo");
         fs::create_dir(&repo).unwrap();
@@ -286,7 +314,8 @@ mod tests {
         store
             .set_setting(SETTING_DAEMON_REPO, "owner/repo")
             .unwrap();
-        let prs = PrManager::new(store, Arc::new(StubGh), worktrees, EventBus::new());
+        let gh = build_gh(&branch);
+        let prs = PrManager::new(store, Arc::new(gh), worktrees, EventBus::new());
         (prs, branch, tmp)
     }
 
@@ -328,5 +357,52 @@ mod tests {
         let (prs, branch, _tmp) = setup();
         let err = prs.create(&branch, "  ", "body", None).unwrap_err();
         assert!(err.to_string().contains("title"));
+    }
+
+    fn pull(head_ref: &str) -> GhPull {
+        GhPull {
+            number: 42,
+            title: "Add retry".into(),
+            body: "PR body".into(),
+            author: "colleague".into(),
+            head_ref: head_ref.into(),
+            head_sha: "sha-1".into(),
+            url: "https://github.com/owner/repo/pull/42".into(),
+            requested_reviewers: Vec::new(),
+        }
+    }
+
+    fn comment(id: u64) -> GhComment {
+        GhComment {
+            id,
+            body: format!("Comment {id}"),
+            author: "reviewer".into(),
+            path: Some("src/retry.rs".into()),
+            url: format!("https://github.com/owner/repo/pull/42#discussion_r{id}"),
+            review_id: Some(900),
+        }
+    }
+
+    #[test]
+    fn comments_already_resolved_on_github_are_left_out() {
+        let (prs, branch, _tmp) = setup_with_gh(|branch| StubGh {
+            pulls: vec![pull(branch)],
+            comments: vec![comment(501), comment(502)],
+            resolved: vec![501],
+        });
+        let comments = prs.comments(&branch).unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].id, 502);
+    }
+
+    #[test]
+    fn comments_with_nothing_resolved_all_come_through() {
+        let (prs, branch, _tmp) = setup_with_gh(|branch| StubGh {
+            pulls: vec![pull(branch)],
+            comments: vec![comment(501), comment(502)],
+            resolved: Vec::new(),
+        });
+        let comments = prs.comments(&branch).unwrap();
+        assert_eq!(comments.len(), 2);
     }
 }

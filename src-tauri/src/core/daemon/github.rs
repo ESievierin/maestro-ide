@@ -38,6 +38,10 @@ pub struct GhComment {
     pub author: String,
     pub path: Option<String>,
     pub url: String,
+    /// The review submission this comment belongs to — comments left in the same
+    /// review share one id, which is what "group by review" groups on. `None` for
+    /// the rare comment GitHub didn't attach to any review.
+    pub review_id: Option<u64>,
 }
 
 /// External GitHub boundary; test doubles implement this.
@@ -51,6 +55,19 @@ pub trait GhProvider: Send + Sync {
     fn open_pulls(&self, token: &str, slug: &str) -> Result<Vec<GhPull>>;
     /// Review comments of one pull request.
     fn pull_comments(&self, token: &str, slug: &str, number: u64) -> Result<Vec<GhComment>>;
+
+    /// Ids of comments whose review thread is marked resolved on GitHub. The plain
+    /// REST comments endpoint has no such field — only GraphQL's `PullRequestReviewThread`
+    /// does — so this is a separate, best-effort lookup: callers treat a failure as
+    /// "nothing resolved" rather than let it block listing or replying to comments.
+    fn resolved_comment_ids(
+        &self,
+        _token: &str,
+        _slug: &str,
+        _number: u64,
+    ) -> Result<std::collections::HashSet<u64>> {
+        Ok(std::collections::HashSet::new())
+    }
 
     /// `gh pr create` in `cwd` — returns the new PR's URL. User-initiated only;
     /// the daemon never calls this.
@@ -221,9 +238,47 @@ impl GhProvider for GhCli {
                         .and_then(|u| u.as_str())
                         .unwrap_or_default()
                         .to_string(),
+                    review_id: v.get("pull_request_review_id").and_then(|r| r.as_u64()),
                 })
             })
             .collect())
+    }
+
+    fn resolved_comment_ids(
+        &self,
+        token: &str,
+        slug: &str,
+        number: u64,
+    ) -> Result<std::collections::HashSet<u64>> {
+        let (owner, name) = slug
+            .split_once('/')
+            .ok_or_else(|| MaestroError::InvalidData {
+                message: format!("malformed repo slug: {slug}"),
+            })?;
+        let query = "query($owner: String!, $name: String!, $number: Int!) { \
+            repository(owner: $owner, name: $name) { pullRequest(number: $number) { \
+            reviewThreads(first: 100) { nodes { isResolved comments(first: 100) { \
+            nodes { databaseId } } } } } } }";
+        let query_arg = format!("query={query}");
+        let owner_arg = format!("owner={owner}");
+        let name_arg = format!("name={name}");
+        let number_arg = format!("number={number}");
+        let out = self.run(
+            &[
+                "api",
+                "graphql",
+                "-f",
+                &query_arg,
+                "-f",
+                &owner_arg,
+                "-f",
+                &name_arg,
+                "-F",
+                &number_arg,
+            ],
+            Some(token),
+        )?;
+        parse_resolved_ids(&out)
     }
 
     fn create_pr(
@@ -278,6 +333,34 @@ fn bad_json(err: serde_json::Error) -> MaestroError {
     MaestroError::InvalidData {
         message: format!("unexpected gh api response: {err}"),
     }
+}
+
+/// Pull the REST comment ids out of every resolved thread in a
+/// `reviewThreads` GraphQL response. Tolerant of a missing/malformed shape —
+/// an unexpected response yields no resolved ids rather than an error, since
+/// callers already treat this lookup as best-effort.
+fn parse_resolved_ids(raw: &str) -> Result<std::collections::HashSet<u64>> {
+    let parsed: serde_json::Value = serde_json::from_str(raw).map_err(bad_json)?;
+    let nodes = parsed
+        .pointer("/data/repository/pullRequest/reviewThreads/nodes")
+        .and_then(|n| n.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut resolved = std::collections::HashSet::new();
+    for thread in nodes {
+        if thread.get("isResolved").and_then(|v| v.as_bool()) != Some(true) {
+            continue;
+        }
+        let Some(comments) = thread.pointer("/comments/nodes").and_then(|n| n.as_array()) else {
+            continue;
+        };
+        for comment in comments {
+            if let Some(id) = comment.get("databaseId").and_then(|v| v.as_u64()) {
+                resolved.insert(id);
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 /// Parse `gh auth status` text into accounts. Tolerant: unknown lines are skipped.
@@ -353,6 +436,38 @@ mod tests {
         assert!(accounts[0].active);
         assert_eq!(accounts[1].login, "Yehor-Sievierin-Rply");
         assert!(!accounts[1].active);
+    }
+
+    #[test]
+    fn resolved_ids_come_only_from_resolved_threads() {
+        let raw = r#"{
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": [
+                                {
+                                    "isResolved": true,
+                                    "comments": { "nodes": [{ "databaseId": 111 }, { "databaseId": 112 }] }
+                                },
+                                {
+                                    "isResolved": false,
+                                    "comments": { "nodes": [{ "databaseId": 222 }] }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }"#;
+        let resolved = parse_resolved_ids(raw).expect("parses");
+        assert_eq!(resolved, [111, 112].into_iter().collect());
+    }
+
+    #[test]
+    fn resolved_ids_is_empty_on_an_unexpected_shape() {
+        let resolved = parse_resolved_ids(r#"{"data": null}"#).expect("still parses as JSON");
+        assert!(resolved.is_empty());
     }
 
     #[test]

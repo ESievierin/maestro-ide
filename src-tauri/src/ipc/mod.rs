@@ -224,6 +224,22 @@ pub async fn commit_worktree(
     run_core(state.bus.clone(), move || mgr.commit_all(&branch, &message)).await
 }
 
+/// Rewrite one worktree file's line endings — the diff viewer's Rider-style
+/// picker. Direct and ungated, same trust level as `commit_worktree`.
+#[tauri::command]
+pub async fn set_line_ending(
+    state: State<'_, AppState>,
+    branch: String,
+    path: String,
+    eol: String,
+) -> Result<(), String> {
+    let mgr = state.worktrees.clone();
+    run_core(state.bus.clone(), move || {
+        mgr.set_line_ending(&branch, &path, &eol)
+    })
+    .await
+}
+
 /// Push `branch` to its remote. The caller (PushDialog) has shown the user the
 /// exact command and got an explicit confirmation.
 #[tauri::command]

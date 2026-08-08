@@ -214,6 +214,7 @@ pub fn run() {
             ipc::merge_worktree,
             ipc::sync_worktree,
             ipc::commit_worktree,
+            ipc::set_line_ending,
             ipc::open_worktree,
             ipc::take_snapshot,
             ipc::list_snapshots,

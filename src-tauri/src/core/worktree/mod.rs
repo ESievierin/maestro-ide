@@ -500,6 +500,42 @@ impl WorktreeManager {
         Ok(summary)
     }
 
+    /// Rewrite `path`'s line endings in `branch`'s worktree to `eol` (`"lf"` or
+    /// `"crlf"`) — the diff viewer's Rider-style line-ending picker. A direct,
+    /// ungated file write: the same trust level as the user's own `commit_all`
+    /// button, not an agent action. A no-op (no write at all) when the file
+    /// already matches, so it never manufactures a phantom dirty state.
+    pub fn set_line_ending(&self, branch: &str, path: &str, eol: &str) -> Result<()> {
+        if eol != "lf" && eol != "crlf" {
+            return Err(MaestroError::InvalidData {
+                message: format!("unsupported line ending: {eol} (expected \"lf\" or \"crlf\")"),
+            });
+        }
+        if path.split(['/', '\\']).any(|part| part == "..") {
+            return Err(MaestroError::InvalidData {
+                message: format!("invalid path: {path}"),
+            });
+        }
+        let worktree = self.worktree_path(branch)?;
+        let file_path = worktree.join(path);
+        let content = std::fs::read_to_string(&file_path).map_err(|err| MaestroError::Config {
+            message: format!("could not read {path}: {err}"),
+        })?;
+        let lf = content.replace("\r\n", "\n");
+        let converted = if eol == "crlf" {
+            lf.replace('\n', "\r\n")
+        } else {
+            lf
+        };
+        if converted != content {
+            std::fs::write(&file_path, converted).map_err(|err| MaestroError::Config {
+                message: format!("could not write {path}: {err}"),
+            })?;
+            tracing::info!(branch, path, eol, "line endings converted");
+        }
+        Ok(())
+    }
+
     /// Record `branch`'s current uncommitted state as a named snapshot, leaving
     /// the working tree untouched — a checkpoint to fall back to when an agent's
     /// next attempt makes things worse instead of better.
@@ -1484,6 +1520,123 @@ mod tests {
                 merged_file.status.success(),
                 "develop received the merge without ever needing a worktree"
             );
+        }
+    }
+
+    mod line_endings {
+        use super::*;
+        use std::fs;
+        use std::process::Command;
+
+        fn git(dir: &Path, args: &[&str]) {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        fn init_repo(dir: &Path) {
+            git(dir, &["init", "-b", "main"]);
+            git(dir, &["config", "user.email", "t@t.t"]);
+            git(dir, &["config", "user.name", "t"]);
+            fs::write(dir.join("a.txt"), "base\n").unwrap();
+            git(dir, &["add", "-A"]);
+            git(dir, &["commit", "-m", "init"]);
+        }
+
+        fn setup() -> (WorktreeManager, PathBuf, String, tempfile::TempDir) {
+            let tmp = tempfile::tempdir().unwrap();
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).unwrap();
+            init_repo(&repo);
+
+            let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+            let mgr = WorktreeManager::new(Arc::new(GitCli::new()), store, EventBus::new());
+            mgr.set_repo(&repo).unwrap();
+            let info = mgr
+                .create(CreateWorktreeRequest {
+                    existing_branch: None,
+                    kind: Some("impl".into()),
+                    task_id: Some("T-1".into()),
+                    slug: Some("eol test".into()),
+                    base: Some("main".into()),
+                })
+                .unwrap();
+            let branch = info.branch.unwrap();
+            (mgr, info.path, branch, tmp)
+        }
+
+        #[test]
+        fn converts_lf_to_crlf_and_back() {
+            let (mgr, wt, branch, _tmp) = setup();
+            fs::write(wt.join("service.cs"), "line one\nline two\n").unwrap();
+
+            mgr.set_line_ending(&branch, "service.cs", "crlf").unwrap();
+            assert_eq!(
+                fs::read_to_string(wt.join("service.cs")).unwrap(),
+                "line one\r\nline two\r\n"
+            );
+
+            mgr.set_line_ending(&branch, "service.cs", "lf").unwrap();
+            assert_eq!(
+                fs::read_to_string(wt.join("service.cs")).unwrap(),
+                "line one\nline two\n"
+            );
+        }
+
+        #[test]
+        fn normalizes_mixed_endings_to_the_requested_style() {
+            let (mgr, wt, branch, _tmp) = setup();
+            fs::write(
+                wt.join("service.cs"),
+                "line one\r\nline two\nline three\r\n",
+            )
+            .unwrap();
+
+            mgr.set_line_ending(&branch, "service.cs", "lf").unwrap();
+            assert_eq!(
+                fs::read_to_string(wt.join("service.cs")).unwrap(),
+                "line one\nline two\nline three\n"
+            );
+        }
+
+        #[test]
+        fn is_a_true_no_op_when_already_in_the_requested_style() {
+            let (mgr, wt, branch, _tmp) = setup();
+            let path = wt.join("service.cs");
+            fs::write(&path, "line one\nline two\n").unwrap();
+            let before = fs::metadata(&path).unwrap().modified().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+
+            mgr.set_line_ending(&branch, "service.cs", "lf").unwrap();
+            let after = fs::metadata(&path).unwrap().modified().unwrap();
+            assert_eq!(before, after, "an already-LF file must not be rewritten");
+        }
+
+        #[test]
+        fn rejects_a_path_that_escapes_the_worktree() {
+            let (mgr, _wt, branch, _tmp) = setup();
+            let err = mgr
+                .set_line_ending(&branch, "../../etc/passwd", "lf")
+                .unwrap_err();
+            assert!(err.to_string().contains("invalid path"));
+        }
+
+        #[test]
+        fn rejects_an_unknown_style() {
+            let (mgr, wt, branch, _tmp) = setup();
+            fs::write(wt.join("service.cs"), "line one\n").unwrap();
+            let err = mgr
+                .set_line_ending(&branch, "service.cs", "cr")
+                .unwrap_err();
+            assert!(err.to_string().contains("unsupported"));
         }
     }
 }

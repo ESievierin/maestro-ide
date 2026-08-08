@@ -6,6 +6,7 @@ import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { Icon } from "../components/Icon";
+import { SelectMenu } from "../components/SelectMenu";
 import { selectSnapshot, useDiffs } from "../state/diffs";
 import { selectQuestions, useQuestions } from "../state/questions";
 import type { ChangedFile, DiffScope, LineEnding } from "../types/diffs";
@@ -84,28 +85,57 @@ function eolLabel(eol: LineEnding | null): string | null {
  * show as changed when the diff looks empty": `--ignore-cr-at-eol` keeps the
  * visible diff clean, but git still (correctly) flags the blob as modified
  * when only the line endings differ. */
-function EolBadge({ oldEol, newEol }: { oldEol: LineEnding | null; newEol: LineEnding | null }) {
+const EOL_OPTIONS = [
+  { value: "lf", label: "LF" },
+  { value: "crlf", label: "CRLF" },
+];
+
+/** A Rider-style line-ending indicator for the selected file: a plain label
+ * when both sides agree, "LF → CRLF" when they don't (also the explanation
+ * for "why does this show as modified when the diff looks empty" — see
+ * `--ignore-cr-at-eol` in the core). In the working-tree scope it doubles as
+ * a picker: choosing a style rewrites the on-disk file, same as Rider's own
+ * line-separator selector. Only the *worktree* file is ever convertible —
+ * the merge-base/branch side is a git blob, not something to rewrite. */
+function EolBadge({
+  oldEol,
+  newEol,
+  onConvert,
+  busy,
+}: {
+  oldEol: LineEnding | null;
+  newEol: LineEnding | null;
+  onConvert?: (eol: "lf" | "crlf") => void;
+  busy?: boolean;
+}) {
   const oldLabel = eolLabel(oldEol);
   const newLabel = eolLabel(newEol);
   if (!oldLabel && !newLabel) return null;
 
-  if (oldLabel && newLabel && oldLabel !== newLabel) {
+  const changed = !!(oldLabel && newLabel && oldLabel !== newLabel);
+  const mixed = oldEol === "mixed" || newEol === "mixed";
+  const title = changed
+    ? `Line endings changed: ${oldLabel} → ${newLabel}. If this file shows as modified with little or no visible diff, only the line endings differ.`
+    : mixed
+      ? "This file mixes CRLF and LF line endings."
+      : `Line endings: ${newLabel ?? oldLabel}`;
+
+  if (onConvert && newEol && newEol !== "none") {
     return (
-      <span
-        className="badge badge-warn"
-        title={`Line endings changed: ${oldLabel} → ${newLabel}. If this file shows as modified with little or no visible diff, only the line endings differ.`}
-      >
-        {oldLabel} → {newLabel}
-      </span>
+      <SelectMenu
+        title={title}
+        value={newEol}
+        placeholder={changed ? `${oldLabel} → Mixed` : "Mixed"}
+        disabled={busy}
+        options={EOL_OPTIONS}
+        onChange={(v) => onConvert(v as "lf" | "crlf")}
+      />
     );
   }
-  const label = newLabel ?? oldLabel;
-  const mixed = oldEol === "mixed" || newEol === "mixed";
+
+  const label = changed ? `${oldLabel} → ${newLabel}` : (newLabel ?? oldLabel);
   return (
-    <span
-      className={`badge ${mixed ? "badge-warn" : "badge-muted"}`}
-      title={mixed ? "This file mixes CRLF and LF line endings." : `Line endings: ${label}`}
-    >
+    <span className={`badge ${changed || mixed ? "badge-warn" : "badge-muted"}`} title={title}>
       {label}
     </span>
   );
@@ -356,6 +386,7 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
   const [committing, setCommitting] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
   const [commitBusy, setCommitBusy] = useState(false);
+  const [eolBusy, setEolBusy] = useState(false);
   const activeViewRef = useRef<EditorView | null>(null);
   const handleViewReady = useCallback((view: EditorView | null) => {
     activeViewRef.current = view;
@@ -496,6 +527,33 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
     }
   };
 
+  const convertLineEnding = async (path: string, eol: "lf" | "crlf") => {
+    setEolBusy(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("set_line_ending", { branch, path, eol });
+      // The file on disk changed — refresh drops every cached file diff for
+      // this branch, so the next load picks up the new content and EOL.
+      await refresh(branch, scope);
+      const diff = await loadFile(branch, scope, path);
+      if (diff && !diff.too_large) {
+        setFilePair({
+          path: diff.path,
+          old: diff.old ?? "",
+          new: diff.new ?? "",
+          oldEol: diff.old_eol,
+          newEol: diff.new_eol,
+        });
+      }
+      const { useWorktrees } = await import("../state/worktrees");
+      void useWorktrees.getState().refresh();
+    } catch {
+      // run_core already published error.raised — it shows as an error toast.
+    } finally {
+      setEolBusy(false);
+    }
+  };
+
   // Keep the selection valid and auto-select the first file.
   useEffect(() => {
     if (!snapshot) return;
@@ -609,7 +667,16 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
             </button>
           </div>
           {selectedPath && filePair?.path === selectedPath && (
-            <EolBadge oldEol={filePair.oldEol} newEol={filePair.newEol} />
+            <EolBadge
+              oldEol={filePair.oldEol}
+              newEol={filePair.newEol}
+              busy={eolBusy}
+              onConvert={
+                scope === "worktree"
+                  ? (eol) => void convertLineEnding(selectedPath, eol)
+                  : undefined
+              }
+            />
           )}
           {selectedPath && (
             <button

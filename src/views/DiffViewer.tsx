@@ -279,6 +279,11 @@ function UnifiedFileDiff({
               highlightChanges: false,
               gutter: true,
               collapseUnchanged: {},
+              // Default scanLimit (500 changed chars) guards against a
+              // quadratic blow-up on a wildly different file, but also trips
+              // on an ordinary file with several scattered small edits,
+              // collapsing the whole unresolved span into one giant change.
+              diffConfig: { scanLimit: 30000, timeout: 3000 },
             }),
           ],
         }),
@@ -354,6 +359,11 @@ function SplitFileDiff({
         // In split view, in-line change highlighting is what makes it readable.
         highlightChanges: true,
         collapseUnchanged: {},
+        // Default scanLimit (500 changed chars) guards against a quadratic
+        // blow-up on a wildly different file, but also trips on an ordinary
+        // file with several scattered small edits, bailing the precise
+        // algorithm into one giant replacement chunk for the whole span.
+        diffConfig: { scanLimit: 30000, timeout: 3000 },
       });
       viewRef.current = view;
       onViewReady(view.b);

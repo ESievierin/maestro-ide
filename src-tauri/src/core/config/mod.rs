@@ -12,6 +12,10 @@ use serde::Deserialize;
 
 use crate::core::attention::SETTING_OS_NOTIFICATIONS;
 use crate::core::checks::{SETTING_CHECK_AUTO, SETTING_CHECK_COMMAND};
+use crate::core::compose::SETTING_COMPOSE_MODEL;
+use crate::core::daemon::jira::{
+    SETTING_JIRA_BASE_URL, SETTING_JIRA_EMAIL, SETTING_JIRA_JQL, SETTING_JIRA_TOKEN,
+};
 use crate::core::daemon::{
     SETTING_DAEMON_ACCOUNT, SETTING_DAEMON_ENABLED, SETTING_DAEMON_POLL_MINUTES,
     SETTING_DAEMON_REPO, SETTING_DAEMON_RESEARCH_MODEL, SETTING_DAEMON_USAGE_THRESHOLD,
@@ -94,8 +98,22 @@ const DEFAULT_CONFIG: &str = r#"# MaestroIDE configuration (~/.maestro/config.to
 # Model for issue-research sessions (empty = session default).
 # daemon_research_model = "sonnet"
 
-# Model for PR-comment-verification sessions (empty = session default).
+# Model for PR-review / PR-comment-verification sessions (empty = session default).
 # daemon_verify_model = "sonnet"
+
+# --- Jira (research flow) ---
+# All three must be set for the daemon to poll Jira. The token is an Atlassian
+# API token (id.atlassian.com → Security → API tokens), not your password.
+# jira_base_url = "https://yourorg.atlassian.net"
+# jira_email = "you@yourorg.com"
+# jira_token = "..."
+
+# What counts as "my work". Default: open unresolved issues assigned to you.
+# jira_jql = "assignee = currentUser() AND resolution = EMPTY ORDER BY updated DESC"
+
+# Model for one-shot generation: commit messages, PR descriptions, reply drafts
+# (empty = the Claude CLI's default model).
+# compose_model = "sonnet"
 "#;
 
 /// Parsed config file. Every field is optional: absent means "leave the current setting".
@@ -118,6 +136,11 @@ pub struct Config {
     pub daemon_usage_threshold: Option<f64>,
     pub daemon_research_model: Option<String>,
     pub daemon_verify_model: Option<String>,
+    pub jira_base_url: Option<String>,
+    pub jira_email: Option<String>,
+    pub jira_token: Option<String>,
+    pub jira_jql: Option<String>,
+    pub compose_model: Option<String>,
 }
 
 impl Config {
@@ -202,6 +225,11 @@ impl Config {
                 SETTING_DAEMON_VERIFY_MODEL,
                 self.daemon_verify_model.clone(),
             ),
+            (SETTING_JIRA_BASE_URL, self.jira_base_url.clone()),
+            (SETTING_JIRA_EMAIL, self.jira_email.clone()),
+            (SETTING_JIRA_TOKEN, self.jira_token.clone()),
+            (SETTING_JIRA_JQL, self.jira_jql.clone()),
+            (SETTING_COMPOSE_MODEL, self.compose_model.clone()),
         ] {
             if let Some(value) = value {
                 store.set_setting(key, &value)?;

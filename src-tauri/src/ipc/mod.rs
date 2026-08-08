@@ -16,10 +16,12 @@ use crate::core::agent::protocol::Attachment;
 use crate::core::attention::{AttentionItem, AttentionManager};
 use crate::core::bus::{Event, EventBus};
 use crate::core::checks::{CheckResult, ChecksManager};
+use crate::core::compose::{ComposeManager, PrDraft};
 use crate::core::daemon::{DaemonManager, DaemonStatus};
 use crate::core::diff::{DiffManager, DiffScope, DiffSnapshot, FileDiff};
 use crate::core::gate::{GateManager, GateParam, PendingGate};
 use crate::core::notes::{Notes, NotesManager};
+use crate::core::pr::{CreatedPr, PrComment, PrManager, ReplyOutcome};
 use crate::core::prompts::{PromptFile, PromptManager};
 use crate::core::questions::{LineQuestionInfo, LineQuestionManager};
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
@@ -46,6 +48,8 @@ pub struct AppState {
     pub attention: Arc<AttentionManager>,
     pub checks: Arc<ChecksManager>,
     pub daemon: Arc<DaemonManager>,
+    pub compose: Arc<ComposeManager>,
+    pub prs: Arc<PrManager>,
 }
 
 /// Forward every bus event to the frontend over a single Tauri event channel.
@@ -299,6 +303,113 @@ pub async fn set_daemon_account(state: State<'_, AppState>, account: String) -> 
 pub async fn dismiss_daemon_task(state: State<'_, AppState>, key: String) -> Result<(), String> {
     let daemon = state.daemon.clone();
     run_core(state.bus.clone(), move || daemon.dismiss_task(&key)).await
+}
+
+// ---------- PR workflow: generate, create, reply ----------
+
+/// Generate a commit message for the branch's uncommitted changes (claude -p).
+#[tauri::command]
+pub async fn generate_commit_message(
+    state: State<'_, AppState>,
+    branch: String,
+) -> Result<String, String> {
+    let compose = state.compose.clone();
+    run_core(state.bus.clone(), move || compose.commit_message(&branch)).await
+}
+
+/// Generate a PR title + body for the branch against its base (claude -p).
+#[tauri::command]
+pub async fn generate_pr_description(
+    state: State<'_, AppState>,
+    branch: String,
+) -> Result<PrDraft, String> {
+    let compose = state.compose.clone();
+    run_core(state.bus.clone(), move || compose.pr_description(&branch)).await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReplyInput {
+    pub comment_id: u64,
+    pub author: String,
+    pub path: String,
+    pub body: String,
+}
+
+/// Draft replies for the given review comments (claude -p). Returns
+/// comment_id → draft; comments the model skipped are simply absent.
+#[tauri::command]
+pub async fn generate_pr_replies(
+    state: State<'_, AppState>,
+    branch: String,
+    comments: Vec<ReplyInput>,
+) -> Result<std::collections::HashMap<u64, String>, String> {
+    let compose = state.compose.clone();
+    run_core(state.bus.clone(), move || {
+        let tuples: Vec<(u64, String, String, String)> = comments
+            .into_iter()
+            .map(|c| (c.comment_id, c.author, c.path, c.body))
+            .collect();
+        compose.reply_drafts(&branch, &tuples)
+    })
+    .await
+}
+
+/// Push the branch and open a pull request. Commit first via commit_worktree.
+#[tauri::command]
+pub async fn create_pr(
+    state: State<'_, AppState>,
+    branch: String,
+    title: String,
+    body: String,
+) -> Result<CreatedPr, String> {
+    let prs = state.prs.clone();
+    run_core(state.bus.clone(), move || {
+        prs.create(&branch, &title, &body)
+    })
+    .await
+}
+
+/// Review comments of the branch's open PR (empty when there is none).
+#[tauri::command]
+pub async fn list_pr_comments(
+    state: State<'_, AppState>,
+    branch: String,
+) -> Result<Vec<PrComment>, String> {
+    let prs = state.prs.clone();
+    run_core(state.bus.clone(), move || prs.comments(&branch)).await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReplyToPost {
+    pub comment_id: u64,
+    pub body: String,
+}
+
+/// Post the replies the user approved in the dialog — the explicit HITL step.
+#[tauri::command]
+pub async fn reply_pr_comments(
+    state: State<'_, AppState>,
+    pr: u64,
+    replies: Vec<ReplyToPost>,
+) -> Result<Vec<ReplyOutcome>, String> {
+    let prs = state.prs.clone();
+    run_core(state.bus.clone(), move || {
+        let pairs: Vec<(u64, String)> = replies
+            .into_iter()
+            .map(|r| (r.comment_id, r.body))
+            .collect();
+        prs.reply(pr, &pairs)
+    })
+    .await
+}
+
+/// Open a URL in the default browser (used for freshly created PRs).
+#[tauri::command]
+pub async fn open_url(state: State<'_, AppState>, url: String) -> Result<(), String> {
+    run_core(state.bus.clone(), move || {
+        crate::core::launcher::open_url(&url)
+    })
+    .await
 }
 
 // ---------- worktree snapshots ----------

@@ -337,6 +337,23 @@ impl GitProvider for GitCli {
         Ok(())
     }
 
+    fn discard_changes(&self, worktree: &Path) -> Result<()> {
+        self.run(worktree, &["reset", "--hard"])?;
+        self.run(worktree, &["clean", "-fd"])?;
+        Ok(())
+    }
+
+    fn fetch_branch(&self, repo: &Path, branch: &str) -> Result<()> {
+        let refspec = format!("{branch}:{branch}");
+        match self.run(repo, &["fetch", "origin", &refspec]) {
+            Ok(_) => Ok(()),
+            // Git refuses to fetch into a currently checked-out branch; the
+            // checkout means the branch exists locally, so a plain fetch is all
+            // the freshness we can (and need to) get here.
+            Err(_) => self.run(repo, &["fetch", "origin", branch]).map(|_| ()),
+        }
+    }
+
     fn commit_all(&self, worktree: &Path, message: &str) -> Result<String> {
         self.run(worktree, &["add", "-A"])?;
         self.run(worktree, &["commit", "-m", message])?;

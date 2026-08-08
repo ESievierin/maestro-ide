@@ -9,12 +9,14 @@ use crate::core::agent::{SidecarConfig, SidecarEngine};
 use crate::core::attention::AttentionManager;
 use crate::core::bus::EventBus;
 use crate::core::checks::ChecksManager;
+use crate::core::compose::{ClaudeCliGen, ComposeManager};
 use crate::core::config::Config;
-use crate::core::daemon::{DaemonManager, GhCli, RealDaemonExec};
+use crate::core::daemon::{DaemonManager, GhCli, JiraCli, RealDaemonExec};
 use crate::core::diff::DiffManager;
 use crate::core::escalation::EscalationManager;
 use crate::core::gate::{self, GateManager};
 use crate::core::notes::NotesManager;
+use crate::core::pr::PrManager;
 use crate::core::prompts::PromptManager;
 use crate::core::questions::LineQuestionManager;
 use crate::core::session::SessionManager;
@@ -151,15 +153,30 @@ pub fn run() {
         bus.clone(),
     ));
 
-    // GitHub daemon: off by default; polls gh as the configured account and
+    // GitHub/Jira daemon: off by default; polls as the configured account and
     // spawns read-only research sessions. Never posts, never commits.
     let daemon = Arc::new(DaemonManager::new(
         store.clone(),
         Arc::new(GhCli),
+        Arc::new(JiraCli),
         Arc::new(RealDaemonExec {
             worktrees: worktrees.clone(),
             sessions: sessions.clone(),
         }),
+        bus.clone(),
+    ));
+
+    // One-shot generation (commit messages, PR text) + user-initiated PR actions.
+    let compose = Arc::new(ComposeManager::new(
+        store.clone(),
+        worktrees.clone(),
+        prompts.clone(),
+        Arc::new(ClaudeCliGen),
+    ));
+    let prs = Arc::new(PrManager::new(
+        store.clone(),
+        Arc::new(GhCli),
+        worktrees.clone(),
         bus.clone(),
     ));
 
@@ -176,6 +193,8 @@ pub fn run() {
         attention: attention.clone(),
         checks: checks.clone(),
         daemon: daemon.clone(),
+        compose,
+        prs,
     };
 
     tauri::Builder::default()
@@ -235,7 +254,14 @@ pub fn run() {
             ipc::list_daemon_tasks,
             ipc::set_daemon_enabled,
             ipc::set_daemon_account,
-            ipc::dismiss_daemon_task
+            ipc::dismiss_daemon_task,
+            ipc::generate_commit_message,
+            ipc::generate_pr_description,
+            ipc::generate_pr_replies,
+            ipc::create_pr,
+            ipc::list_pr_comments,
+            ipc::reply_pr_comments,
+            ipc::open_url
         ])
         .setup(move |app| {
             ipc::spawn_event_forwarder(app.handle().clone(), bus.clone());

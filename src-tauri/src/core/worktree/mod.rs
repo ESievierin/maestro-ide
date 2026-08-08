@@ -86,9 +86,18 @@ pub struct MergeReport {
     #[serde(flatten)]
     pub outcome: MergeOutcome,
     /// True when the primary worktree was switched to the target branch to host
-    /// the merge (the target was not checked out anywhere). The user's editor
-    /// open on the primary now shows the target branch — by design.
+    /// the merge (the target was not checked out anywhere).
     pub switched_primary: bool,
+    /// True when the primary was switched back to its original branch after a
+    /// clean merge — the editor open on the primary never sees a branch change.
+    pub switched_back: bool,
+    /// Label of the snapshot holding the target worktree's uncommitted changes
+    /// when they could not be restored automatically (merge conflict, or the
+    /// restore itself conflicted). `None` means nothing is parked.
+    pub parked_changes: Option<String>,
+    /// True when the target's uncommitted changes were parked and then put
+    /// back on top of the merged result — the seamless path.
+    pub restored: bool,
 }
 
 /// Result of a snapshot-restore request: restoring over uncommitted changes
@@ -327,11 +336,11 @@ impl WorktreeManager {
         let repo = self.require_repo()?;
         let worktrees = self.git.list_worktrees(&repo)?;
 
-        let (host, switched_primary) = match worktrees
+        let (host, switched_primary, primary_home) = match worktrees
             .iter()
             .find(|e| e.branch.as_deref() == Some(target_branch))
         {
-            Some(target) => (target, false),
+            Some(target) => (target, false, None),
             None => {
                 let primary = worktrees.iter().find(|e| e.is_primary).ok_or_else(|| {
                     MaestroError::InvalidData {
@@ -341,15 +350,70 @@ impl WorktreeManager {
                 self.require_clean(&primary.path, target_branch)?;
                 self.git.switch_branch(&primary.path, target_branch)?;
                 tracing::info!(target_branch, "primary worktree switched to host the merge");
-                (primary, true)
+                (primary, true, primary.branch.clone())
             }
         };
 
-        if !switched_primary {
-            self.require_clean(&host.path, target_branch)?;
+        // A dirty target no longer blocks the merge: its uncommitted state is
+        // parked in a snapshot, the merge runs on a clean tree, and the state
+        // comes back on top of the result. Rider (or any editor) open on the
+        // target sees the merge land under it without losing a keystroke.
+        let mut parked: Option<String> = None;
+        if !switched_primary && self.git.branch_status(&host.path)?.dirty {
+            let label = format!("pre-merge of {source_branch}");
+            self.git.snapshot_push(&host.path, &label)?;
+            self.git.discard_changes(&host.path)?;
+            parked = Some(label);
+            tracing::info!(target_branch, "uncommitted target changes parked");
         }
 
-        let outcome = self.git.merge_branch(&host.path, source_branch)?;
+        let outcome = match self.git.merge_branch(&host.path, source_branch) {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                // The merge never started (bad ref, broken repo…): put the
+                // parked state straight back so the tree is as the user left it.
+                if let Some(label) = parked.as_deref() {
+                    if let Err(restore_err) = self.restore_parked(&host.path, label) {
+                        tracing::warn!(error = %restore_err, "could not unpark after failed merge");
+                    }
+                }
+                return Err(err);
+            }
+        };
+
+        let mut restored = false;
+        if let Some(label) = parked.as_deref() {
+            if outcome.merged {
+                match self.restore_parked(&host.path, label) {
+                    Ok(()) => {
+                        restored = true;
+                        tracing::info!(target_branch, "parked changes restored on top of merge");
+                    }
+                    Err(err) => {
+                        // The snapshot stays; the user restores it from the
+                        // Snapshots dialog once they have looked at the clash.
+                        tracing::warn!(error = %err, "parked changes conflict with the merge — kept as snapshot");
+                    }
+                }
+            }
+        }
+
+        // A clean merge on a borrowed primary hands the primary back: the
+        // editor open on it never notices, and the target branch simply gained
+        // a commit. A conflicted merge must stay checked out to be resolved.
+        let mut switched_back = false;
+        if let (true, Some(home), true) =
+            (switched_primary, primary_home.as_deref(), outcome.merged)
+        {
+            match self.git.switch_branch(&host.path, home) {
+                Ok(()) => {
+                    switched_back = true;
+                    tracing::info!(home, "primary worktree switched back after merge");
+                }
+                Err(err) => tracing::warn!(error = %err, "could not switch the primary back"),
+            }
+        }
+
         if outcome.merged {
             self.bus.publish(Event::WorktreeMerged {
                 source: source_branch.to_string(),
@@ -372,7 +436,26 @@ impl WorktreeManager {
         Ok(MergeReport {
             outcome,
             switched_primary,
+            switched_back,
+            parked_changes: parked.filter(|_| !restored),
+            restored,
         })
+    }
+
+    /// Re-apply the snapshot named `label` (the newest one) and drop it. Any
+    /// failure leaves the snapshot in place for a manual restore.
+    fn restore_parked(&self, worktree: &Path, label: &str) -> Result<()> {
+        let snapshot = self
+            .git
+            .snapshot_list(worktree)?
+            .into_iter()
+            .find(|s| s.label == label)
+            .ok_or_else(|| MaestroError::InvalidData {
+                message: format!("parked snapshot '{label}' disappeared"),
+            })?;
+        self.git.snapshot_restore(worktree, &snapshot.id)?;
+        self.git.snapshot_drop(worktree, &snapshot.id)?;
+        Ok(())
     }
 
     /// Bring `branch` up to date with its base: fetch the base's remote state
@@ -472,6 +555,13 @@ impl WorktreeManager {
         let report = self.git.push_branch(&path, branch)?;
         tracing::info!(branch, "branch pushed");
         Ok(report)
+    }
+
+    /// Update `branch` from origin without checking it out — used by the
+    /// daemon to materialize a PR branch before creating its review worktree.
+    pub fn fetch_branch(&self, branch: &str) -> Result<()> {
+        let repo = self.require_repo()?;
+        self.git.fetch_branch(&repo, branch)
     }
 
     /// Commits on `branch` that its (freshly fetched) base does not have —
@@ -695,6 +785,7 @@ mod tests {
         commit_calls: Vec<(PathBuf, String)>,
         snapshots: Vec<Snapshot>,
         restore_calls: Vec<(PathBuf, String)>,
+        discard_calls: Vec<PathBuf>,
         push_calls: Vec<(PathBuf, String)>,
     }
 
@@ -867,6 +958,12 @@ mod tests {
             st.snapshots.retain(|s| s.id != id);
             Ok(())
         }
+        fn discard_changes(&self, worktree: &Path) -> Result<()> {
+            let mut st = self.state.lock().unwrap();
+            st.discard_calls.push(worktree.to_path_buf());
+            st.dirty.remove(worktree);
+            Ok(())
+        }
         fn push_branch(&self, worktree: &Path, branch: &str) -> Result<String> {
             let mut st = self.state.lock().unwrap();
             st.push_calls
@@ -1019,7 +1116,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_into_refuses_a_dirty_target_without_attempting_the_merge() {
+    fn merge_into_parks_a_dirty_target_and_restores_it_afterwards() {
         let (mgr, git, _bus) = manager_with_git();
         git.state
             .lock()
@@ -1027,11 +1124,22 @@ mod tests {
             .dirty
             .insert(PathBuf::from("/repo"));
 
-        let err = mgr.merge_into("impl/T-1-x", "main").unwrap_err();
-        assert!(err.to_string().contains("uncommitted"), "{err}");
+        let report = mgr.merge_into("impl/T-1-x", "main").unwrap();
+        assert!(report.outcome.merged);
+        assert!(report.restored, "the parked state came back");
+        assert_eq!(report.parked_changes, None);
+
+        let st = git.state.lock().unwrap();
+        assert_eq!(st.discard_calls, vec![PathBuf::from("/repo")]);
+        assert_eq!(
+            st.merge_calls,
+            vec![(PathBuf::from("/repo"), "impl/T-1-x".to_string())],
+            "the merge ran on the cleaned tree"
+        );
+        assert_eq!(st.restore_calls.len(), 1, "the parked state was re-applied");
         assert!(
-            git.state.lock().unwrap().merge_calls.is_empty(),
-            "must not touch a dirty target"
+            st.snapshots.is_empty(),
+            "the parking snapshot is dropped after a clean restore"
         );
     }
 
@@ -1062,10 +1170,15 @@ mod tests {
         let report = mgr.merge_into("impl/T-1-x", "develop").unwrap();
         assert!(report.outcome.merged);
         assert!(report.switched_primary);
+        assert!(report.switched_back, "the primary is returned afterwards");
         let st = git.state.lock().unwrap();
         assert_eq!(
             st.switch_calls,
-            vec![(PathBuf::from("/repo"), "develop".to_string())]
+            vec![
+                (PathBuf::from("/repo"), "develop".to_string()),
+                (PathBuf::from("/repo"), "main".to_string()),
+            ],
+            "switch to host the merge, then hand the primary back"
         );
         assert_eq!(
             st.merge_calls,
@@ -1202,5 +1315,175 @@ mod tests {
             rx.try_recv().is_err(),
             "a conflicted merge must not publish worktree.merged"
         );
+    }
+
+    // ---- real-git integration: the seamless merge behaviors ----
+
+    mod seamless_merge {
+        use super::*;
+        use std::fs;
+        use std::process::Command;
+
+        fn git(dir: &Path, args: &[&str]) {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        fn init_repo(dir: &Path) {
+            git(dir, &["init", "-b", "main"]);
+            git(dir, &["config", "user.email", "t@t.t"]);
+            git(dir, &["config", "user.name", "t"]);
+            fs::write(dir.join("a.txt"), "base\n").unwrap();
+            git(dir, &["add", "-A"]);
+            git(dir, &["commit", "-m", "init"]);
+        }
+
+        fn manager_on(repo: &Path) -> WorktreeManager {
+            let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+            let mgr = WorktreeManager::new(Arc::new(GitCli::new()), store, EventBus::new());
+            mgr.set_repo(repo).unwrap();
+            mgr
+        }
+
+        fn feature_worktree(mgr: &WorktreeManager) -> String {
+            let info = mgr
+                .create(CreateWorktreeRequest {
+                    existing_branch: None,
+                    kind: Some("impl".into()),
+                    task_id: Some("T-1".into()),
+                    slug: Some("merge test".into()),
+                    base: Some("main".into()),
+                })
+                .unwrap();
+            info.branch.unwrap()
+        }
+
+        #[test]
+        fn a_dirty_target_is_parked_merged_and_restored_seamlessly() {
+            let tmp = tempfile::tempdir().unwrap();
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).unwrap();
+            init_repo(&repo);
+            let mgr = manager_on(&repo);
+
+            let feature = feature_worktree(&mgr);
+            let wt = repo
+                .parent()
+                .unwrap()
+                .join("repo.worktrees")
+                .join("impl-T-1-merge-test");
+            fs::write(wt.join("b.txt"), "from branch\n").unwrap();
+            mgr.commit_all(&feature, "add b").unwrap();
+
+            // Rider-style situation: uncommitted work sitting in the target.
+            fs::write(repo.join("wip.txt"), "uncommitted work\n").unwrap();
+
+            let report = mgr.merge_into(&feature, "main").unwrap();
+            assert!(report.outcome.merged, "{}", report.outcome.message);
+            assert!(report.restored, "uncommitted state came back");
+            assert_eq!(report.parked_changes, None);
+            assert_eq!(
+                fs::read_to_string(repo.join("b.txt"))
+                    .unwrap()
+                    .replace("\r\n", "\n"),
+                "from branch\n",
+                "the merge landed"
+            );
+            assert_eq!(
+                fs::read_to_string(repo.join("wip.txt"))
+                    .unwrap()
+                    .replace("\r\n", "\n"),
+                "uncommitted work\n",
+                "the WIP file survived the merge untouched"
+            );
+            assert!(
+                mgr.snapshot_list("main").unwrap().is_empty(),
+                "the parking snapshot is cleaned up after a seamless restore"
+            );
+        }
+
+        #[test]
+        fn a_restore_clash_keeps_the_parked_snapshot_instead_of_guessing() {
+            let tmp = tempfile::tempdir().unwrap();
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).unwrap();
+            init_repo(&repo);
+            let mgr = manager_on(&repo);
+
+            let feature = feature_worktree(&mgr);
+            let wt = repo
+                .parent()
+                .unwrap()
+                .join("repo.worktrees")
+                .join("impl-T-1-merge-test");
+            fs::write(wt.join("a.txt"), "branch version\n").unwrap();
+            mgr.commit_all(&feature, "change a").unwrap();
+
+            // Local uncommitted edit to the same file the branch rewrites.
+            fs::write(repo.join("a.txt"), "local uncommitted version\n").unwrap();
+
+            let report = mgr.merge_into(&feature, "main").unwrap();
+            assert!(report.outcome.merged);
+            assert!(!report.restored);
+            let label = report.parked_changes.expect("changes stay parked");
+            let snapshots = mgr.snapshot_list("main").unwrap();
+            assert!(
+                snapshots.iter().any(|s| s.label == label),
+                "the snapshot named in the report actually exists"
+            );
+        }
+
+        #[test]
+        fn merging_into_an_uncheckedout_branch_returns_the_primary_afterwards() {
+            let tmp = tempfile::tempdir().unwrap();
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).unwrap();
+            init_repo(&repo);
+            git(&repo, &["branch", "develop"]);
+            let mgr = manager_on(&repo);
+
+            let feature = feature_worktree(&mgr);
+            let wt = repo
+                .parent()
+                .unwrap()
+                .join("repo.worktrees")
+                .join("impl-T-1-merge-test");
+            fs::write(wt.join("b.txt"), "from branch\n").unwrap();
+            mgr.commit_all(&feature, "add b").unwrap();
+
+            let report = mgr.merge_into(&feature, "develop").unwrap();
+            assert!(report.outcome.merged);
+            assert!(report.switched_primary);
+            assert!(report.switched_back, "the primary is handed back");
+
+            let head = Command::new("git")
+                .args(["branch", "--show-current"])
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&head.stdout).trim(),
+                "main",
+                "the primary worktree is back on its own branch"
+            );
+            let merged_file = Command::new("git")
+                .args(["show", "develop:b.txt"])
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                merged_file.status.success(),
+                "develop received the merge without ever needing a worktree"
+            );
+        }
     }
 }

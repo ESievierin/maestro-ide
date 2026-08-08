@@ -119,6 +119,20 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           run: () => openDialog("push"),
         },
         {
+          id: "wt:createpr",
+          icon: "pr",
+          label: "Create PR…",
+          hint: branch,
+          run: () => openDialog("createpr"),
+        },
+        {
+          id: "wt:replies",
+          icon: "reply",
+          label: "PR review comments — reply…",
+          hint: branch,
+          run: () => openDialog("replies"),
+        },
+        {
           id: "wt:snapshots",
           icon: "history",
           label: "Snapshots…",

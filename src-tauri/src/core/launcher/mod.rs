@@ -26,6 +26,24 @@ pub fn open_in_explorer(path: &Path) -> Result<()> {
     spawn_detached(program, &args)
 }
 
+/// Open an http(s) URL in the default browser. Scheme-checked so this can
+/// never be talked into launching an arbitrary program.
+pub fn open_url(url: &str) -> Result<()> {
+    let trimmed = url.trim();
+    if !trimmed.starts_with("https://") && !trimmed.starts_with("http://") {
+        return Err(MaestroError::InvalidData {
+            message: format!("not a web URL: {trimmed}"),
+        });
+    }
+    #[cfg(target_os = "windows")]
+    let (program, args): (&str, Vec<String>) = ("explorer", vec![trimmed.to_string()]);
+    #[cfg(target_os = "macos")]
+    let (program, args): (&str, Vec<String>) = ("open", vec![trimmed.to_string()]);
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let (program, args): (&str, Vec<String>) = ("xdg-open", vec![trimmed.to_string()]);
+    spawn_detached(program, &args)
+}
+
 /// Open `path` in the configured editor, auto-detecting Rider when nothing is
 /// configured. The `editor_command` setting holds the executable (path or name);
 /// the worktree path is passed as its first argument, and `file` (when given)

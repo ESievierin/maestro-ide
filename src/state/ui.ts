@@ -3,7 +3,17 @@ import { create } from "zustand";
 /** Dialogs that can be opened from anywhere (header buttons, command palette).
  * The worktree-scoped ones ("snapshots"…"merge") act on the selected worktree. */
 export type UIDialog =
-  "snapshots" | "checks" | "push" | "log" | "merge" | "prompts" | "hotkeys" | "create" | "daemon";
+  | "snapshots"
+  | "checks"
+  | "push"
+  | "log"
+  | "merge"
+  | "prompts"
+  | "hotkeys"
+  | "create"
+  | "daemon"
+  | "createpr"
+  | "replies";
 
 interface UIState {
   dialog: UIDialog | null;

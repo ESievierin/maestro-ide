@@ -3,17 +3,20 @@ import { Icon } from "../components/Icon";
 import { SelectMenu, type SelectMenuOption } from "../components/SelectMenu";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useWorktrees } from "../state/worktrees";
+import { openWorktree } from "../utils/actions";
 import type { MergeOutcome, RepoInfo, WorktreeInfo } from "../types/worktrees";
 
 /**
  * Lands a worktree's branch into any other branch — a local `git merge --no-ff`.
- * Never pushes, and never touches or removes the source worktree.
+ * Never pushes, never rewrites history, never touches the source worktree.
  *
- * Where the merge runs depends on the target:
- * - a branch checked out in some worktree merges in that worktree;
- * - any other branch is hosted by the **primary worktree**, which is switched to
- *   it first — deliberately, so the result (or the conflict) is immediately
- *   visible in the editor that has the primary open (Rider).
+ * Built for the Rider↔Maestro round-trip:
+ * - a dirty target no longer blocks: its uncommitted state is parked in a
+ *   snapshot, the merge runs clean, and the state is re-applied on top —
+ *   whatever is open in Rider just gains the merge underneath it;
+ * - a branch without a worktree is hosted by the primary, which is switched
+ *   there and — after a clean merge — switched straight back, so an editor
+ *   open on the primary never sees the branch change.
  */
 export function MergeDialog({
   source,
@@ -109,7 +112,7 @@ export function MergeDialog({
   const sourceDirty = source.status?.dirty ?? false;
 
   const submit = async () => {
-    if (!targetBranch || hostDirty) return;
+    if (!targetBranch || (viaPrimary && hostDirty)) return;
     setBusy(true);
     setSubmitError(null);
     const outcome = await merge(source.branch as string, targetBranch);
@@ -156,14 +159,21 @@ export function MergeDialog({
 
             {viaPrimary && targetBranch && (
               <p className="hint">
-                <Icon name="branch" size={12} /> The primary worktree will switch to{" "}
-                <code>{targetBranch}</code> and host this merge.
+                <Icon name="branch" size={12} /> The primary worktree will host this merge on{" "}
+                <code>{targetBranch}</code> and switch back to its own branch right after.
               </p>
             )}
-            {hostDirty && (
+            {viaPrimary && hostDirty && (
               <p className="hint warn">
-                <Icon name="alert" size={12} /> The {viaPrimary ? "primary" : "target"} worktree has
-                uncommitted changes — commit or discard them there before merging.
+                <Icon name="alert" size={12} /> The primary worktree has uncommitted changes —
+                commit or discard them there before it can host a merge for another branch.
+              </p>
+            )}
+            {!viaPrimary && hostDirty && (
+              <p className="hint">
+                <Icon name="history" size={12} /> <code>{targetBranch}</code> has uncommitted
+                changes — they'll be parked in a snapshot for the merge and put back on top of the
+                result automatically.
               </p>
             )}
             {sourceDirty && (
@@ -179,14 +189,39 @@ export function MergeDialog({
             <p className="hint success">
               <Icon name="check" /> Merged <code>{source.branch}</code> into{" "}
               <code>{targetBranch}</code>.
-              {result.switched_primary && (
+              {result.restored && <> Uncommitted changes in the target were preserved on top.</>}
+              {result.switched_back && (
                 <>
                   {" "}
-                  The primary worktree is now on <code>{targetBranch}</code> — open it in Rider to
-                  review.
+                  The primary hosted the merge and is already back on its own branch — nothing moved
+                  under your editor.
+                </>
+              )}
+              {result.switched_primary && !result.switched_back && (
+                <>
+                  {" "}
+                  The primary worktree is now on <code>{targetBranch}</code>.
                 </>
               )}
             </p>
+            {result.parked_changes && (
+              <p className="hint warn">
+                <Icon name="alert" size={12} /> The target's uncommitted changes clashed with the
+                merge result — they are safe in snapshot <code>{result.parked_changes}</code>{" "}
+                (Snapshots dialog → restore when ready).
+              </p>
+            )}
+            {!result.switched_back && (
+              <p className="hint">
+                <button
+                  className="small"
+                  onClick={() => openWorktree(targetBranch, "editor")}
+                  title="Open the merged result in the editor"
+                >
+                  <Icon name="external-link" /> Open {targetBranch} in Rider
+                </button>
+              </p>
+            )}
             {!source.is_primary && (
               <p className="hint">
                 Task landed? The source worktree can go —{" "}
@@ -241,6 +276,13 @@ export function MergeDialog({
                     </>
                   )}
                 </p>
+                {result.parked_changes && (
+                  <p className="hint warn">
+                    <Icon name="alert" size={12} /> The target's uncommitted changes are parked in
+                    snapshot <code>{result.parked_changes}</code> — restore them from the Snapshots
+                    dialog after the conflict is settled.
+                  </p>
+                )}
               </>
             ) : (
               <p className="merge-result-title">
@@ -257,7 +299,7 @@ export function MergeDialog({
           {targetOptions.length > 0 && !result && (
             <button
               className="btn-primary"
-              disabled={busy || !targetBranch || hostDirty}
+              disabled={busy || !targetBranch || (viaPrimary && hostDirty)}
               onClick={() => void submit()}
             >
               {busy ? "Merging…" : "Merge"}

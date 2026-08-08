@@ -22,7 +22,9 @@ import { BranchLogDialog } from "./views/BranchLogDialog";
 import { HotkeysDialog } from "./views/HotkeysDialog";
 import { MergeDialog } from "./views/MergeDialog";
 import { CommandPalette } from "./views/CommandPalette";
+import { CreatePrDialog } from "./views/CreatePrDialog";
 import { DaemonPanel } from "./views/DaemonPanel";
+import { PrRepliesDialog } from "./views/PrRepliesDialog";
 import { useChecks } from "./state/checks";
 import { useDaemon } from "./state/daemon";
 
@@ -135,6 +137,20 @@ function MainPanel() {
             </button>
             <button
               className="small icon-only ghost"
+              title="Create a pull request (commit + push + gh pr create)…"
+              onClick={() => openDialog("createpr")}
+            >
+              <Icon name="pr" size={13} />
+            </button>
+            <button
+              className="small icon-only ghost"
+              title="PR review comments — draft, edit and post replies…"
+              onClick={() => openDialog("replies")}
+            >
+              <Icon name="reply" size={13} />
+            </button>
+            <button
+              className="small icon-only ghost"
               title="Copy worktree path"
               onClick={() => void copyPath(worktree.path)}
             >
@@ -167,6 +183,8 @@ function MainPanel() {
       {dialog === "merge" && (
         <MergeDialog source={worktree} worktrees={worktrees} repo={repo} onClose={closeDialog} />
       )}
+      {dialog === "createpr" && <CreatePrDialog worktree={worktree} onClose={closeDialog} />}
+      {dialog === "replies" && <PrRepliesDialog worktree={worktree} onClose={closeDialog} />}
     </div>
   );
 }

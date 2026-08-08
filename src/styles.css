@@ -1756,6 +1756,93 @@ input[type="checkbox"] {
   text-overflow: ellipsis;
 }
 
+/* ---------- Create PR + review replies ---------- */
+
+.createpr-modal {
+  width: min(720px, 90vw);
+}
+
+.gen-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.gen-row textarea {
+  flex: 1;
+}
+
+.gen-row > button {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.replies-modal {
+  width: min(760px, 92vw);
+}
+
+.replies-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
+}
+
+.replies-list {
+  max-height: 46vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+
+.reply-item textarea {
+  width: 100%;
+  margin-top: var(--space-1);
+}
+
+.reply-comment {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.reply-quote {
+  margin: 0 0 var(--space-2);
+  padding: 0.35rem 0.7rem;
+  border-left: 3px solid var(--border-strong);
+  background: var(--surface-recessed);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.replies-commit {
+  display: block;
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.replies-commit input {
+  width: 100%;
+  margin-top: var(--space-1);
+}
+
+.replies-outcomes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-2) 0;
+}
+
 /* ---------- Command palette ---------- */
 
 .palette-backdrop {

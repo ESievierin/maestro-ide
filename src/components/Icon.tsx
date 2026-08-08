@@ -35,7 +35,9 @@ export type IconName =
   | "history"
   | "upload"
   | "log"
-  | "bot";
+  | "bot"
+  | "pr"
+  | "reply";
 
 /** Path data per icon, drawn on a 24×24 grid. */
 const PATHS: Record<IconName, ReactElement> = {
@@ -89,6 +91,15 @@ const PATHS: Record<IconName, ReactElement> = {
       <circle cx="14.5" cy="12.5" r="0.6" fill="currentColor" />
     </>
   ),
+  pr: (
+    <>
+      <circle cx="6" cy="6" r="2.5" />
+      <circle cx="6" cy="18" r="2.5" />
+      <circle cx="18" cy="18" r="2.5" />
+      <path d="M6 8.5v7M12 6h3a3 3 0 0 1 3 3v6.5M12 6l2.5-2.5M12 6l2.5 2.5" />
+    </>
+  ),
+  reply: <path d="M9.5 4.5 4 10l5.5 5.5M4 10h10a6 6 0 0 1 6 6v3.5" />,
 };
 
 interface Props {

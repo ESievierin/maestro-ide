@@ -11,7 +11,7 @@ export interface GhAccount {
 /** Mirrors `DaemonTask` in src-tauri/src/core/store/. */
 export interface DaemonTask {
   key: string;
-  kind: "issue" | "pr_comment";
+  kind: "pr_review" | "pr_comment" | "jira" | string;
   state: "queued" | "running" | "done" | "failed" | "dismissed";
   title: string;
   payload: string;
@@ -27,6 +27,7 @@ export interface DaemonStatus {
   account: string;
   accounts: GhAccount[];
   repo: string | null;
+  jira_configured: boolean;
   queued: number;
   running: DaemonTask | null;
   last_poll: string | null;

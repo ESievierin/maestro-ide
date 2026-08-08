@@ -5,9 +5,9 @@ import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useDaemon, type DaemonTask } from "../state/daemon";
 
 /**
- * The GitHub daemon: watches issues assigned to the chosen account and new
- * review comments on PRs whose branch has a worktree here, then prepares
- * read-only research sessions. It never posts to GitHub and never commits —
+ * The background daemon: review requests on PRs (→ REVIEW.md), review comments
+ * on the user's own PR branches (→ REVIEW_PLAN.md), and assigned Jira issues
+ * (→ RESEARCH.md). Everything read-only; it never posts and never commits —
  * every result waits for the human.
  */
 export function DaemonPanel({ onClose }: { onClose: () => void }) {
@@ -34,9 +34,10 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
           <Icon name="bot" /> GitHub daemon
         </h3>
         <p className="hint">
-          Polls GitHub for issues assigned to the selected account and for new review comments on
-          PRs whose branch has a worktree here, then prepares read-only research sessions
-          (RESEARCH.md / REVIEW_PLAN.md). It never posts to GitHub and never commits.
+          Watches for PRs where the selected account is asked to review (→ REVIEW.md), new review
+          comments on PRs whose branch has a worktree here (→ REVIEW_PLAN.md), and Jira issues
+          assigned to you (→ RESEARCH.md, needs <code>jira_*</code> in config.toml). Everything runs
+          read-only; it never posts to GitHub/Jira and never commits.
         </p>
 
         {status ? (
@@ -74,6 +75,7 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
 
             <p className="daemon-facts hint">
               Watching: <code>{status.repo ?? "(derived from the open repository's origin)"}</code>
+              {` · Jira ${status.jira_configured ? "connected" : "not configured"}`}
               {status.last_poll &&
                 ` · last poll ${new Date(status.last_poll).toLocaleTimeString()}`}
               {status.utilization !== null && ` · usage ${Math.round(status.utilization)}%`}
@@ -129,7 +131,14 @@ function TaskRow({ task, onDismiss }: { task: DaemonTask; onDismiss: (key: strin
           {task.title}
         </span>
         <span className="ac-desc">
-          {task.kind === "issue" ? "issue" : "PR comment"} · {task.state}
+          {task.kind === "pr_review"
+            ? "review request"
+            : task.kind === "pr_comment"
+              ? "PR comment"
+              : task.kind === "jira"
+                ? "Jira"
+                : task.kind}{" "}
+          · {task.state}
           {task.branch ? ` · ${task.branch}` : ""}
         </span>
       </span>

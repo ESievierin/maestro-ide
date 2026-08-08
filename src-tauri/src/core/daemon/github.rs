@@ -8,8 +8,6 @@
 
 use std::process::{Command, Stdio};
 
-use serde::Deserialize;
-
 use crate::error::{GitErrorKind, MaestroError, Result};
 
 /// One `gh` login known on this machine.
@@ -20,20 +18,17 @@ pub struct GhAccount {
     pub active: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct GhIssue {
-    pub number: u64,
-    pub title: String,
-    #[serde(default)]
-    pub body: Option<String>,
-    pub html_url: String,
-}
-
 #[derive(Clone, Debug)]
 pub struct GhPull {
     pub number: u64,
     pub title: String,
+    pub body: String,
+    pub author: String,
     pub head_ref: String,
+    pub head_sha: String,
+    pub url: String,
+    /// Logins whose review is currently requested on this PR.
+    pub requested_reviewers: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -52,23 +47,64 @@ pub trait GhProvider: Send + Sync {
     /// The token for `account` — the guard that the daemon acts as who it
     /// should: no token, no polling.
     fn token(&self, account: &str) -> Result<String>;
-    /// Open issues in `slug` assigned to `login` (pull requests excluded).
-    fn my_issues(&self, token: &str, slug: &str, login: &str) -> Result<Vec<GhIssue>>;
     /// Open pull requests in `slug`.
     fn open_pulls(&self, token: &str, slug: &str) -> Result<Vec<GhPull>>;
     /// Review comments of one pull request.
     fn pull_comments(&self, token: &str, slug: &str, number: u64) -> Result<Vec<GhComment>>;
+
+    /// `gh pr create` in `cwd` — returns the new PR's URL. User-initiated only;
+    /// the daemon never calls this.
+    fn create_pr(
+        &self,
+        _token: &str,
+        _cwd: &std::path::Path,
+        _base: &str,
+        _head: &str,
+        _title: &str,
+        _body: &str,
+    ) -> Result<String> {
+        Err(MaestroError::Config {
+            message: "create_pr is not supported by this provider".into(),
+        })
+    }
+
+    /// Reply to a PR review comment — returns the reply's URL. User-initiated
+    /// only; the daemon never calls this.
+    fn reply_to_comment(
+        &self,
+        _token: &str,
+        _slug: &str,
+        _pr: u64,
+        _comment_id: u64,
+        _body: &str,
+    ) -> Result<String> {
+        Err(MaestroError::Config {
+            message: "reply_to_comment is not supported by this provider".into(),
+        })
+    }
 }
 
 pub struct GhCli;
 
 impl GhCli {
     fn run(&self, args: &[&str], token: Option<&str>) -> Result<String> {
+        self.run_in(args, token, None)
+    }
+
+    fn run_in(
+        &self,
+        args: &[&str],
+        token: Option<&str>,
+        cwd: Option<&std::path::Path>,
+    ) -> Result<String> {
         let mut cmd = Command::new("gh");
         cmd.args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
         if let Some(token) = token {
             cmd.env("GH_TOKEN", token);
         }
@@ -112,19 +148,6 @@ impl GhProvider for GhCli {
         Ok(token)
     }
 
-    fn my_issues(&self, token: &str, slug: &str, login: &str) -> Result<Vec<GhIssue>> {
-        let path = format!("repos/{slug}/issues?assignee={login}&state=open&per_page=50");
-        let out = self.run(&["api", &path], Some(token))?;
-        let raw: Vec<serde_json::Value> = serde_json::from_str(&out).map_err(bad_json)?;
-        let issues = raw
-            .into_iter()
-            // The issues endpoint also returns PRs; those have a pull_request key.
-            .filter(|v| v.get("pull_request").is_none())
-            .filter_map(|v| serde_json::from_value::<GhIssue>(v).ok())
-            .collect();
-        Ok(issues)
-    }
-
     fn open_pulls(&self, token: &str, slug: &str) -> Result<Vec<GhPull>> {
         let path = format!("repos/{slug}/pulls?state=open&per_page=50");
         let out = self.run(&["api", &path], Some(token))?;
@@ -135,7 +158,39 @@ impl GhProvider for GhCli {
                 Some(GhPull {
                     number: v.get("number")?.as_u64()?,
                     title: v.get("title")?.as_str()?.to_string(),
+                    body: v
+                        .get("body")
+                        .and_then(|b| b.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    author: v
+                        .get("user")
+                        .and_then(|u| u.get("login"))
+                        .and_then(|l| l.as_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
                     head_ref: v.get("head")?.get("ref")?.as_str()?.to_string(),
+                    head_sha: v
+                        .get("head")
+                        .and_then(|h| h.get("sha"))
+                        .and_then(|s| s.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    url: v
+                        .get("html_url")
+                        .and_then(|u| u.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    requested_reviewers: v
+                        .get("requested_reviewers")
+                        .and_then(|r| r.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|u| u.get("login").and_then(|l| l.as_str()))
+                                .map(|l| l.to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 })
             })
             .collect())
@@ -169,6 +224,53 @@ impl GhProvider for GhCli {
                 })
             })
             .collect())
+    }
+
+    fn create_pr(
+        &self,
+        token: &str,
+        cwd: &std::path::Path,
+        base: &str,
+        head: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<String> {
+        let out = self.run_in(
+            &[
+                "pr", "create", "--base", base, "--head", head, "--title", title, "--body", body,
+            ],
+            Some(token),
+            Some(cwd),
+        )?;
+        // gh prints the PR URL as the last non-empty stdout line.
+        Ok(out
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .to_string())
+    }
+
+    fn reply_to_comment(
+        &self,
+        token: &str,
+        slug: &str,
+        pr: u64,
+        comment_id: u64,
+        body: &str,
+    ) -> Result<String> {
+        let path = format!("repos/{slug}/pulls/{pr}/comments/{comment_id}/replies");
+        let out = self.run(
+            &["api", "-X", "POST", &path, "-f", &format!("body={body}")],
+            Some(token),
+        )?;
+        let parsed: serde_json::Value = serde_json::from_str(&out).map_err(bad_json)?;
+        Ok(parsed
+            .get("html_url")
+            .and_then(|u| u.as_str())
+            .unwrap_or_default()
+            .to_string())
     }
 }
 

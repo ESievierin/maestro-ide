@@ -1,14 +1,22 @@
-//! GitHub daemon (Этап 3): watches the repository for work addressed to the
-//! user and turns it into prepared, human-gated sessions.
+//! Background daemon (Этап 3): watches GitHub and Jira for work addressed to
+//! the user and turns it into prepared, human-gated sessions.
 //!
-//! Two flows, both deliberately read-only:
-//! - **issue assigned to the configured account** → research worktree + a
-//!   plan-mode session writing `RESEARCH.md`;
-//! - **new review comment on a PR whose head branch has a worktree here** → a
-//!   read-only session that verifies the comment against the diff and writes
-//!   `REVIEW_PLAN.md` with a resolution plan and draft replies. Nothing is
-//!   ever posted to GitHub and nothing is committed — acting on the plan is
-//!   the human's move, through the ordinary (gated) session flow.
+//! Three flows, all deliberately read-only:
+//! - **review requested on a PR** (the configured account is in
+//!   `requested_reviewers`) → fetch the PR branch, get a worktree on it, and
+//!   run a plan-mode session that writes `REVIEW.md`: findings per file,
+//!   questions, and draft review comments. Re-triggers when the PR head moves.
+//! - **new review comment on a PR whose head branch has a worktree here**
+//!   (someone reviewing *your* work) → a read-only session that verifies the
+//!   comment against the diff and writes `REVIEW_PLAN.md` with a resolution
+//!   plan and draft replies.
+//! - **Jira issue assigned to you** (only when `jira_base_url`/`jira_email`/
+//!   `jira_token` are configured) → research worktree + a plan-mode session
+//!   writing `RESEARCH.md`.
+//!
+//! Nothing is ever posted to GitHub/Jira and nothing is committed — acting on
+//! the prepared output is the human's move, through the ordinary (gated)
+//! session flow.
 //!
 //! Off by default (`daemon_enabled`). One task runs at a time; new work waits
 //! in a persistent queue that survives restarts without duplicating anything
@@ -16,8 +24,14 @@
 //! eating the 5-hour window interactive work needs.
 
 pub mod github;
+pub mod jira;
 
 pub use github::{GhAccount, GhCli, GhProvider};
+pub use jira::{JiraCli, JiraConfig, JiraProvider};
+
+use jira::{
+    DEFAULT_JQL, SETTING_JIRA_BASE_URL, SETTING_JIRA_EMAIL, SETTING_JIRA_JQL, SETTING_JIRA_TOKEN,
+};
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -62,6 +76,8 @@ pub struct DaemonStatus {
     pub accounts: Vec<GhAccount>,
     /// Repository being watched (`owner/name`), once resolved.
     pub repo: Option<String>,
+    /// Whether the Jira flow has credentials configured.
+    pub jira_configured: bool,
     pub queued: usize,
     pub running: Option<DaemonTask>,
     pub last_poll: Option<DateTime<Utc>>,
@@ -84,6 +100,9 @@ pub trait DaemonExec: Send + Sync {
         slug: &str,
         known_branch: Option<&str>,
     ) -> Result<(String, String)>;
+    /// Get-or-create a worktree on a PR's head branch for reviewing it —
+    /// fetching the branch from origin when it does not exist locally.
+    fn ensure_review_worktree(&self, head_ref: &str) -> Result<(String, String)>;
     /// Spawn a session; returns its id.
     fn spawn(&self, params: SpawnParams) -> Result<String>;
 }
@@ -144,6 +163,29 @@ impl DaemonExec for RealDaemonExec {
         Ok((branch, info.path.to_string_lossy().into_owned()))
     }
 
+    fn ensure_review_worktree(&self, head_ref: &str) -> Result<(String, String)> {
+        if let Some(found) = self.worktree_for_branch(head_ref)? {
+            // Already tracking this PR locally; refresh best-effort so the
+            // review sees the latest push (a stale copy still beats a failure).
+            if let Err(err) = self.worktrees.fetch_branch(head_ref) {
+                tracing::debug!(head_ref, error = %err, "review branch refresh failed");
+            }
+            return Ok(found);
+        }
+        self.worktrees.fetch_branch(head_ref)?;
+        let info = self.worktrees.create(CreateWorktreeRequest {
+            existing_branch: Some(head_ref.to_string()),
+            kind: None,
+            task_id: None,
+            slug: None,
+            base: None,
+        })?;
+        Ok((
+            info.branch.unwrap_or_else(|| head_ref.to_string()),
+            info.path.to_string_lossy().into_owned(),
+        ))
+    }
+
     fn spawn(&self, params: SpawnParams) -> Result<String> {
         Ok(self.sessions.spawn(params)?.id)
     }
@@ -160,6 +202,7 @@ struct DaemonRuntime {
 pub struct DaemonManager {
     store: Arc<dyn Store>,
     gh: Arc<dyn GhProvider>,
+    jira: Arc<dyn JiraProvider>,
     exec: Arc<dyn DaemonExec>,
     bus: EventBus,
     runtime: Mutex<DaemonRuntime>,
@@ -169,6 +212,7 @@ impl DaemonManager {
     pub fn new(
         store: Arc<dyn Store>,
         gh: Arc<dyn GhProvider>,
+        jira: Arc<dyn JiraProvider>,
         exec: Arc<dyn DaemonExec>,
         bus: EventBus,
     ) -> Self {
@@ -182,6 +226,7 @@ impl DaemonManager {
         Self {
             store,
             gh,
+            jira,
             exec,
             bus,
             runtime: Mutex::new(DaemonRuntime {
@@ -216,15 +261,7 @@ impl DaemonManager {
 
     /// The account the daemon acts as: the setting, else gh's active account.
     fn account(&self, accounts: &[GhAccount]) -> String {
-        self.setting(SETTING_DAEMON_ACCOUNT)
-            .filter(|a| !a.trim().is_empty())
-            .unwrap_or_else(|| {
-                accounts
-                    .iter()
-                    .find(|a| a.active)
-                    .map(|a| a.login.clone())
-                    .unwrap_or_default()
-            })
+        resolve_account(self.store.as_ref(), accounts)
     }
 
     pub fn status(&self) -> DaemonStatus {
@@ -239,6 +276,7 @@ impl DaemonManager {
             account,
             accounts,
             repo: runtime.as_ref().and_then(|r| r.repo.clone()),
+            jira_configured: self.jira_config().is_some(),
             queued,
             running,
             last_poll: runtime.as_ref().and_then(|r| r.last_poll),
@@ -310,22 +348,30 @@ impl DaemonManager {
             .unwrap_or(true)
     }
 
-    /// One polling pass: resolve account/repo, fetch, enqueue what's new.
-    /// Public for tests; errors land in `last_error` (and the status chip),
-    /// never panic the loop.
+    /// One polling pass: GitHub (review requests + comments on own PRs) and
+    /// Jira (when configured) are independent — one failing must not silence
+    /// the other. Public for tests; errors land in `last_error` (and the
+    /// status chip), never panic the loop.
     pub fn poll_once(&self) {
-        let result = self.try_poll();
+        let gh_result = self.poll_github();
+        let jira_result = self.poll_jira();
+        let error = match (gh_result, jira_result) {
+            (Ok(()), Ok(())) => None,
+            (Err(gh), Ok(())) => Some(gh.to_string()),
+            (Ok(()), Err(jira)) => Some(format!("Jira: {jira}")),
+            (Err(gh), Err(jira)) => Some(format!("{gh}; Jira: {jira}")),
+        };
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.last_poll = Some(Utc::now());
-            runtime.last_error = result.as_ref().err().map(|e| e.to_string());
+            runtime.last_error = error.clone();
         }
         self.bus.publish(Event::DaemonUpdated {});
-        if let Err(err) = result {
+        if let Some(err) = error {
             tracing::warn!(error = %err, "daemon poll failed");
         }
     }
 
-    fn try_poll(&self) -> Result<()> {
+    fn poll_github(&self) -> Result<()> {
         let accounts = self.gh.accounts()?;
         let account = self.account(&accounts);
         if account.is_empty() {
@@ -341,26 +387,27 @@ impl DaemonManager {
 
         let mut new_tasks = 0usize;
 
-        for issue in self.gh.my_issues(&token, &slug, &account)? {
-            let key = format!("issue:{slug}#{}", issue.number);
-            let payload = serde_json::json!({
-                "number": issue.number,
-                "title": issue.title,
-                "body": issue.body.clone().unwrap_or_default(),
-                "url": issue.html_url,
-            });
-            if self.enqueue(
-                &key,
-                "issue",
-                &format!("#{} {}", issue.number, issue.title),
-                &payload,
-            )? {
-                new_tasks += 1;
-            }
-        }
-
         for pull in self.gh.open_pulls(&token, &slug)? {
-            // Only PRs whose head branch has a worktree here are ours to watch.
+            // Someone wants this account's review → prepare one, re-keyed per
+            // head SHA so a new push produces a fresh review pass.
+            if pull.requested_reviewers.iter().any(|r| r == &account) {
+                let key = format!("pr-review:{slug}#{}:{}", pull.number, pull.head_sha);
+                let payload = serde_json::json!({
+                    "pr": pull.number,
+                    "pr_title": pull.title,
+                    "pr_body": pull.body,
+                    "author": pull.author,
+                    "head_ref": pull.head_ref,
+                    "head_sha": pull.head_sha,
+                    "url": pull.url,
+                });
+                let title = format!("PR #{} review requested: {}", pull.number, pull.title);
+                if self.enqueue(&key, "pr_review", &title, &payload)? {
+                    new_tasks += 1;
+                }
+            }
+
+            // Comments only matter on PRs whose head branch we work on here.
             if self.exec.worktree_for_branch(&pull.head_ref)?.is_none() {
                 continue;
             }
@@ -384,7 +431,50 @@ impl DaemonManager {
         }
 
         if new_tasks > 0 {
-            tracing::info!(new_tasks, repo = %slug, "daemon queued new work");
+            tracing::info!(new_tasks, repo = %slug, "daemon queued new GitHub work");
+        }
+        Ok(())
+    }
+
+    /// The Jira credentials, when all three are configured.
+    fn jira_config(&self) -> Option<JiraConfig> {
+        let base_url = self.setting(SETTING_JIRA_BASE_URL)?;
+        let email = self.setting(SETTING_JIRA_EMAIL)?;
+        let token = self.setting(SETTING_JIRA_TOKEN)?;
+        if base_url.trim().is_empty() || email.trim().is_empty() || token.trim().is_empty() {
+            return None;
+        }
+        Some(JiraConfig {
+            base_url,
+            email,
+            token,
+            jql: self
+                .setting(SETTING_JIRA_JQL)
+                .filter(|j| !j.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_JQL.to_string()),
+        })
+    }
+
+    fn poll_jira(&self) -> Result<()> {
+        let Some(config) = self.jira_config() else {
+            return Ok(()); // not configured — the flow simply does not exist
+        };
+        let mut new_tasks = 0usize;
+        for issue in self.jira.my_issues(&config)? {
+            let key = format!("jira:{}", issue.key);
+            let payload = serde_json::json!({
+                "key": issue.key,
+                "summary": issue.summary,
+                "description": issue.description,
+                "url": issue.url,
+            });
+            let title = format!("{} {}", issue.key, issue.summary);
+            if self.enqueue(&key, "jira", &title, &payload)? {
+                new_tasks += 1;
+            }
+        }
+        if new_tasks > 0 {
+            tracing::info!(new_tasks, "daemon queued new Jira work");
         }
         Ok(())
     }
@@ -463,29 +553,92 @@ impl DaemonManager {
                 message: format!("corrupt daemon task payload: {err}"),
             })?;
         match task.kind.as_str() {
-            "issue" => self.start_issue(task, &payload),
+            "pr_review" => self.start_pr_review(task, &payload),
             "pr_comment" => self.start_pr_comment(task, &payload),
-            other => Err(MaestroError::InvalidData {
-                message: format!("unknown daemon task kind: {other}"),
-            }),
+            "jira" => self.start_jira(task, &payload),
+            // "issue" is the retired GitHub-issue flow; anything queued by an
+            // older build is quietly retired with it.
+            other => {
+                self.store
+                    .update_daemon_task(&task.key, "dismissed", None, None)?;
+                tracing::info!(key = %task.key, kind = other, "legacy daemon task dismissed");
+                Ok(())
+            }
         }
     }
 
-    fn start_issue(&self, task: &DaemonTask, payload: &serde_json::Value) -> Result<()> {
-        let number = payload.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-        let title = payload.get("title").and_then(|t| t.as_str()).unwrap_or("");
-        let body = payload.get("body").and_then(|b| b.as_str()).unwrap_or("");
+    fn start_pr_review(&self, task: &DaemonTask, payload: &serde_json::Value) -> Result<()> {
+        let pr = payload.get("pr").and_then(|n| n.as_u64()).unwrap_or(0);
+        let pr_title = payload
+            .get("pr_title")
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        let pr_body = payload
+            .get("pr_body")
+            .and_then(|b| b.as_str())
+            .unwrap_or("");
+        let author = payload.get("author").and_then(|a| a.as_str()).unwrap_or("");
+        let head_ref = payload
+            .get("head_ref")
+            .and_then(|h| h.as_str())
+            .unwrap_or("");
         let url = payload.get("url").and_then(|u| u.as_str()).unwrap_or("");
 
-        let (branch, cwd) = self.exec.ensure_research_worktree(
-            &format!("GH-{number}"),
-            title,
-            task.branch.as_deref(),
-        )?;
+        let (branch, cwd) = self.exec.ensure_review_worktree(head_ref)?;
 
         let prompt = format!(
-            "You are doing preliminary research for a GitHub issue that was just assigned.\n\n\
-             Issue #{number}: {title}\n{url}\n\n{body}\n\n\
+            "Your review was requested on PR #{pr} by {author}.\n\n\
+             Title: {pr_title}\n{url}\n\nPR description:\n{pr_body}\n\n\
+             This worktree has the PR branch checked out. Review the changes this branch \
+             introduces relative to its base (use read-only git commands like \
+             `git log`/`git diff` against the base branch). Write REVIEW.md in the worktree \
+             root with: a one-paragraph summary of what the PR does, findings ordered by \
+             severity (each with file:line and a concrete explanation), questions for the \
+             author, and a draft review comment per finding, ready to paste. \
+             Do NOT modify any files, do NOT commit, and do NOT post anything to GitHub — \
+             the human decides what feedback to send."
+        );
+        let session_id = self.exec.spawn(SpawnParams {
+            branch: branch.clone(),
+            cwd,
+            session_type: SessionType::Research,
+            model: self
+                .setting(SETTING_DAEMON_VERIFY_MODEL)
+                .filter(|m| !m.is_empty()),
+            effort: None,
+            permission_mode: Some("plan".into()),
+            thinking: None,
+            tools_profile: None,
+            disallowed_tools: Vec::new(),
+            prompt,
+            resume_from: None,
+        })?;
+
+        self.store
+            .update_daemon_task(&task.key, "running", Some(&branch), Some(&session_id))?;
+        tracing::info!(key = %task.key, branch, session_id, "daemon PR review started");
+        Ok(())
+    }
+
+    fn start_jira(&self, task: &DaemonTask, payload: &serde_json::Value) -> Result<()> {
+        let issue_key = payload.get("key").and_then(|k| k.as_str()).unwrap_or("");
+        let summary = payload
+            .get("summary")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        let description = payload
+            .get("description")
+            .and_then(|d| d.as_str())
+            .unwrap_or("");
+        let url = payload.get("url").and_then(|u| u.as_str()).unwrap_or("");
+
+        let (branch, cwd) =
+            self.exec
+                .ensure_research_worktree(issue_key, summary, task.branch.as_deref())?;
+
+        let prompt = format!(
+            "You are doing preliminary research for a Jira issue that was just assigned.\n\n\
+             {issue_key}: {summary}\n{url}\n\n{description}\n\n\
              Explore the codebase (read-only) and write your findings to RESEARCH.md in the \
              worktree root: what the issue is really about, which files/modules are involved, \
              a suggested approach, open questions, and risks. Do not modify any other files."
@@ -589,19 +742,7 @@ impl DaemonManager {
     /// The `owner/name` to watch: the setting, else derived from the open
     /// repository's `origin` remote.
     fn watched_repo(&self) -> Result<String> {
-        if let Some(repo) = self
-            .setting(SETTING_DAEMON_REPO)
-            .filter(|r| !r.trim().is_empty())
-        {
-            return Ok(repo.trim().to_string());
-        }
-        let path = self.exec.repo_path()?.ok_or_else(|| MaestroError::Config {
-            message: "no repository selected — the daemon has nothing to watch".into(),
-        })?;
-        let url = origin_url(&path)?;
-        github::slug_from_remote_url(&url).ok_or_else(|| MaestroError::Config {
-            message: format!("could not derive owner/name from remote '{url}' — set `daemon_repo`"),
-        })
+        resolve_slug(self.store.as_ref(), self.exec.repo_path()?.as_deref())
     }
 
     fn setting(&self, key: &str) -> Option<String> {
@@ -614,6 +755,44 @@ impl DaemonManager {
             runtime.utilization = utilization;
         }
     }
+}
+
+/// The gh login the app acts as: the `daemon_account` setting when set, else
+/// gh's globally active account. Shared by the daemon and the PR actions so
+/// "who am I on GitHub" has exactly one answer.
+pub fn resolve_account(store: &dyn Store, accounts: &[GhAccount]) -> String {
+    store
+        .get_setting(SETTING_DAEMON_ACCOUNT)
+        .ok()
+        .flatten()
+        .filter(|a| !a.trim().is_empty())
+        .unwrap_or_else(|| {
+            accounts
+                .iter()
+                .find(|a| a.active)
+                .map(|a| a.login.clone())
+                .unwrap_or_default()
+        })
+}
+
+/// The `owner/name` this app talks to: the `daemon_repo` setting when set,
+/// else derived from the open repository's `origin` remote.
+pub fn resolve_slug(store: &dyn Store, repo_path: Option<&std::path::Path>) -> Result<String> {
+    if let Some(repo) = store
+        .get_setting(SETTING_DAEMON_REPO)
+        .ok()
+        .flatten()
+        .filter(|r| !r.trim().is_empty())
+    {
+        return Ok(repo.trim().to_string());
+    }
+    let path = repo_path.ok_or_else(|| MaestroError::Config {
+        message: "no repository selected".into(),
+    })?;
+    let url = origin_url(path)?;
+    github::slug_from_remote_url(&url).ok_or_else(|| MaestroError::Config {
+        message: format!("could not derive owner/name from remote '{url}' — set `daemon_repo`"),
+    })
 }
 
 /// `git remote get-url origin` in `repo` — no gh, no account dependency.
@@ -642,14 +821,14 @@ fn origin_url(repo: &std::path::Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::github::{GhComment, GhIssue, GhPull};
+    use super::github::{GhComment, GhPull};
+    use super::jira::JiraIssue;
     use super::*;
     use crate::core::store::SqliteStore;
     use std::sync::Mutex as StdMutex;
 
     #[derive(Default)]
     struct MockGh {
-        issues: Vec<GhIssue>,
         pulls: Vec<GhPull>,
         comments: Vec<GhComment>,
         token_fails: bool,
@@ -676,9 +855,6 @@ mod tests {
             }
             Ok(format!("tok-{account}"))
         }
-        fn my_issues(&self, _t: &str, _s: &str, _l: &str) -> Result<Vec<GhIssue>> {
-            Ok(self.issues.clone())
-        }
         fn open_pulls(&self, _t: &str, _s: &str) -> Result<Vec<GhPull>> {
             Ok(self.pulls.clone())
         }
@@ -688,9 +864,27 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct MockJira {
+        issues: Vec<JiraIssue>,
+        fails: bool,
+    }
+
+    impl JiraProvider for MockJira {
+        fn my_issues(&self, _config: &JiraConfig) -> Result<Vec<JiraIssue>> {
+            if self.fails {
+                return Err(MaestroError::Config {
+                    message: "401 from Jira".into(),
+                });
+            }
+            Ok(self.issues.clone())
+        }
+    }
+
+    #[derive(Default)]
     struct MockExec {
         worktrees: Vec<String>,
         created: StdMutex<Vec<(String, String)>>,
+        fetched: StdMutex<Vec<String>>,
         spawned: StdMutex<Vec<SpawnParams>>,
     }
 
@@ -718,6 +912,10 @@ mod tests {
                 .push((task_id.to_string(), slug.to_string()));
             Ok((branch.clone(), format!("/wt/{branch}")))
         }
+        fn ensure_review_worktree(&self, head_ref: &str) -> Result<(String, String)> {
+            self.fetched.lock().unwrap().push(head_ref.to_string());
+            Ok((head_ref.to_string(), format!("/wt/{head_ref}")))
+        }
         fn spawn(&self, params: SpawnParams) -> Result<String> {
             let id = format!("sess-{}", self.spawned.lock().unwrap().len() + 1);
             self.spawned.lock().unwrap().push(params);
@@ -725,36 +923,73 @@ mod tests {
         }
     }
 
-    fn manager(gh: MockGh, exec: MockExec) -> (Arc<DaemonManager>, Arc<MockExec>, EventBus) {
+    fn manager_full(
+        gh: MockGh,
+        jira: MockJira,
+        exec: MockExec,
+        with_jira_config: bool,
+    ) -> (Arc<DaemonManager>, Arc<MockExec>, EventBus) {
         let bus = EventBus::new();
         let store = Arc::new(SqliteStore::open_in_memory().unwrap());
         store.set_setting(SETTING_DAEMON_ENABLED, "true").unwrap();
         store
             .set_setting(SETTING_DAEMON_REPO, "owner/repo")
             .unwrap();
+        if with_jira_config {
+            store
+                .set_setting(SETTING_JIRA_BASE_URL, "https://org.atlassian.net")
+                .unwrap();
+            store.set_setting(SETTING_JIRA_EMAIL, "me@org.com").unwrap();
+            store.set_setting(SETTING_JIRA_TOKEN, "tok").unwrap();
+        }
         let exec = Arc::new(exec);
         let mgr = Arc::new(DaemonManager::new(
             store,
             Arc::new(gh),
+            Arc::new(jira),
             exec.clone(),
             bus.clone(),
         ));
         (mgr, exec, bus)
     }
 
-    fn issue(number: u64, title: &str) -> GhIssue {
-        GhIssue {
+    fn manager(gh: MockGh, exec: MockExec) -> (Arc<DaemonManager>, Arc<MockExec>, EventBus) {
+        manager_full(gh, MockJira::default(), exec, false)
+    }
+
+    fn pull(number: u64, title: &str, head_ref: &str) -> GhPull {
+        GhPull {
             number,
             title: title.into(),
-            body: Some("details".into()),
-            html_url: format!("https://github.com/owner/repo/issues/{number}"),
+            body: "PR body".into(),
+            author: "colleague".into(),
+            head_ref: head_ref.into(),
+            head_sha: format!("sha-{number}"),
+            url: format!("https://github.com/owner/repo/pull/{number}"),
+            requested_reviewers: Vec::new(),
+        }
+    }
+
+    fn review_request(number: u64, title: &str, head_ref: &str) -> GhPull {
+        GhPull {
+            requested_reviewers: vec!["personal".into()],
+            ..pull(number, title, head_ref)
+        }
+    }
+
+    fn jira_issue(key: &str, summary: &str) -> JiraIssue {
+        JiraIssue {
+            key: key.into(),
+            summary: summary.into(),
+            description: "details".into(),
+            url: format!("https://org.atlassian.net/browse/{key}"),
         }
     }
 
     #[test]
     fn polling_is_idempotent_across_ticks() {
         let gh = MockGh {
-            issues: vec![issue(7, "Fix retries")],
+            pulls: vec![review_request(12, "Add retry", "feature/retry")],
             ..Default::default()
         };
         let (mgr, _exec, _bus) = manager(gh, MockExec::default());
@@ -762,14 +997,18 @@ mod tests {
         mgr.poll_once();
         mgr.poll_once();
         let tasks = mgr.list_tasks().unwrap();
-        assert_eq!(tasks.len(), 1, "one issue, one task, however often we poll");
+        assert_eq!(
+            tasks.len(),
+            1,
+            "one review request, one task, however often we poll"
+        );
         assert_eq!(tasks[0].state, "queued");
     }
 
     #[test]
-    fn issue_flow_creates_research_worktree_and_plan_session() {
+    fn review_request_fetches_the_pr_branch_and_spawns_a_review_session() {
         let gh = MockGh {
-            issues: vec![issue(7, "Fix retries")],
+            pulls: vec![review_request(12, "Add retry", "feature/retry")],
             ..Default::default()
         };
         let (mgr, exec, _bus) = manager(gh, MockExec::default());
@@ -777,36 +1016,61 @@ mod tests {
         mgr.poll_once();
         mgr.drive_queue();
 
-        let created = exec.created.lock().unwrap();
-        assert_eq!(created.len(), 1);
-        assert_eq!(created[0].0, "GH-7");
-
+        assert_eq!(
+            exec.fetched.lock().unwrap().as_slice(),
+            ["feature/retry"],
+            "the PR head branch is materialized locally"
+        );
         let spawned = exec.spawned.lock().unwrap();
         assert_eq!(spawned.len(), 1);
         assert_eq!(spawned[0].session_type, SessionType::Research);
         assert_eq!(spawned[0].permission_mode.as_deref(), Some("plan"));
-        assert!(spawned[0].prompt.contains("Fix retries"));
-        assert!(spawned[0].prompt.contains("RESEARCH.md"));
+        assert!(spawned[0].prompt.contains("REVIEW.md"));
+        assert!(spawned[0].prompt.contains("Add retry"));
+        assert!(spawned[0].prompt.contains("do NOT post anything"));
 
         let running = mgr.store.running_daemon_task().unwrap().expect("running");
-        assert_eq!(running.session_id.as_deref(), Some("sess-1"));
-        assert_eq!(running.branch.as_deref(), Some("research/GH-7-x"));
+        assert_eq!(running.branch.as_deref(), Some("feature/retry"));
     }
 
     #[test]
-    fn pr_comment_flow_routes_by_head_ref_and_dismisses_when_gone() {
+    fn a_new_push_to_a_reviewed_pr_queues_a_fresh_review() {
+        let mut first = review_request(12, "Add retry", "feature/retry");
+        first.head_sha = "sha-old".into();
+        let gh = MockGh {
+            pulls: vec![first],
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager(gh, MockExec::default());
+        mgr.poll_once();
+        assert_eq!(mgr.list_tasks().unwrap().len(), 1);
+
+        // Same PR, new head SHA → a second, distinct task.
+        let mut second = review_request(12, "Add retry", "feature/retry");
+        second.head_sha = "sha-new".into();
+        let gh = MockGh {
+            pulls: vec![second],
+            ..Default::default()
+        };
+        let store = mgr.store.clone();
+        let bus = EventBus::new();
+        let mgr2 = Arc::new(DaemonManager::new(
+            store,
+            Arc::new(gh),
+            Arc::new(MockJira::default()),
+            Arc::new(MockExec::default()),
+            bus,
+        ));
+        mgr2.poll_once();
+        assert_eq!(mgr2.list_tasks().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn pr_comment_flow_routes_by_head_ref_and_skips_foreign_prs() {
         let gh = MockGh {
             pulls: vec![
-                GhPull {
-                    number: 12,
-                    title: "Add retry".into(),
-                    head_ref: "impl/T-1-x".into(),
-                },
-                GhPull {
-                    number: 13,
-                    title: "Not ours".into(),
-                    head_ref: "someone/elses-branch".into(),
-                },
+                pull(12, "Add retry", "impl/T-1-x"),
+                pull(13, "Not ours", "someone/elses-branch"),
             ],
             comments: vec![GhComment {
                 id: 501,
@@ -839,9 +1103,65 @@ mod tests {
     }
 
     #[test]
+    fn jira_issue_becomes_a_research_worktree_keyed_by_issue_key() {
+        let jira = MockJira {
+            issues: vec![jira_issue("ABC-123", "Fix the retry loop")],
+            ..Default::default()
+        };
+        let (mgr, exec, _bus) = manager_full(MockGh::default(), jira, MockExec::default(), true);
+
+        mgr.poll_once();
+        mgr.drive_queue();
+
+        let created = exec.created.lock().unwrap();
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].0, "ABC-123", "the Jira key is the task id");
+
+        let spawned = exec.spawned.lock().unwrap();
+        assert_eq!(spawned.len(), 1);
+        assert_eq!(spawned[0].permission_mode.as_deref(), Some("plan"));
+        assert!(spawned[0].prompt.contains("ABC-123"));
+        assert!(spawned[0].prompt.contains("RESEARCH.md"));
+    }
+
+    #[test]
+    fn jira_stays_dormant_without_credentials() {
+        let jira = MockJira {
+            issues: vec![jira_issue("ABC-123", "Fix the retry loop")],
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager_full(MockGh::default(), jira, MockExec::default(), false);
+        mgr.poll_once();
+        assert_eq!(mgr.list_tasks().unwrap().len(), 0);
+        assert!(!mgr.status().jira_configured);
+    }
+
+    #[test]
+    fn a_jira_failure_does_not_block_github_polling() {
+        let gh = MockGh {
+            pulls: vec![review_request(12, "Add retry", "feature/retry")],
+            ..Default::default()
+        };
+        let jira = MockJira {
+            fails: true,
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager_full(gh, jira, MockExec::default(), true);
+        mgr.poll_once();
+
+        assert_eq!(
+            mgr.list_tasks().unwrap().len(),
+            1,
+            "the GitHub task is queued despite the Jira error"
+        );
+        let error = mgr.status().last_error.expect("error is surfaced");
+        assert!(error.contains("Jira"), "the error names the failing side");
+    }
+
+    #[test]
     fn usage_gate_holds_the_queue_until_the_window_clears() {
         let gh = MockGh {
-            issues: vec![issue(7, "Fix retries")],
+            pulls: vec![review_request(12, "Add retry", "feature/retry")],
             ..Default::default()
         };
         let (mgr, exec, _bus) = manager(gh, MockExec::default());
@@ -878,7 +1198,10 @@ mod tests {
     #[test]
     fn session_completion_finishes_the_task_and_frees_the_lane() {
         let gh = MockGh {
-            issues: vec![issue(7, "Fix retries"), issue(8, "Add docs")],
+            pulls: vec![
+                review_request(12, "Add retry", "feature/retry"),
+                review_request(13, "Add docs", "feature/docs"),
+            ],
             ..Default::default()
         };
         let (mgr, exec, _bus) = manager(gh, MockExec::default());
@@ -895,5 +1218,29 @@ mod tests {
             1,
             "the finished task is recorded as done"
         );
+    }
+
+    #[test]
+    fn legacy_issue_tasks_are_dismissed_not_crashed() {
+        let (mgr, exec, _bus) = manager(MockGh::default(), MockExec::default());
+        let now = Utc::now();
+        mgr.store
+            .insert_daemon_task(&DaemonTask {
+                key: "issue:owner/repo#7".into(),
+                kind: "issue".into(),
+                state: "queued".into(),
+                title: "#7 Old flow".into(),
+                payload: "{}".into(),
+                branch: None,
+                session_id: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+
+        mgr.drive_queue();
+        assert!(exec.spawned.lock().unwrap().is_empty());
+        let tasks = mgr.list_tasks().unwrap();
+        assert_eq!(tasks[0].state, "dismissed");
     }
 }

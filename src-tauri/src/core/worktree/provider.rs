@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{GitErrorKind, MaestroError, Result};
 
 /// One entry from `git worktree list`.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -141,6 +141,25 @@ pub trait GitProvider: Send + Sync {
     /// that only exists as a remote-tracking branch gets a local tracking branch
     /// created. The caller must ensure `worktree` is clean first.
     fn switch_branch(&self, worktree: &Path, branch: &str) -> Result<()>;
+
+    /// Bring `branch` up to date from origin without checking it out
+    /// (`git fetch origin branch:branch`). When the branch is checked out in
+    /// some worktree that refspec is refused — a plain `git fetch origin branch`
+    /// is used instead, which is enough because a checkout means the branch
+    /// already exists locally. Default: no-op for providers without a network.
+    fn fetch_branch(&self, _repo: &Path, _branch: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Throw away every uncommitted change in `worktree` (`reset --hard` +
+    /// `clean -fd`). Callers park the state in a snapshot first — this is the
+    /// second half of "stash, do something, restore".
+    fn discard_changes(&self, _worktree: &Path) -> Result<()> {
+        Err(MaestroError::Git {
+            kind: GitErrorKind::CommandFailed,
+            message: "discard_changes is not supported by this git provider".into(),
+        })
+    }
 
     /// Stage everything (`git add -A`) and commit with `message` in `worktree`.
     /// Returns the new commit's one-line summary (`<short-sha> <subject>`).

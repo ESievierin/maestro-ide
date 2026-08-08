@@ -53,4 +53,11 @@ export interface MergeOutcome {
   /** True when the primary worktree was switched to the target branch to host the
    * merge (the target was not checked out in any worktree). */
   switched_primary: boolean;
+  /** True when the primary was switched back to its own branch after a clean merge. */
+  switched_back: boolean;
+  /** Snapshot label holding the target's uncommitted changes when they could not be
+   * restored automatically; null when nothing is parked. */
+  parked_changes: string | null;
+  /** True when the target's uncommitted changes were parked and re-applied seamlessly. */
+  restored: boolean;
 }

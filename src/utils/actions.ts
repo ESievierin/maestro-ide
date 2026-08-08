@@ -10,11 +10,16 @@ export function openWorktree(branch: string, target: "explorer" | "editor", file
 
 /** Copy a worktree path with a confirming toast. */
 export async function copyPath(path: string) {
-  await navigator.clipboard.writeText(path);
+  await copyText(path, "Worktree path copied to the clipboard.");
+}
+
+/** Copy arbitrary text with a confirming toast. */
+export async function copyText(text: string, message: string) {
+  await navigator.clipboard.writeText(text);
   const { useToasts } = await import("../state/toasts");
   useToasts.getState().push({
     severity: "info",
     code: "copied",
-    message: "Worktree path copied to the clipboard.",
+    message,
   });
 }

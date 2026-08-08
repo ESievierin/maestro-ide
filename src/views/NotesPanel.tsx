@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { Icon } from "../components/Icon";
 import { useNotes } from "../state/notes";
 import type { WorktreeInfo } from "../types/worktrees";
+import { copyText } from "../utils/actions";
 
 /**
  * `TASK_NOTES.md` of the selected worktree, read-only.
@@ -36,9 +37,19 @@ export function NotesPanel({ worktree }: { worktree: WorktreeInfo }) {
             <span className="count">{new Date(notes.updated_at).toLocaleString()}</span>
           )}
         </h2>
-        <button className="small ghost" disabled={!!loading} onClick={() => void refresh(branch)}>
-          <Icon name="refresh" spin={!!loading} /> Refresh
-        </button>
+        <div className="actions">
+          {notes?.exists && (
+            <button
+              className="small ghost"
+              onClick={() => void copyText(notes.raw, "Task notes copied to the clipboard.")}
+            >
+              <Icon name="copy" /> Copy
+            </button>
+          )}
+          <button className="small ghost" disabled={!!loading} onClick={() => void refresh(branch)}>
+            <Icon name="refresh" spin={!!loading} /> Refresh
+          </button>
+        </div>
       </div>
 
       {error && (

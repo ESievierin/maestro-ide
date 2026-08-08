@@ -12,6 +12,8 @@ export type BusEvent =
   | { type: "worktree.created"; data: { branch: string; path: string } }
   | { type: "worktree.removed"; data: { branch: string } }
   | { type: "worktree.merged"; data: { source: string; target: string } }
+  | { type: "check.started"; data: { branch: string } }
+  | { type: "check.finished"; data: { branch: string; passed: boolean; exit_code: number | null } }
   | {
       type: "session.status_changed";
       data: { session_id: string; branch: string; status: SessionStatus };

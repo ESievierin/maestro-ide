@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Icon, StatusDot } from "../components/Icon";
+import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { SelectMenu, type SelectMenuOption } from "../components/SelectMenu";
 import remarkGfm from "remark-gfm";
 import { activeSessionCount, useSessions } from "../state/sessions";
@@ -541,25 +542,99 @@ function PermissionEntry({
   );
 }
 
+/**
+ * One transcript entry, memoized. During streaming only the tail item's object
+ * identity changes (deltas merge into it), so every settled entry above it —
+ * including its parsed markdown — is skipped entirely on re-render. Long
+ * sessions stay smooth this way; without it the whole transcript re-rendered
+ * per streamed token.
+ */
+const TranscriptEntry = memo(function TranscriptEntry({
+  item,
+  sessionId,
+}: {
+  item: TranscriptItem;
+  sessionId: string;
+}) {
+  switch (item.kind) {
+    case "user":
+      return (
+        <div className="t-user">
+          <Markdown text={item.text} />
+        </div>
+      );
+    case "text":
+      return <StreamedMarkdown text={item.text} />;
+    case "tool_use":
+      return <ToolUseEntry item={item} />;
+    case "thinking":
+      return <ThinkingEntry text={item.text} />;
+    case "denied":
+      return <DeniedEntry item={item} />;
+    case "status":
+      return <div className="t-status">— {item.status.replace("_", " ")} —</div>;
+    case "permission_request":
+      return <PermissionEntry sessionId={sessionId} item={item} />;
+    case "dialog":
+      return (
+        <div className="t-dialog">
+          <div className="t-dialog-title">
+            <Icon name="question" /> {item.title}
+          </div>
+          {item.lines.map((line, j) => (
+            <div key={j} className="t-dialog-line">
+              {line}
+            </div>
+          ))}
+        </div>
+      );
+    case "settings":
+      return (
+        <div className="t-status">
+          <Icon name="sliders" /> {item.text}
+        </div>
+      );
+  }
+});
+
 function TranscriptView({ sessionId, items }: { sessionId: string; items: TranscriptItem[] }) {
-  const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Auto-follow is a *state of the scrollbar*, not a mode: pinned to the bottom
+  // means follow new output; scrolled up to read means stay put and offer a
+  // "latest" jump instead of yanking the user back down mid-read.
+  const followingRef = useRef(true);
+  const [following, setFollowing] = useState(true);
+
+  const scrollToBottom = useCallback(() => {
+    const el = containerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "instant", block: "end" });
-  }, [items]);
+    if (followingRef.current) scrollToBottom();
+  }, [items, scrollToBottom]);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    // The smoothed reveal keeps growing a block's height after `items` itself
-    // last changed — follow that growth too, not just new transcript entries.
-    const observer = new ResizeObserver(() => {
-      bottomRef.current?.scrollIntoView({ behavior: "instant", block: "end" });
+    // The smoothed reveal grows the tail block between `items` updates; watch
+    // the subtree so that growth is followed too (while pinned).
+    const observer = new MutationObserver(() => {
+      if (followingRef.current) scrollToBottom();
     });
-    observer.observe(el);
+    observer.observe(el, { childList: true, subtree: true, characterData: true });
     return () => observer.disconnect();
-  }, []);
+  }, [scrollToBottom]);
+
+  const onScroll = () => {
+    const el = containerRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (nearBottom !== followingRef.current) {
+      followingRef.current = nearBottom;
+      setFollowing(nearBottom);
+    }
+  };
 
   if (items.length === 0) {
     return (
@@ -570,53 +645,24 @@ function TranscriptView({ sessionId, items }: { sessionId: string; items: Transc
   }
 
   return (
-    <div className="transcript" ref={containerRef}>
-      {items.map((item, i) => {
-        switch (item.kind) {
-          case "user":
-            return (
-              <div key={i} className="t-user">
-                <Markdown text={item.text} />
-              </div>
-            );
-          case "text":
-            return <StreamedMarkdown key={i} text={item.text} />;
-          case "tool_use":
-            return <ToolUseEntry key={i} item={item} />;
-          case "thinking":
-            return <ThinkingEntry key={i} text={item.text} />;
-          case "denied":
-            return <DeniedEntry key={i} item={item} />;
-          case "status":
-            return (
-              <div key={i} className="t-status">
-                — {item.status.replace("_", " ")} —
-              </div>
-            );
-          case "permission_request":
-            return <PermissionEntry key={i} sessionId={sessionId} item={item} />;
-          case "dialog":
-            return (
-              <div key={i} className="t-dialog">
-                <div className="t-dialog-title">
-                  <Icon name="question" /> {item.title}
-                </div>
-                {item.lines.map((line, j) => (
-                  <div key={j} className="t-dialog-line">
-                    {line}
-                  </div>
-                ))}
-              </div>
-            );
-          case "settings":
-            return (
-              <div key={i} className="t-status">
-                <Icon name="sliders" /> {item.text}
-              </div>
-            );
-        }
-      })}
-      <div ref={bottomRef} />
+    <div className="transcript-wrap">
+      <div className="transcript" ref={containerRef} onScroll={onScroll}>
+        {items.map((item, i) => (
+          <TranscriptEntry key={i} item={item} sessionId={sessionId} />
+        ))}
+      </div>
+      {!following && (
+        <button
+          className="jump-latest"
+          onClick={() => {
+            followingRef.current = true;
+            setFollowing(true);
+            scrollToBottom();
+          }}
+        >
+          <Icon name="arrow-down" size={12} /> Latest
+        </button>
+      )}
     </div>
   );
 }
@@ -1042,6 +1088,7 @@ function ResumePicker({
   onClose: () => void;
 }) {
   const resumable = sessions.filter((s) => isTerminalStatus(s.status) && s.sdk_session_id);
+  useEscapeToClose(onClose);
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -1221,6 +1268,36 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
     if (session) setSelectedId(session.id);
   };
 
+  /** The first thing the user asked a session — for tab labels and retries. */
+  const firstPrompt = (sessionId: string): string | null => {
+    const item = (transcripts[sessionId] ?? []).find((t) => t.kind === "user");
+    return item && item.kind === "user" ? item.text : null;
+  };
+
+  /** A fresh session with the failed one's settings and opening prompt. */
+  const retry = async (source: Session) => {
+    const prompt = firstPrompt(source.id);
+    if (!prompt) return;
+    const session = await spawn({
+      branch,
+      prompt,
+      session_type: source.session_type,
+      model: source.model ?? undefined,
+      effort: source.effort ?? undefined,
+      permission_mode: source.permission_mode ?? undefined,
+      thinking: source.thinking ?? undefined,
+    });
+    if (session) setSelectedId(session.id);
+  };
+
+  /** Human tab label: the prompt's first words beat `manual · 3f9c2a1b`. */
+  const tabLabel = (s: Session): string => {
+    const prompt = firstPrompt(s.id);
+    if (!prompt) return `${s.session_type} · ${s.id.slice(0, 8)}`;
+    const oneLine = prompt.replace(/\s+/g, " ").trim();
+    return oneLine.length > 26 ? `${oneLine.slice(0, 26)}…` : oneLine;
+  };
+
   return (
     <div className="session-panel">
       <div className="panel-header">
@@ -1242,8 +1319,9 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
             key={s.id}
             className={`session-tab ${s.id === selectedId ? "selected" : ""}`}
             onClick={() => setSelectedId(s.id)}
+            title={`${s.session_type} · ${s.id.slice(0, 8)}`}
           >
-            {s.session_type} · {s.id.slice(0, 8)}
+            {tabLabel(s)}
             {s.permission_mode === READ_ONLY_MODE && <span className="pill">read-only</span>}
             <StatusPill status={s.status} />
           </button>
@@ -1279,6 +1357,15 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
             <div className="actions">
               {isTerminalStatus(selected.status) ? (
                 <>
+                  {selected.status === "failed" && firstPrompt(selected.id) && (
+                    <button
+                      className="small"
+                      onClick={() => void retry(selected)}
+                      title="Fresh session, same settings and opening prompt"
+                    >
+                      <Icon name="refresh" /> Retry
+                    </button>
+                  )}
                   {selected.sdk_session_id && (
                     <button
                       className="small"

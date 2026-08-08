@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../components/Icon";
+import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { usePrompts } from "../state/prompts";
 
 /**
@@ -12,6 +13,7 @@ export function PromptEditor({ onClose }: { onClose: () => void }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  useEscapeToClose(onClose);
 
   useEffect(() => {
     void fetch();

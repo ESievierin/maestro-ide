@@ -11,6 +11,26 @@ export default defineConfig({
   test: {
     environment: "node",
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split the heavyweights out of the entry chunk: less to parse before
+        // first paint, and editing app code no longer invalidates vendor cache.
+        manualChunks: {
+          react: ["react", "react-dom"],
+          codemirror: [
+            "@codemirror/state",
+            "@codemirror/view",
+            "@codemirror/merge",
+            "@codemirror/language",
+            "@codemirror/language-data",
+            "@codemirror/theme-one-dark",
+          ],
+          markdown: ["react-markdown", "remark-gfm"],
+        },
+      },
+    },
+  },
   server: {
     port: 1420,
     strictPort: true,

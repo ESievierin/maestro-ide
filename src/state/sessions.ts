@@ -409,6 +409,33 @@ onBusEvent((event) => {
       if (!state.byBranch[branch]?.some((sess) => sess.id === session_id)) {
         void state.fetch(branch);
       }
+      // "The agent is done" is worth a ping: a toast always, and an OS
+      // notification when the window isn't focused (same opt-in toggle the
+      // attention panel uses). `awaiting_input` is the attention panel's job.
+      if (status === "done" || status === "failed") {
+        void (async () => {
+          const { useToasts } = await import("./toasts");
+          useToasts.getState().push({
+            severity: status === "done" ? "info" : "warning",
+            code: "session",
+            message:
+              status === "done"
+                ? `Session on '${branch}' finished — diff is ready to review.`
+                : `Session on '${branch}' failed.`,
+          });
+          const { useAttention } = await import("./attention");
+          if (useAttention.getState().notificationsEnabled && !document.hasFocus()) {
+            const { sendNotification } = await import("@tauri-apps/plugin-notification");
+            sendNotification({
+              title: "MaestroIDE",
+              body:
+                status === "done"
+                  ? `Session on '${branch}' finished.`
+                  : `Session on '${branch}' failed.`,
+            });
+          }
+        })();
+      }
       break;
     }
     case "session.stream_delta": {

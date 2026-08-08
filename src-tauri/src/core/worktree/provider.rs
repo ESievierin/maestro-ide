@@ -136,6 +136,69 @@ pub trait GitProvider: Send + Sync {
     /// recoverable stopping point, and the working tree is left exactly as git
     /// itself leaves it (conflict markers in place, resolvable with any git tool).
     fn merge_branch(&self, target_worktree: &Path, source_branch: &str) -> Result<MergeOutcome>;
+
+    /// Check `branch` out at `worktree` (`git switch`). Git's DWIM applies: a name
+    /// that only exists as a remote-tracking branch gets a local tracking branch
+    /// created. The caller must ensure `worktree` is clean first.
+    fn switch_branch(&self, worktree: &Path, branch: &str) -> Result<()>;
+
+    /// Stage everything (`git add -A`) and commit with `message` in `worktree`.
+    /// Returns the new commit's one-line summary (`<short-sha> <subject>`).
+    /// Hook failures and "nothing to commit" surface as errors with git's own text.
+    fn commit_all(&self, worktree: &Path, message: &str) -> Result<String>;
+
+    /// Record the worktree's current uncommitted state (tracked + untracked) as
+    /// a named snapshot without changing the working tree. Stash-backed: the
+    /// snapshots survive app restarts and are visible to plain `git stash list`.
+    /// Errors when there is nothing to snapshot.
+    fn snapshot_push(&self, worktree: &Path, label: &str) -> Result<()>;
+
+    /// Snapshots previously taken in `worktree`, newest first. Only entries
+    /// created by [`snapshot_push`] are listed — the user's own stashes are not
+    /// touched or shown.
+    fn snapshot_list(&self, worktree: &Path) -> Result<Vec<Snapshot>>;
+
+    /// Replace the working tree's uncommitted state with snapshot `id`:
+    /// `reset --hard` + `clean -fd`, then apply the snapshot (kept for reuse).
+    /// The caller confirms discarding the current state first.
+    fn snapshot_restore(&self, worktree: &Path, id: &str) -> Result<()>;
+
+    /// Delete snapshot `id`.
+    fn snapshot_drop(&self, worktree: &Path, id: &str) -> Result<()>;
+
+    /// Push `branch` to its remote (`git push -u origin <branch>`), returning
+    /// git's own report. Only ever called from an explicit, user-confirmed
+    /// action — agents' pushes go through the approval gate instead.
+    fn push_branch(&self, worktree: &Path, branch: &str) -> Result<String>;
+
+    /// Commits on `branch` that are not on `base` (`git log base..branch`),
+    /// newest first, capped at `limit`.
+    fn branch_log(
+        &self,
+        repo: &Path,
+        branch: &str,
+        base: &str,
+        limit: usize,
+    ) -> Result<Vec<LogEntry>>;
+}
+
+/// One commit line for the branch log view.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct LogEntry {
+    pub sha: String,
+    pub subject: String,
+    pub author: String,
+    pub date: String,
+}
+
+/// One saved worktree snapshot (a specially-labeled git stash entry).
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct Snapshot {
+    /// Stash reference (`stash@{N}`). Positional — refresh the list before use.
+    pub id: String,
+    pub label: String,
+    /// Git's committer date for the stash entry (ISO-ish, as git prints it).
+    pub created_at: String,
 }
 
 /// Outcome of a merge attempt.

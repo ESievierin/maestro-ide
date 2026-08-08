@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Icon } from "../components/Icon";
+import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useWorktrees } from "../state/worktrees";
 import type { RepoInfo } from "../types/worktrees";
 
@@ -10,6 +11,7 @@ interface Props {
 
 export function CreateWorktreeDialog({ repo, onClose }: Props) {
   const createWorktree = useWorktrees((s) => s.create);
+  useEscapeToClose(onClose);
 
   const [mode, setMode] = useState<"new" | "attach">("new");
   const [kind, setKind] = useState("impl");

@@ -11,7 +11,9 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::core::attention::SETTING_OS_NOTIFICATIONS;
+use crate::core::checks::{SETTING_CHECK_AUTO, SETTING_CHECK_COMMAND};
 use crate::core::gate::SETTING_GATE_COMMIT;
+use crate::core::launcher::SETTING_EDITOR_COMMAND;
 use crate::core::questions::SETTING_LINE_QUESTION_TARGET;
 use crate::core::session::manager::{SETTING_NOTES_FINALIZE_TIMEOUT, SETTING_SINGLE_WRITER_POLICY};
 use crate::core::store::Store;
@@ -51,6 +53,17 @@ const DEFAULT_CONFIG: &str = r#"# MaestroIDE configuration (~/.maestro/config.to
 # How long to wait for an implementation session's last turn to write TASK_NOTES.md
 # when it is closed. 0 disables the finalize step entirely.
 # notes_finalize_timeout_secs = 120
+
+# Editor used by the "Open in editor" button (executable path or name; the worktree
+# path is passed as its argument). Default: auto-detect JetBrains Rider.
+# editor_command = "C:/Program Files/JetBrains/JetBrains Rider 2025.1/bin/rider64.exe"
+
+# Check command run inside a worktree by the "Run checks" action (build, tests,
+# lint — whatever proves the branch is healthy). Empty = feature hidden.
+# check_command = "dotnet build"
+
+# Also run the check automatically whenever a session on the branch finishes.
+# check_auto = false
 "#;
 
 /// Parsed config file. Every field is optional: absent means "leave the current setting".
@@ -63,6 +76,9 @@ pub struct Config {
     pub gate_commit: Option<bool>,
     pub os_notifications: Option<bool>,
     pub notes_finalize_timeout_secs: Option<u64>,
+    pub editor_command: Option<String>,
+    pub check_command: Option<String>,
+    pub check_auto: Option<bool>,
 }
 
 impl Config {
@@ -122,6 +138,9 @@ impl Config {
                 SETTING_NOTES_FINALIZE_TIMEOUT,
                 self.notes_finalize_timeout_secs.map(|s| s.to_string()),
             ),
+            (SETTING_EDITOR_COMMAND, self.editor_command.clone()),
+            (SETTING_CHECK_COMMAND, self.check_command.clone()),
+            (SETTING_CHECK_AUTO, self.check_auto.map(|b| b.to_string())),
         ] {
             if let Some(value) = value {
                 store.set_setting(key, &value)?;
@@ -170,6 +189,9 @@ mod tests {
             os_notifications: Some(false),
             notes_finalize_timeout_secs: Some(30),
             worktree_root: Some("D:/wt".into()),
+            editor_command: Some("D:/tools/rider64.exe".into()),
+            check_command: Some("dotnet build".into()),
+            check_auto: Some(true),
         };
         config.apply(&store).expect("apply");
 

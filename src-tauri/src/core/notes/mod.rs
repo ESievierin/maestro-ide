@@ -339,7 +339,7 @@ mod tests {
         let bus = EventBus::new();
         let store = Arc::new(crate::core::store::SqliteStore::open_in_memory().unwrap());
         let worktrees = Arc::new(WorktreeManager::new(
-            Arc::new(GitCli),
+            Arc::new(GitCli::new()),
             store.clone(),
             bus.clone(),
         ));

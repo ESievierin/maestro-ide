@@ -309,6 +309,9 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
 
   const [search, setSearch] = useState("");
   const [viewed, setViewed] = useState<Set<string>>(new Set());
+  const [committing, setCommitting] = useState(false);
+  const [commitMessage, setCommitMessage] = useState("");
+  const [commitBusy, setCommitBusy] = useState(false);
   const activeViewRef = useRef<EditorView | null>(null);
   const handleViewReady = useCallback((view: EditorView | null) => {
     activeViewRef.current = view;
@@ -419,6 +422,33 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
     if (asked) {
       setAsking(false);
       setQuestionText("");
+    }
+  };
+
+  const submitCommit = async () => {
+    const message = commitMessage.trim();
+    if (!message) return;
+    setCommitBusy(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const summary = await invoke<string>("commit_worktree", { branch, message });
+      setCommitting(false);
+      setCommitMessage("");
+      const { useToasts } = await import("../state/toasts");
+      useToasts.getState().push({
+        severity: "info",
+        code: "committed",
+        message: `Committed: ${summary}`,
+      });
+      // The working-tree diff is now empty and the committed diff grew; recompute
+      // whichever is showing and let the sidebar's dirty badge clear.
+      void refresh(branch, scope);
+      const { useWorktrees } = await import("../state/worktrees");
+      void useWorktrees.getState().refresh();
+    } catch {
+      // run_core already published error.raised — it shows as an error toast.
+    } finally {
+      setCommitBusy(false);
     }
   };
 
@@ -542,8 +572,57 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
               {selection.start === selection.end ? "" : `–${selection.end}`}
             </button>
           )}
+          {scope === "worktree" && (snapshot?.files.length ?? 0) > 0 && !committing && (
+            <button
+              className="small btn-primary"
+              title="Stage everything and commit in this worktree"
+              onClick={() => setCommitting(true)}
+            >
+              <Icon name="check" /> Commit…
+            </button>
+          )}
         </div>
       </div>
+
+      {committing && (
+        <div className="line-question-form">
+          <textarea
+            autoFocus
+            rows={2}
+            placeholder="Commit message…"
+            value={commitMessage}
+            onChange={(e) => setCommitMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                void submitCommit();
+              }
+            }}
+          />
+          <div className="actions">
+            <button
+              className="small btn-primary"
+              onClick={() => void submitCommit()}
+              disabled={commitBusy || !commitMessage.trim()}
+            >
+              {commitBusy ? "Committing…" : "Commit all"}
+            </button>
+            <button
+              className="small ghost"
+              disabled={commitBusy}
+              onClick={() => {
+                setCommitting(false);
+                setCommitMessage("");
+              }}
+            >
+              Cancel
+            </button>
+            <span className="hint">
+              Stages every change in the worktree (Ctrl+Enter to commit).
+            </span>
+          </div>
+        </div>
+      )}
 
       {asking && selection && (
         <div className="line-question-form">

@@ -27,16 +27,27 @@ interface WorktreesState {
   create: (request: CreateWorktreeRequest) => Promise<boolean>;
   remove: (branch: string, force: boolean) => Promise<RemoveOutcome | null>;
   merge: (sourceBranch: string, targetBranch: string) => Promise<MergeOutcome | null>;
+  /** Merge the branch's (freshly fetched) base into it. */
+  sync: (branch: string) => Promise<MergeOutcome | null>;
   select: (branch: string | null) => void;
   setTab: (tab: MainTab) => void;
   clearError: () => void;
+}
+
+/** Where the last-selected worktree/tab live between app runs. */
+const SELECTED_KEY = "maestro.selectedBranch";
+const TAB_KEY = "maestro.tab";
+
+function loadTab(): MainTab {
+  const saved = localStorage.getItem(TAB_KEY);
+  return saved === "diff" || saved === "notes" ? saved : "chat";
 }
 
 export const useWorktrees = create<WorktreesState>((set, get) => ({
   repo: null,
   worktrees: [],
   selected: null,
-  tab: "chat",
+  tab: loadTab(),
   loading: false,
   error: null,
 
@@ -45,13 +56,15 @@ export const useWorktrees = create<WorktreesState>((set, get) => ({
     try {
       const repo = await invoke<RepoInfo | null>("get_workspace");
       const worktrees = repo ? await invoke<WorktreeInfo[]>("list_worktrees") : [];
-      const { selected } = get();
-      const stillThere = worktrees.some((w) => w.branch === selected);
+      // Restore last session's selection on the first load; keep the user's
+      // current one afterwards (unless its worktree vanished).
+      const current = get().selected ?? localStorage.getItem(SELECTED_KEY);
+      const stillThere = worktrees.some((w) => w.branch === current);
       set({
         repo,
         worktrees,
         loading: false,
-        selected: stillThere ? selected : null,
+        selected: stillThere ? current : null,
       });
       // Load session lists so WorktreeList badges are accurate.
       const branches = worktrees.flatMap((w) => (w.branch ? [w.branch] : []));
@@ -113,10 +126,39 @@ export const useWorktrees = create<WorktreesState>((set, get) => ({
     }
   },
 
-  select: (branch) => set({ selected: branch }),
-  setTab: (tab) => set({ tab }),
+  sync: async (branch) => {
+    try {
+      const outcome = await invoke<MergeOutcome>("sync_worktree", { branch });
+      // A conflicted sync leaves the worktree dirty — refresh either way so the
+      // sidebar's dirty/ahead/behind badges tell the truth.
+      await get().refresh();
+      return outcome;
+    } catch (e) {
+      set({ error: String(e) });
+      return null;
+    }
+  },
+
+  select: (branch) => {
+    if (branch) localStorage.setItem(SELECTED_KEY, branch);
+    else localStorage.removeItem(SELECTED_KEY);
+    set({ selected: branch });
+  },
+  setTab: (tab) => {
+    localStorage.setItem(TAB_KEY, tab);
+    set({ tab });
+  },
   clearError: () => set({ error: null }),
 }));
+
+// The dirty/ahead/behind badges reflect on-disk git state that also changes
+// outside the app (Rider commits, terminal pushes). A slow poll keeps them
+// truthful; only while the window is focused, so a backgrounded app stays idle.
+setInterval(() => {
+  if (document.hasFocus() && useWorktrees.getState().repo) {
+    void useWorktrees.getState().refresh();
+  }
+}, 30_000);
 
 // Keep the list in sync with core events without polling.
 onBusEvent((event) => {
@@ -125,6 +167,29 @@ onBusEvent((event) => {
     event.type === "worktree.removed" ||
     event.type === "worktree.merged"
   ) {
-    void useWorktrees.getState().refresh();
+    void useWorktrees
+      .getState()
+      .refresh()
+      .then(async () => {
+        if (event.type !== "worktree.merged") return;
+        // Something landed in `target`; siblings based on it are now behind.
+        const { source, target } = event.data;
+        const behind = useWorktrees
+          .getState()
+          .worktrees.filter(
+            (w) =>
+              w.branch &&
+              w.branch !== source &&
+              w.branch !== target &&
+              (w.base_branch === target || w.base_branch?.endsWith(`/${target}`)),
+          );
+        if (behind.length === 0) return;
+        const { useToasts } = await import("./toasts");
+        useToasts.getState().push({
+          severity: "info",
+          code: "sync-hint",
+          message: `${behind.length} worktree${behind.length > 1 ? "s are" : " is"} based on '${target}' — use the sync action (↓) to bring them up to date.`,
+        });
+      });
   }
 });

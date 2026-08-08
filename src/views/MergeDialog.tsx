@@ -1,57 +1,128 @@
 import { useMemo, useState } from "react";
 import { Icon } from "../components/Icon";
 import { SelectMenu, type SelectMenuOption } from "../components/SelectMenu";
+import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useWorktrees } from "../state/worktrees";
-import type { MergeOutcome, WorktreeInfo } from "../types/worktrees";
+import type { MergeOutcome, RepoInfo, WorktreeInfo } from "../types/worktrees";
 
 /**
- * Lands a worktree's branch into another worktree's checked-out branch — a
- * local `git merge --no-ff` run in the target's own working directory. Never
- * pushes, and never touches or removes the source worktree; that stays a
- * separate, explicit action if the user wants it.
+ * Lands a worktree's branch into any other branch — a local `git merge --no-ff`.
+ * Never pushes, and never touches or removes the source worktree.
+ *
+ * Where the merge runs depends on the target:
+ * - a branch checked out in some worktree merges in that worktree;
+ * - any other branch is hosted by the **primary worktree**, which is switched to
+ *   it first — deliberately, so the result (or the conflict) is immediately
+ *   visible in the editor that has the primary open (Rider).
  */
 export function MergeDialog({
   source,
   worktrees,
+  repo,
   onClose,
 }: {
   source: WorktreeInfo;
   worktrees: WorktreeInfo[];
+  repo: RepoInfo | null;
   onClose: () => void;
 }) {
   const merge = useWorktrees((s) => s.merge);
+  useEscapeToClose(onClose);
 
-  const targets = useMemo(
+  const checkedOut = useMemo(
     () => worktrees.filter((w) => w.branch && w.branch !== source.branch),
     [worktrees, source.branch],
   );
+
+  /** Every branch that can host a merge, deduped: checked-out ones first (they
+   * merge in place), then other local branches, then remote-only ones (both of
+   * the latter route through the primary worktree). */
+  const targetOptions = useMemo<SelectMenuOption[]>(() => {
+    const seen = new Set<string>();
+    const options: SelectMenuOption[] = [];
+
+    for (const w of checkedOut) {
+      const branch = w.branch as string;
+      seen.add(branch);
+      options.push({
+        value: branch,
+        label: branch,
+        description: w.is_primary
+          ? "Primary worktree"
+          : w.status?.dirty
+            ? "Its own worktree — has uncommitted changes"
+            : "Its own worktree",
+      });
+    }
+    for (const branch of repo?.branches ?? []) {
+      if (branch === source.branch || seen.has(branch)) continue;
+      seen.add(branch);
+      options.push({
+        value: branch,
+        label: branch,
+        description: "Via primary — will switch it to this branch",
+      });
+    }
+    for (const remote of repo?.remote_branches ?? []) {
+      // "origin/feature/x" → "feature/x"; git switch DWIM creates the local branch.
+      const short = remote.slice(remote.indexOf("/") + 1);
+      if (!short || short === source.branch || seen.has(short)) continue;
+      seen.add(short);
+      options.push({
+        value: short,
+        label: short,
+        description: `From ${remote} — via primary, will switch it`,
+      });
+    }
+    return options;
+  }, [checkedOut, repo, source.branch]);
+
   const [targetBranch, setTargetBranch] = useState<string>(() => {
-    const primary = targets.find((w) => w.is_primary);
-    return (primary ?? targets[0])?.branch ?? "";
+    // The branch this work forked from is what you almost always merge back into.
+    const base = source.base_branch;
+    if (base) {
+      const short = base.includes("/") ? base.slice(base.indexOf("/") + 1) : base;
+      for (const candidate of [base, short]) {
+        if (
+          candidate !== source.branch &&
+          (checkedOut.some((w) => w.branch === candidate) ||
+            repo?.branches.includes(candidate) ||
+            repo?.remote_branches.some((r) => r.slice(r.indexOf("/") + 1) === candidate))
+        ) {
+          return candidate;
+        }
+      }
+    }
+    const primary = checkedOut.find((w) => w.is_primary);
+    return (primary ?? checkedOut[0])?.branch ?? "";
   });
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<MergeOutcome | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const targetOptions: SelectMenuOption[] = targets.map((w) => ({
-    value: w.branch as string,
-    label: w.branch as string,
-    description: w.is_primary
-      ? "Primary worktree"
-      : w.status?.dirty
-        ? "Has uncommitted changes"
-        : undefined,
-  }));
-
-  const target = targets.find((w) => w.branch === targetBranch);
-  const targetDirty = target?.status?.dirty ?? false;
+  const target = checkedOut.find((w) => w.branch === targetBranch);
+  const viaPrimary = !target;
+  const primary = worktrees.find((w) => w.is_primary);
+  const hostDirty = viaPrimary
+    ? (primary?.status?.dirty ?? false)
+    : (target?.status?.dirty ?? false);
   const sourceDirty = source.status?.dirty ?? false;
 
   const submit = async () => {
-    if (!targetBranch || targetDirty) return;
+    if (!targetBranch || hostDirty) return;
     setBusy(true);
+    setSubmitError(null);
     const outcome = await merge(source.branch as string, targetBranch);
     setBusy(false);
-    if (outcome) setResult(outcome);
+    if (outcome) {
+      setResult(outcome);
+    } else {
+      // merge() stored the failure on the sidebar banner; show it here too —
+      // the modal covers that banner, and the user is looking at this dialog.
+      setSubmitError(
+        useWorktrees.getState().error ?? "Merge failed — see the sidebar for details.",
+      );
+    }
   };
 
   return (
@@ -61,23 +132,38 @@ export function MergeDialog({
           <Icon name="arrow-up" /> Merge into…
         </h3>
         <p className="hint">
-          Merges <code>{source.branch}</code> into whichever branch you pick below — a regular merge
-          commit run in that worktree, local only. It never pushes, and never touches this worktree.
+          Merges <code>{source.branch}</code> into the branch you pick — a regular merge commit,
+          local only, never pushed. A branch without its own worktree is handled in the{" "}
+          <strong>primary</strong> worktree: it switches to that branch first, so the result is
+          right there when you open the project in Rider.
         </p>
 
-        {targets.length === 0 ? (
-          <p className="hint warn">No other worktree to merge into.</p>
+        {targetOptions.length === 0 ? (
+          <p className="hint warn">No other branch to merge into.</p>
         ) : !result ? (
           <div className="form-grid">
             <label>
               Target
-              <SelectMenu value={targetBranch} onChange={setTargetBranch} options={targetOptions} />
+              <SelectMenu
+                value={targetBranch}
+                onChange={(v) => {
+                  setTargetBranch(v);
+                  setSubmitError(null);
+                }}
+                options={targetOptions}
+              />
             </label>
 
-            {targetDirty && (
+            {viaPrimary && targetBranch && (
+              <p className="hint">
+                <Icon name="branch" size={12} /> The primary worktree will switch to{" "}
+                <code>{targetBranch}</code> and host this merge.
+              </p>
+            )}
+            {hostDirty && (
               <p className="hint warn">
-                <Icon name="alert" size={12} /> <code>{targetBranch}</code> has uncommitted changes
-                — commit or discard them there before merging.
+                <Icon name="alert" size={12} /> The {viaPrimary ? "primary" : "target"} worktree has
+                uncommitted changes — commit or discard them there before merging.
               </p>
             )}
             {sourceDirty && (
@@ -86,12 +172,47 @@ export function MergeDialog({
                 of its own — only what's committed will be merged.
               </p>
             )}
+            {submitError && <p className="hint warn">{submitError}</p>}
           </div>
         ) : result.merged ? (
-          <p className="hint success">
-            <Icon name="check" /> Merged <code>{source.branch}</code> into{" "}
-            <code>{targetBranch}</code>.
-          </p>
+          <>
+            <p className="hint success">
+              <Icon name="check" /> Merged <code>{source.branch}</code> into{" "}
+              <code>{targetBranch}</code>.
+              {result.switched_primary && (
+                <>
+                  {" "}
+                  The primary worktree is now on <code>{targetBranch}</code> — open it in Rider to
+                  review.
+                </>
+              )}
+            </p>
+            {!source.is_primary && (
+              <p className="hint">
+                Task landed? The source worktree can go —{" "}
+                <button
+                  className="small danger"
+                  onClick={() => {
+                    void (async () => {
+                      const remove = useWorktrees.getState().remove;
+                      const outcome = await remove(source.branch as string, false);
+                      if (outcome?.outcome === "dirty_confirmation_required") {
+                        const ok = window.confirm(
+                          `Worktree "${source.branch}" has uncommitted changes.\nRemove anyway and discard them?`,
+                        );
+                        if (ok) await remove(source.branch as string, true);
+                        else return;
+                      }
+                      onClose();
+                    })();
+                  }}
+                >
+                  <Icon name="trash" /> Remove worktree
+                </button>{" "}
+                (the branch itself is kept).
+              </p>
+            )}
+          </>
         ) : (
           <div className="merge-result">
             {result.conflicts.length > 0 ? (
@@ -107,8 +228,18 @@ export function MergeDialog({
                   ))}
                 </ul>
                 <p className="hint">
-                  Resolve them in <code>{targetBranch}</code>'s worktree with your usual git tools
-                  and commit — or run <code>git merge --abort</code> there to back out.
+                  {result.switched_primary ? (
+                    <>
+                      The primary worktree is on <code>{targetBranch}</code>, mid-merge — resolve
+                      right in Rider and commit, or run <code>git merge --abort</code> there to back
+                      out.
+                    </>
+                  ) : (
+                    <>
+                      Resolve them in <code>{targetBranch}</code>'s worktree with your usual git
+                      tools and commit — or run <code>git merge --abort</code> there to back out.
+                    </>
+                  )}
                 </p>
               </>
             ) : (
@@ -123,10 +254,10 @@ export function MergeDialog({
           <button className="ghost" onClick={onClose}>
             {result ? "Close" : "Cancel"}
           </button>
-          {targets.length > 0 && !result && (
+          {targetOptions.length > 0 && !result && (
             <button
               className="btn-primary"
-              disabled={busy || !targetBranch || targetDirty}
+              disabled={busy || !targetBranch || hostDirty}
               onClick={() => void submit()}
             >
               {busy ? "Merging…" : "Merge"}

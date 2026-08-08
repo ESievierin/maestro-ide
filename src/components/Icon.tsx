@@ -29,7 +29,12 @@ export type IconName =
   | "chevron-down"
   | "circle"
   | "square"
-  | "sliders";
+  | "sliders"
+  | "copy"
+  | "external-link"
+  | "history"
+  | "upload"
+  | "log";
 
 /** Path data per icon, drawn on a 24×24 grid. */
 const PATHS: Record<IconName, ReactElement> = {
@@ -63,6 +68,18 @@ const PATHS: Record<IconName, ReactElement> = {
   circle: <circle cx="12" cy="12" r="7" />,
   square: <rect x="5.5" y="5.5" width="13" height="13" rx="2.5" />,
   sliders: <path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 4.5v5M9 14.5v5" />,
+  copy: (
+    <>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5" />
+    </>
+  ),
+  "external-link": (
+    <path d="M13 4.5h6.5V11M19 5 10.5 13.5M15.5 13v5.5a1.5 1.5 0 0 1-1.5 1.5H5.5A1.5 1.5 0 0 1 4 18.5V9a1.5 1.5 0 0 1 1.5-1.5H11" />
+  ),
+  history: <path d="M4.5 12a7.5 7.5 0 1 1 2.2 5.3M4.5 12l-2-2M4.5 12l2.2-1.8M12 8.5V12l2.7 1.8" />,
+  upload: <path d="M4.5 19.5h15M12 15.5V4.5M7 9.5l5-5 5 5" />,
+  log: <path d="M6 5.5h12M6 10h12M6 14.5h8M6 19h5" />,
 };
 
 interface Props {

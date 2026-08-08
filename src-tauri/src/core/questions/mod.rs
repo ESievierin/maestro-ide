@@ -569,6 +569,36 @@ mod tests {
                 message: String::new(),
             })
         }
+        fn switch_branch(&self, _worktree: &Path, _branch: &str) -> Result<()> {
+            Ok(())
+        }
+        fn commit_all(&self, _worktree: &Path, _message: &str) -> Result<String> {
+            Ok("abc1234 mock".into())
+        }
+        fn snapshot_push(&self, _worktree: &Path, _label: &str) -> Result<()> {
+            Ok(())
+        }
+        fn snapshot_list(&self, _worktree: &Path) -> Result<Vec<crate::core::worktree::Snapshot>> {
+            Ok(Vec::new())
+        }
+        fn snapshot_restore(&self, _worktree: &Path, _id: &str) -> Result<()> {
+            Ok(())
+        }
+        fn snapshot_drop(&self, _worktree: &Path, _id: &str) -> Result<()> {
+            Ok(())
+        }
+        fn push_branch(&self, _worktree: &Path, _branch: &str) -> Result<String> {
+            Ok(String::new())
+        }
+        fn branch_log(
+            &self,
+            _repo: &Path,
+            _branch: &str,
+            _base: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::core::worktree::LogEntry>> {
+            Ok(Vec::new())
+        }
         fn blame_range(
             &self,
             _worktree: &Path,

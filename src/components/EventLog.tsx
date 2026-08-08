@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "./Icon";
+import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useEventLog } from "../state/events";
 
 /**
@@ -9,6 +10,7 @@ import { useEventLog } from "../state/events";
 export function EventLog({ onClose }: { onClose: () => void }) {
   const events = useEventLog((s) => s.events);
   const clear = useEventLog((s) => s.clear);
+  useEscapeToClose(onClose);
 
   const emitTestEvent = () => {
     void invoke("emit_test_event", { message: "hello from the frontend" });

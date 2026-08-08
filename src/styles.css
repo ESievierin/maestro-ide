@@ -816,6 +816,31 @@ input[type="checkbox"] {
   font-weight: 600;
 }
 
+.worktree-path-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.worktree-path-row .repo-line {
+  min-width: 0;
+}
+
+.wt-open-actions {
+  display: inline-flex;
+  gap: 0.1rem;
+  flex-shrink: 0;
+}
+
+.wt-open-actions button {
+  color: var(--text-tertiary);
+}
+
+.wt-open-actions button:hover {
+  color: var(--text-primary);
+}
+
 .session-panel {
   display: flex;
   flex-direction: column;
@@ -878,6 +903,13 @@ input[type="checkbox"] {
   color: var(--text-secondary);
 }
 
+.transcript-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 120px;
+  display: flex;
+}
+
 .transcript {
   flex: 1;
   min-height: 120px;
@@ -887,6 +919,24 @@ input[type="checkbox"] {
   border-radius: var(--radius-lg);
   padding: var(--space-4);
   font-size: var(--text-sm);
+}
+
+/* Scrolled up while output streams: an unobtrusive way back down. */
+.jump-latest {
+  position: absolute;
+  bottom: var(--space-3);
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.8rem;
+  font-size: var(--text-xs);
+  border-radius: var(--radius-pill);
+  background: var(--surface-4);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-md);
+  animation: rise var(--fast) var(--ease) both;
 }
 
 /* Markdown output */
@@ -1594,6 +1644,279 @@ input[type="checkbox"] {
   background: var(--danger-bg);
   border: 1px solid var(--danger-border);
   border-radius: var(--radius-sm);
+}
+
+/* ---------- Check dialog ---------- */
+
+.check-modal {
+  width: min(720px, 90vw);
+}
+
+.check-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
+  font-size: var(--text-sm);
+}
+
+.check-passed {
+  color: var(--success);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 500;
+}
+
+.check-failed {
+  color: var(--danger);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 500;
+}
+
+.check-output {
+  max-height: 320px;
+  overflow: auto;
+  background: var(--surface-recessed);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.8rem;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------- Command palette ---------- */
+
+.palette-backdrop {
+  align-items: flex-start;
+  padding-top: 12vh;
+}
+
+.palette {
+  width: min(560px, 92vw);
+  background: var(--surface-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  animation: drop var(--medium) var(--ease) both;
+}
+
+.palette input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  padding: 0.8rem 1rem;
+  font-size: var(--text-md);
+}
+
+.palette input:focus {
+  outline: none;
+  border-color: var(--border);
+}
+
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.35rem;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.palette-item .icon {
+  color: var(--text-tertiary);
+}
+
+.palette-item.highlight {
+  background: var(--accent-bg);
+}
+
+.palette-item.highlight .icon {
+  color: var(--accent);
+}
+
+.palette-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-hint {
+  flex-shrink: 0;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+
+.palette-empty {
+  padding: 0.8rem;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+
+/* ---------- Hotkeys dialog ---------- */
+
+.hotkeys-group h4 {
+  margin: var(--space-3) 0 var(--space-1);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+
+.hotkeys-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.hotkeys-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.hotkeys-row dt {
+  width: 15rem;
+  flex-shrink: 0;
+}
+
+.hotkeys-row dd {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+kbd {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  font-family: Consolas, monospace;
+  font-size: var(--text-2xs);
+  color: var(--text-primary);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+}
+
+/* ---------- Branch log dialog ---------- */
+
+.branch-log {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  max-height: 380px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.branch-log li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: 0.3rem 0.5rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+}
+
+.branch-log li:hover {
+  background: var(--surface-2);
+}
+
+.log-sha {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.log-subject {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Snapshots dialog ---------- */
+
+.snapshot-take {
+  display: flex;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+}
+
+.snapshot-take input {
+  flex: 1;
+  font-size: var(--text-sm);
+}
+
+.snapshot-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 300px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.snapshot-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 0.45rem 0.6rem;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.snapshot-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.snapshot-label {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.snapshot-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-shrink: 0;
 }
 
 .merge-result-title {

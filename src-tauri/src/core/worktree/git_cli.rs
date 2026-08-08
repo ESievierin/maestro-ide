@@ -3,15 +3,34 @@
 //! The CLI (not libgit2) is deliberate: worktree behavior must match what the user
 //! sees when they run git themselves.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::core::worktree::provider::{
-    BlameLine, BranchStatus, ChangedFile, GitProvider, MergeOutcome, WorktreeEntry,
+    BlameLine, BranchStatus, ChangedFile, GitProvider, LogEntry, MergeOutcome, Snapshot,
+    WorktreeEntry,
 };
 use crate::error::{GitErrorKind, MaestroError, Result};
 
-pub struct GitCli;
+/// How long a fetched base ref counts as fresh. Diff refreshes happen far more
+/// often than a base branch moves; a network round-trip per refresh would make
+/// the diff viewer feel sluggish for no informational gain.
+const FETCH_TTL: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+pub struct GitCli {
+    /// Last successful-ish fetch per (repo, refspec) — see [`FETCH_TTL`].
+    fetched: Mutex<HashMap<(PathBuf, String), Instant>>,
+}
+
+impl GitCli {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 impl GitCli {
     /// Run git with `args` in `cwd`; return stdout on success, a typed error with
@@ -195,7 +214,24 @@ impl GitProvider for GitCli {
             });
         // Best-effort: an offline machine or a branch with no upstream must never
         // break the diff — just fall through to whatever is already on disk.
-        let _ = self.run(repo, &["fetch", "--quiet", &remote, &short]);
+        // Throttled: at most one network round-trip per FETCH_TTL per ref, so
+        // rapid diff refreshes stay local-fast.
+        let key = (repo.to_path_buf(), format!("{remote}/{short}"));
+        let stale = self
+            .fetched
+            .lock()
+            .map(|m| {
+                m.get(&key)
+                    .map(|at| at.elapsed() > FETCH_TTL)
+                    .unwrap_or(true)
+            })
+            .unwrap_or(true);
+        if stale {
+            let _ = self.run(repo, &["fetch", "--quiet", &remote, &short]);
+            if let Ok(mut m) = self.fetched.lock() {
+                m.insert(key, Instant::now());
+            }
+        }
         let candidate = format!("{remote}/{short}");
         let exists = self
             .succeeds(
@@ -295,6 +331,150 @@ impl GitProvider for GitCli {
             message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         })
     }
+
+    fn switch_branch(&self, worktree: &Path, branch: &str) -> Result<()> {
+        self.run(worktree, &["switch", branch])?;
+        Ok(())
+    }
+
+    fn commit_all(&self, worktree: &Path, message: &str) -> Result<String> {
+        self.run(worktree, &["add", "-A"])?;
+        self.run(worktree, &["commit", "-m", message])?;
+        Ok(self
+            .run(worktree, &["log", "-1", "--format=%h %s"])?
+            .trim()
+            .to_string())
+    }
+
+    fn snapshot_push(&self, worktree: &Path, label: &str) -> Result<()> {
+        let message = format!("{SNAPSHOT_PREFIX}{label}");
+        // `stash push` records the state but also reverts the working tree;
+        // an immediate `apply` puts it back, leaving the snapshot behind. This
+        // is the standard checkpoint idiom — `stash create` would avoid the
+        // round-trip but cannot capture untracked files.
+        let out = self.run(
+            worktree,
+            &["stash", "push", "--include-untracked", "-m", &message],
+        )?;
+        if out.contains("No local changes") {
+            return Err(MaestroError::Git {
+                kind: GitErrorKind::InvalidInput,
+                message: "nothing to snapshot — the worktree has no uncommitted changes".into(),
+            });
+        }
+        self.run(worktree, &["stash", "apply", "--index", "stash@{0}"])
+            .or_else(|_| {
+                // --index can fail when untracked files are involved; a plain
+                // apply restores contents without the staged/unstaged split.
+                self.run(worktree, &["stash", "apply", "stash@{0}"])
+            })?;
+        Ok(())
+    }
+
+    fn snapshot_list(&self, worktree: &Path) -> Result<Vec<Snapshot>> {
+        let out = self.run(worktree, &["stash", "list", "--format=%gd\x1f%ci\x1f%gs"])?;
+        Ok(parse_snapshot_list(&out))
+    }
+
+    fn snapshot_restore(&self, worktree: &Path, id: &str) -> Result<()> {
+        // Rollback semantics: the current uncommitted state is replaced by the
+        // snapshot, not merged with it. The caller has already confirmed the
+        // discard; the snapshot itself is kept so it can be restored again.
+        self.run(worktree, &["reset", "--hard"])?;
+        self.run(worktree, &["clean", "-fd"])?;
+        self.run(worktree, &["stash", "apply", id])?;
+        Ok(())
+    }
+
+    fn snapshot_drop(&self, worktree: &Path, id: &str) -> Result<()> {
+        self.run(worktree, &["stash", "drop", id])?;
+        Ok(())
+    }
+
+    fn push_branch(&self, worktree: &Path, branch: &str) -> Result<String> {
+        let remotes = self.remotes(worktree);
+        let remote = if remotes.iter().any(|r| r == "origin") {
+            "origin".to_string()
+        } else {
+            remotes.first().cloned().ok_or_else(|| MaestroError::Git {
+                kind: GitErrorKind::InvalidInput,
+                message: "no remote configured — nothing to push to".into(),
+            })?
+        };
+        // git push reports progress on *stderr* even on success; collect both.
+        let output = self.output(worktree, &["push", "-u", &remote, branch])?;
+        let mut report = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.trim().is_empty() {
+            if !report.is_empty() {
+                report.push('\n');
+            }
+            report.push_str(stderr.trim());
+        }
+        if !output.status.success() {
+            return Err(MaestroError::Git {
+                kind: GitErrorKind::CommandFailed,
+                message: format!("`git push` failed: {report}"),
+            });
+        }
+        Ok(report)
+    }
+
+    fn branch_log(
+        &self,
+        repo: &Path,
+        branch: &str,
+        base: &str,
+        limit: usize,
+    ) -> Result<Vec<LogEntry>> {
+        let range = format!("{base}..{branch}");
+        let count = format!("-{limit}");
+        let out = self.run(
+            repo,
+            &[
+                "log",
+                &count,
+                "--format=%h\x1f%s\x1f%an\x1f%ad",
+                "--date=short",
+                &range,
+            ],
+        )?;
+        Ok(out
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.split('\x1f');
+                Some(LogEntry {
+                    sha: parts.next()?.trim().to_string(),
+                    subject: parts.next()?.trim().to_string(),
+                    author: parts.next()?.trim().to_string(),
+                    date: parts.next()?.trim().to_string(),
+                })
+            })
+            .collect())
+    }
+}
+
+/// Marker distinguishing Maestro snapshots from the user's own stashes.
+const SNAPSHOT_PREFIX: &str = "maestro-snapshot: ";
+
+/// Parse `git stash list --format=%gd<US>%ci<US>%gs`, keeping only Maestro
+/// snapshots. `%gs` looks like "On <branch>: maestro-snapshot: <label>".
+fn parse_snapshot_list(out: &str) -> Vec<Snapshot> {
+    out.lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\x1f');
+            let id = parts.next()?.trim();
+            let created_at = parts.next()?.trim();
+            let subject = parts.next()?.trim();
+            let label_start = subject.find(SNAPSHOT_PREFIX)?;
+            let label = subject[label_start + SNAPSHOT_PREFIX.len()..].to_string();
+            Some(Snapshot {
+                id: id.to_string(),
+                label,
+                created_at: created_at.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// Parse `git diff --name-status -M` output: `M\tpath` or `R100\told\tnew`.
@@ -537,7 +717,7 @@ mod tests {
             fs::create_dir(&repo).expect("mkdir");
             init_repo(&repo);
 
-            let cli = GitCli;
+            let cli = GitCli::new();
             assert!(cli.is_git_repo(&repo).expect("is_git_repo"));
             assert!(!cli.is_git_repo(tmp.path()).expect("non-repo"));
             assert_eq!(cli.default_branch(&repo).expect("default"), "main");
@@ -633,7 +813,7 @@ mod tests {
             fs::create_dir(&repo).expect("mkdir");
             init_repo(&repo);
 
-            let cli = GitCli;
+            let cli = GitCli::new();
             let wt = tmp.path().join("wt");
             cli.create_worktree(&repo, &wt, "impl/T-1-x", Some("main"))
                 .expect("create worktree");
@@ -655,7 +835,7 @@ mod tests {
             fs::create_dir(&repo).expect("mkdir");
             init_repo(&repo);
 
-            let cli = GitCli;
+            let cli = GitCli::new();
             let wt = tmp.path().join("wt");
             cli.create_worktree(&repo, &wt, "impl/T-1-x", Some("main"))
                 .expect("create worktree");
@@ -680,6 +860,119 @@ mod tests {
             git(&repo, &["merge", "--abort"]);
         }
 
+        /// Snapshot → wreck the worktree → restore: the pre-wreck state is back,
+        /// untracked files included, and the snapshot survives for another round.
+        #[test]
+        fn snapshot_round_trip_restores_tracked_and_untracked_state() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).expect("mkdir");
+            init_repo(&repo);
+
+            let cli = GitCli::new();
+            // Nothing to snapshot on a clean tree — refused, not a phantom entry.
+            assert!(cli.snapshot_push(&repo, "empty").is_err());
+
+            fs::write(repo.join("README.md"), "good agent work\n").expect("write");
+            fs::write(repo.join("notes.txt"), "untracked but wanted\n").expect("write");
+            cli.snapshot_push(&repo, "before risky attempt")
+                .expect("snapshot");
+
+            // The working tree's *content* is untouched by taking a snapshot.
+            // (Byte-level, autocrlf may re-materialize tracked files with CRLF —
+            // the same thing any git checkout does under that config.)
+            let readme = fs::read_to_string(repo.join("README.md")).unwrap();
+            assert_eq!(readme.replace("\r\n", "\n"), "good agent work\n");
+            assert!(repo.join("notes.txt").exists());
+
+            let listed = cli.snapshot_list(&repo).expect("list");
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].label, "before risky attempt");
+
+            // An agent goes off the rails.
+            fs::write(repo.join("README.md"), "ruined\n").expect("write");
+            fs::remove_file(repo.join("notes.txt")).expect("rm");
+            fs::write(repo.join("garbage.rs"), "half-finished\n").expect("write");
+
+            cli.snapshot_restore(&repo, &listed[0].id).expect("restore");
+            // Compare content, not line endings — autocrlf re-materializes
+            // tracked files with CRLF on Windows, which is git config's business.
+            let readme = fs::read_to_string(repo.join("README.md")).unwrap();
+            assert_eq!(readme.replace("\r\n", "\n"), "good agent work\n");
+            let notes = fs::read_to_string(repo.join("notes.txt")).unwrap();
+            assert_eq!(notes.replace("\r\n", "\n"), "untracked but wanted\n");
+            assert!(!repo.join("garbage.rs").exists(), "the mess is gone");
+
+            // Kept after restore; dropping removes it.
+            let listed = cli.snapshot_list(&repo).expect("list");
+            assert_eq!(listed.len(), 1);
+            cli.snapshot_drop(&repo, &listed[0].id).expect("drop");
+            assert!(cli.snapshot_list(&repo).expect("list").is_empty());
+        }
+
+        #[test]
+        fn commit_all_stages_untracked_files_too() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).expect("mkdir");
+            init_repo(&repo);
+
+            let cli = GitCli::new();
+            fs::write(repo.join("tracked-edit.md"), "edited\n").expect("write");
+            fs::write(repo.join("brand-new.txt"), "new\n").expect("write");
+            git(&repo, &["add", "tracked-edit.md"]);
+
+            let summary = cli
+                .commit_all(&repo, "chore: commit everything")
+                .expect("commit");
+            assert!(summary.contains("chore: commit everything"), "{summary}");
+
+            let status = cli.branch_status(&repo).expect("status");
+            assert!(
+                !status.dirty,
+                "everything, including untracked, was committed"
+            );
+
+            // Nothing to commit is an error with git's own explanation, not a lie.
+            let err = cli.commit_all(&repo, "empty").unwrap_err();
+            assert!(err.to_string().contains("commit"), "{err}");
+        }
+
+        /// The Rider path end-to-end with real git: a branch that exists but is
+        /// checked out nowhere; the primary switches to it and hosts the merge.
+        #[test]
+        fn switch_branch_then_merge_hosts_an_unchecked_out_target() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).expect("mkdir");
+            init_repo(&repo);
+
+            let cli = GitCli::new();
+            // `develop` exists as a branch only — no worktree has it checked out.
+            git(&repo, &["branch", "develop"]);
+
+            let wt = tmp.path().join("wt");
+            cli.create_worktree(&repo, &wt, "impl/T-1-x", Some("develop"))
+                .expect("create worktree");
+            fs::write(wt.join("feature.txt"), "x\n").expect("write");
+            git(&wt, &["add", "."]);
+            git(&wt, &["commit", "-m", "feature work"]);
+
+            // What WorktreeManager::merge_into does for this case:
+            cli.switch_branch(&repo, "develop").expect("switch");
+            let head = GitCli::new()
+                .run(&repo, &["symbolic-ref", "--short", "HEAD"])
+                .expect("head");
+            assert_eq!(head.trim(), "develop", "primary now hosts the target");
+
+            let outcome = cli.merge_branch(&repo, "impl/T-1-x").expect("merge");
+            assert!(outcome.merged, "{outcome:?}");
+            assert!(
+                repo.join("feature.txt").exists(),
+                "the merged result is visible in the primary working tree"
+            );
+        }
+
         #[test]
         fn fresh_base_ref_is_a_no_op_without_a_remote() {
             let tmp = tempfile::tempdir().expect("tempdir");
@@ -687,7 +980,7 @@ mod tests {
             fs::create_dir(&repo).expect("mkdir");
             init_repo(&repo);
 
-            let cli = GitCli;
+            let cli = GitCli::new();
             assert_eq!(cli.fresh_base_ref(&repo, "main"), "main");
         }
 
@@ -730,7 +1023,7 @@ mod tests {
             git(&repo, &["config", "user.email", "test@maestro.local"]);
             git(&repo, &["config", "user.name", "Maestro Test"]);
 
-            let cli = GitCli;
+            let cli = GitCli::new();
             let wt = tmp.path().join("wt");
             cli.create_worktree(&repo, &wt, "impl/T-1-x", Some("develop"))
                 .expect("create worktree");

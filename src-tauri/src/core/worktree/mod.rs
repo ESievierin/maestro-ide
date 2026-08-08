@@ -9,7 +9,8 @@ mod provider;
 
 pub use git_cli::GitCli;
 pub use provider::{
-    BlameLine, BranchStatus, ChangedFile, GitProvider, MergeOutcome, WorktreeEntry,
+    BlameLine, BranchStatus, ChangedFile, GitProvider, LogEntry, MergeOutcome, Snapshot,
+    WorktreeEntry,
 };
 
 use std::path::{Path, PathBuf};
@@ -75,6 +76,28 @@ pub struct CreateWorktreeRequest {
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum RemoveOutcome {
     Removed,
+    DirtyConfirmationRequired,
+}
+
+/// A merge outcome plus what the manager did to host it. Flattened so the
+/// frontend sees one object: `{ merged, conflicts, message, switched_primary }`.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct MergeReport {
+    #[serde(flatten)]
+    pub outcome: MergeOutcome,
+    /// True when the primary worktree was switched to the target branch to host
+    /// the merge (the target was not checked out anywhere). The user's editor
+    /// open on the primary now shows the target branch — by design.
+    pub switched_primary: bool,
+}
+
+/// Result of a snapshot-restore request: restoring over uncommitted changes
+/// discards them, so a dirty worktree asks for confirmation first (same shape
+/// as [`RemoveOutcome`]).
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum RestoreOutcome {
+    Restored,
     DirtyConfirmationRequired,
 }
 
@@ -279,44 +302,65 @@ impl WorktreeManager {
         Ok(RemoveOutcome::Removed)
     }
 
-    /// Merge `source_branch`'s commits into whatever branch is checked out at
-    /// `target_branch`'s worktree (`git merge --no-ff`). The target worktree
-    /// must be clean — refused outright rather than mixing a merge into the
-    /// user's own uncommitted work. The source's own worktree, if dirty, is
-    /// not checked here: that only means its uncommitted work won't be part of
-    /// the merge, which the frontend surfaces as a heads-up, not a hard error.
-    pub fn merge_into(&self, source_branch: &str, target_branch: &str) -> Result<MergeOutcome> {
+    /// Merge `source_branch`'s commits into `target_branch` (`git merge --no-ff`).
+    ///
+    /// Where the merge runs depends on where the target lives:
+    /// - Checked out in some worktree → the merge runs there.
+    /// - Not checked out anywhere → the **primary worktree is switched to the
+    ///   target branch** and hosts the merge. That is the point, not a side
+    ///   effect: the primary is what the user's editor (Rider) has open, so the
+    ///   merged result — or the conflict to resolve — is immediately visible in
+    ///   it. `git switch` DWIM also covers targets that only exist as
+    ///   remote-tracking branches.
+    ///
+    /// Whichever worktree hosts the merge must be clean — refused outright
+    /// rather than mixing a merge (or a branch switch) into the user's own
+    /// uncommitted work. A dirty *source* worktree is not checked here: that
+    /// only means its uncommitted work won't be part of the merge, which the
+    /// frontend surfaces as a heads-up, not a hard error.
+    pub fn merge_into(&self, source_branch: &str, target_branch: &str) -> Result<MergeReport> {
         if source_branch == target_branch {
             return Err(MaestroError::InvalidData {
                 message: "cannot merge a branch into itself".into(),
             });
         }
         let repo = self.require_repo()?;
-        let target = self
-            .git
-            .list_worktrees(&repo)?
-            .into_iter()
-            .find(|e| e.branch.as_deref() == Some(target_branch))
-            .ok_or_else(|| MaestroError::InvalidData {
-                message: format!("no worktree has '{target_branch}' checked out"),
-            })?;
+        let worktrees = self.git.list_worktrees(&repo)?;
 
-        let status = self.git.branch_status(&target.path)?;
-        if status.dirty {
-            return Err(MaestroError::InvalidData {
-                message: format!(
-                    "'{target_branch}' has uncommitted changes — commit or discard them before merging"
-                ),
-            });
+        let (host, switched_primary) = match worktrees
+            .iter()
+            .find(|e| e.branch.as_deref() == Some(target_branch))
+        {
+            Some(target) => (target, false),
+            None => {
+                let primary = worktrees.iter().find(|e| e.is_primary).ok_or_else(|| {
+                    MaestroError::InvalidData {
+                        message: "repository has no primary worktree".into(),
+                    }
+                })?;
+                self.require_clean(&primary.path, target_branch)?;
+                self.git.switch_branch(&primary.path, target_branch)?;
+                tracing::info!(target_branch, "primary worktree switched to host the merge");
+                (primary, true)
+            }
+        };
+
+        if !switched_primary {
+            self.require_clean(&host.path, target_branch)?;
         }
 
-        let outcome = self.git.merge_branch(&target.path, source_branch)?;
+        let outcome = self.git.merge_branch(&host.path, source_branch)?;
         if outcome.merged {
             self.bus.publish(Event::WorktreeMerged {
                 source: source_branch.to_string(),
                 target: target_branch.to_string(),
             });
-            tracing::info!(source_branch, target_branch, "worktree merged");
+            tracing::info!(
+                source_branch,
+                target_branch,
+                switched_primary,
+                "worktree merged"
+            );
         } else {
             tracing::warn!(
                 source_branch,
@@ -325,7 +369,148 @@ impl WorktreeManager {
                 "merge stopped short"
             );
         }
-        Ok(outcome)
+        Ok(MergeReport {
+            outcome,
+            switched_primary,
+        })
+    }
+
+    /// Bring `branch` up to date with its base: fetch the base's remote state
+    /// (best effort) and merge the freshest base ref into `branch`'s worktree.
+    /// The inverse direction of [`merge_into`] — base flows *into* the feature
+    /// branch, the standard "my branch is behind develop" fix, one per worktree
+    /// after something lands in the base ("rebase-all" in spirit; a merge in
+    /// mechanics, so nothing is rewritten and a conflict stays an ordinary,
+    /// recoverable merge conflict).
+    pub fn sync_with_base(&self, branch: &str) -> Result<MergeReport> {
+        let repo = self.require_repo()?;
+        let base = match self.store.get_branch(branch)?.and_then(|b| b.base_branch) {
+            Some(base) => base,
+            None => self.git.default_branch(&repo)?,
+        };
+        let fresh = self.git.fresh_base_ref(&repo, &base);
+        tracing::info!(branch, base = %fresh, "syncing worktree with its base");
+        self.merge_into(&fresh, branch)
+    }
+
+    /// Stage everything and commit in `branch`'s worktree. This is the *user's*
+    /// commit button — the agents' commits still go through the PreToolUse gate;
+    /// a person clicking "commit" on their own diff needs no approval dialog.
+    pub fn commit_all(&self, branch: &str, message: &str) -> Result<String> {
+        let message = message.trim();
+        if message.is_empty() {
+            return Err(MaestroError::InvalidData {
+                message: "commit message must not be empty".into(),
+            });
+        }
+        let repo = self.require_repo()?;
+        let entry = self
+            .git
+            .list_worktrees(&repo)?
+            .into_iter()
+            .find(|e| e.branch.as_deref() == Some(branch))
+            .ok_or_else(|| MaestroError::InvalidData {
+                message: format!("no worktree for branch: {branch}"),
+            })?;
+        let summary = self.git.commit_all(&entry.path, message)?;
+        tracing::info!(branch, %summary, "worktree committed");
+        Ok(summary)
+    }
+
+    /// Record `branch`'s current uncommitted state as a named snapshot, leaving
+    /// the working tree untouched — a checkpoint to fall back to when an agent's
+    /// next attempt makes things worse instead of better.
+    pub fn snapshot_take(&self, branch: &str, label: &str) -> Result<()> {
+        let label = label.trim();
+        let label = if label.is_empty() {
+            "checkpoint"
+        } else {
+            label
+        };
+        let path = self.worktree_path(branch)?;
+        self.git.snapshot_push(&path, label)?;
+        tracing::info!(branch, label, "worktree snapshot taken");
+        Ok(())
+    }
+
+    /// Snapshots of `branch`'s worktree, newest first.
+    pub fn snapshot_list(&self, branch: &str) -> Result<Vec<Snapshot>> {
+        let path = self.worktree_path(branch)?;
+        self.git.snapshot_list(&path)
+    }
+
+    /// Replace the worktree's uncommitted state with snapshot `id`. Discards
+    /// whatever is there now — a dirty worktree requires explicit confirmation
+    /// (`confirmed = true`), a clean one has nothing to lose.
+    pub fn snapshot_restore(
+        &self,
+        branch: &str,
+        id: &str,
+        confirmed: bool,
+    ) -> Result<RestoreOutcome> {
+        let path = self.worktree_path(branch)?;
+        if !confirmed && self.git.branch_status(&path)?.dirty {
+            return Ok(RestoreOutcome::DirtyConfirmationRequired);
+        }
+        self.git.snapshot_restore(&path, id)?;
+        tracing::info!(branch, id, "worktree snapshot restored");
+        Ok(RestoreOutcome::Restored)
+    }
+
+    /// Delete snapshot `id` of `branch`'s worktree.
+    pub fn snapshot_drop(&self, branch: &str, id: &str) -> Result<()> {
+        let path = self.worktree_path(branch)?;
+        self.git.snapshot_drop(&path, id)?;
+        tracing::info!(branch, id, "worktree snapshot dropped");
+        Ok(())
+    }
+
+    /// Push `branch` to its remote. Only reachable through the explicit,
+    /// user-confirmed Push dialog — agents' pushes still stop at the gate.
+    pub fn push(&self, branch: &str) -> Result<String> {
+        let path = self.worktree_path(branch)?;
+        let report = self.git.push_branch(&path, branch)?;
+        tracing::info!(branch, "branch pushed");
+        Ok(report)
+    }
+
+    /// Commits on `branch` that its (freshly fetched) base does not have —
+    /// "what exactly is on this branch", the review aid before merge/push.
+    pub fn branch_log(&self, branch: &str, limit: usize) -> Result<Vec<LogEntry>> {
+        let repo = self.require_repo()?;
+        let base = match self.store.get_branch(branch)?.and_then(|b| b.base_branch) {
+            Some(base) => base,
+            None => self.git.default_branch(&repo)?,
+        };
+        let fresh = self.git.fresh_base_ref(&repo, &base);
+        self.git.branch_log(&repo, branch, &fresh, limit)
+    }
+
+    /// The path of the worktree that has `branch` checked out.
+    fn worktree_path(&self, branch: &str) -> Result<PathBuf> {
+        let repo = self.require_repo()?;
+        self.git
+            .list_worktrees(&repo)?
+            .into_iter()
+            .find(|e| e.branch.as_deref() == Some(branch))
+            .map(|e| e.path)
+            .ok_or_else(|| MaestroError::InvalidData {
+                message: format!("no worktree for branch: {branch}"),
+            })
+    }
+
+    /// Refuse to touch a worktree that has uncommitted changes.
+    fn require_clean(&self, worktree: &Path, label: &str) -> Result<()> {
+        let status = self.git.branch_status(worktree)?;
+        if status.dirty {
+            return Err(MaestroError::InvalidData {
+                message: format!(
+                    "the worktree that would host the merge into '{label}' has uncommitted \
+                     changes — commit or discard them there first"
+                ),
+            });
+        }
+        Ok(())
     }
 
     fn repo_info_for(&self, path: &Path) -> Result<RepoInfo> {
@@ -506,6 +691,11 @@ mod tests {
         dirty: HashSet<PathBuf>,
         merge_calls: Vec<(PathBuf, String)>,
         merge_outcome: Option<MergeOutcome>,
+        switch_calls: Vec<(PathBuf, String)>,
+        commit_calls: Vec<(PathBuf, String)>,
+        snapshots: Vec<Snapshot>,
+        restore_calls: Vec<(PathBuf, String)>,
+        push_calls: Vec<(PathBuf, String)>,
     }
 
     impl MockGit {
@@ -633,6 +823,71 @@ mod tests {
                 conflicts: Vec::new(),
                 message: "Fast-forward".into(),
             }))
+        }
+        fn switch_branch(&self, worktree: &Path, branch: &str) -> Result<()> {
+            let mut st = self.state.lock().unwrap();
+            st.switch_calls
+                .push((worktree.to_path_buf(), branch.to_string()));
+            // Mirror git: the worktree entry now has the new branch checked out.
+            if let Some(entry) = st.worktrees.iter_mut().find(|e| e.path == worktree) {
+                entry.branch = Some(branch.to_string());
+            }
+            Ok(())
+        }
+        fn commit_all(&self, worktree: &Path, message: &str) -> Result<String> {
+            let mut st = self.state.lock().unwrap();
+            st.commit_calls
+                .push((worktree.to_path_buf(), message.to_string()));
+            st.dirty.remove(worktree);
+            Ok(format!("abc1234 {message}"))
+        }
+        fn snapshot_push(&self, worktree: &Path, label: &str) -> Result<()> {
+            let mut st = self.state.lock().unwrap();
+            let id = format!("stash@{{{}}}", st.snapshots.len());
+            st.snapshots.push(Snapshot {
+                id,
+                label: label.to_string(),
+                created_at: "2026-08-08 00:00:00 +0000".into(),
+            });
+            let _ = worktree;
+            Ok(())
+        }
+        fn snapshot_list(&self, _worktree: &Path) -> Result<Vec<Snapshot>> {
+            Ok(self.state.lock().unwrap().snapshots.clone())
+        }
+        fn snapshot_restore(&self, worktree: &Path, id: &str) -> Result<()> {
+            let mut st = self.state.lock().unwrap();
+            st.restore_calls
+                .push((worktree.to_path_buf(), id.to_string()));
+            st.dirty.remove(worktree);
+            Ok(())
+        }
+        fn snapshot_drop(&self, _worktree: &Path, id: &str) -> Result<()> {
+            let mut st = self.state.lock().unwrap();
+            st.snapshots.retain(|s| s.id != id);
+            Ok(())
+        }
+        fn push_branch(&self, worktree: &Path, branch: &str) -> Result<String> {
+            let mut st = self.state.lock().unwrap();
+            st.push_calls
+                .push((worktree.to_path_buf(), branch.to_string()));
+            Ok(format!(
+                "branch '{branch}' set up to track 'origin/{branch}'"
+            ))
+        }
+        fn branch_log(
+            &self,
+            _repo: &Path,
+            branch: &str,
+            base: &str,
+            _limit: usize,
+        ) -> Result<Vec<LogEntry>> {
+            Ok(vec![LogEntry {
+                sha: "abc1234".into(),
+                subject: format!("work on {branch} over {base}"),
+                author: "Mock".into(),
+                date: "2026-08-08".into(),
+            }])
         }
     }
 
@@ -764,13 +1019,6 @@ mod tests {
     }
 
     #[test]
-    fn merge_into_requires_the_target_to_have_a_checked_out_worktree() {
-        let (mgr, _git, _bus) = manager_with_git();
-        let err = mgr.merge_into("impl/T-1-x", "develop").unwrap_err();
-        assert!(err.to_string().contains("develop"), "{err}");
-    }
-
-    #[test]
     fn merge_into_refuses_a_dirty_target_without_attempting_the_merge() {
         let (mgr, git, _bus) = manager_with_git();
         git.state
@@ -792,15 +1040,149 @@ mod tests {
         let (mgr, git, bus) = manager_with_git();
         let mut rx = bus.subscribe();
 
-        let outcome = mgr.merge_into("impl/T-1-x", "main").unwrap();
-        assert!(outcome.merged);
+        let report = mgr.merge_into("impl/T-1-x", "main").unwrap();
+        assert!(report.outcome.merged);
+        assert!(!report.switched_primary, "'main' is already checked out");
         assert_eq!(
             git.state.lock().unwrap().merge_calls,
             vec![(PathBuf::from("/repo"), "impl/T-1-x".to_string())]
         );
+        assert!(git.state.lock().unwrap().switch_calls.is_empty());
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.name(), "worktree.merged");
+    }
+
+    /// The Rider path: a target that no worktree has checked out is hosted by
+    /// the primary worktree, which is switched to it first.
+    #[test]
+    fn merge_into_an_unchecked_out_branch_switches_the_primary_first() {
+        let (mgr, git, _bus) = manager_with_git();
+
+        let report = mgr.merge_into("impl/T-1-x", "develop").unwrap();
+        assert!(report.outcome.merged);
+        assert!(report.switched_primary);
+        let st = git.state.lock().unwrap();
+        assert_eq!(
+            st.switch_calls,
+            vec![(PathBuf::from("/repo"), "develop".to_string())]
+        );
+        assert_eq!(
+            st.merge_calls,
+            vec![(PathBuf::from("/repo"), "impl/T-1-x".to_string())],
+            "the merge runs in the freshly-switched primary"
+        );
+    }
+
+    #[test]
+    fn merge_into_an_unchecked_out_branch_refuses_a_dirty_primary() {
+        let (mgr, git, _bus) = manager_with_git();
+        git.state
+            .lock()
+            .unwrap()
+            .dirty
+            .insert(PathBuf::from("/repo"));
+
+        let err = mgr.merge_into("impl/T-1-x", "develop").unwrap_err();
+        assert!(err.to_string().contains("uncommitted"), "{err}");
+        let st = git.state.lock().unwrap();
+        assert!(
+            st.switch_calls.is_empty() && st.merge_calls.is_empty(),
+            "a dirty primary must not be switched, let alone merged into"
+        );
+    }
+
+    #[test]
+    fn sync_with_base_merges_the_stored_base_into_the_branch_worktree() {
+        let (mgr, git, _bus) = manager_with_git();
+        let info = mgr
+            .create(CreateWorktreeRequest {
+                existing_branch: None,
+                kind: Some("impl".into()),
+                task_id: Some("T-5".into()),
+                slug: Some("sync".into()),
+                base: None, // defaults to "main", stored as the branch's base
+            })
+            .unwrap();
+
+        let report = mgr.sync_with_base("impl/T-5-sync").unwrap();
+        assert!(report.outcome.merged);
+        assert_eq!(
+            git.state.lock().unwrap().merge_calls,
+            vec![(info.path, "main".to_string())],
+            "the base merges into the branch's own worktree"
+        );
+    }
+
+    #[test]
+    fn commit_all_commits_in_the_branch_worktree_and_rejects_empty_messages() {
+        let (mgr, git, _bus) = manager_with_git();
+
+        assert!(mgr.commit_all("main", "   ").is_err(), "blank message");
+        assert!(
+            mgr.commit_all("no-such-branch", "msg").is_err(),
+            "unknown branch"
+        );
+
+        let summary = mgr.commit_all("main", "fix: the thing").unwrap();
+        assert!(summary.contains("fix: the thing"));
+        assert_eq!(
+            git.state.lock().unwrap().commit_calls,
+            vec![(PathBuf::from("/repo"), "fix: the thing".to_string())]
+        );
+    }
+
+    #[test]
+    fn snapshot_restore_over_a_dirty_worktree_needs_confirmation() {
+        let (mgr, git, _bus) = manager_with_git();
+        mgr.snapshot_take("main", "before the risky attempt")
+            .unwrap();
+        git.state
+            .lock()
+            .unwrap()
+            .dirty
+            .insert(PathBuf::from("/repo"));
+
+        let snapshots = mgr.snapshot_list("main").unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].label, "before the risky attempt");
+
+        let id = snapshots[0].id.clone();
+        assert_eq!(
+            mgr.snapshot_restore("main", &id, false).unwrap(),
+            RestoreOutcome::DirtyConfirmationRequired,
+            "dirty state is not silently discarded"
+        );
+        assert!(git.state.lock().unwrap().restore_calls.is_empty());
+
+        assert_eq!(
+            mgr.snapshot_restore("main", &id, true).unwrap(),
+            RestoreOutcome::Restored
+        );
+        assert_eq!(
+            git.state.lock().unwrap().restore_calls,
+            vec![(PathBuf::from("/repo"), id)]
+        );
+
+        mgr.snapshot_drop("main", &snapshots[0].id).unwrap();
+        assert!(mgr.snapshot_list("main").unwrap().is_empty());
+    }
+
+    #[test]
+    fn push_runs_in_the_branch_worktree_and_branch_log_reads_the_stored_base() {
+        let (mgr, git, _bus) = manager_with_git();
+
+        let report = mgr.push("main").unwrap();
+        assert!(report.contains("origin/main"));
+        assert_eq!(
+            git.state.lock().unwrap().push_calls,
+            vec![(PathBuf::from("/repo"), "main".to_string())]
+        );
+        assert!(mgr.push("no-such-branch").is_err());
+
+        let log = mgr.branch_log("main", 50).unwrap();
+        assert_eq!(log.len(), 1);
+        assert!(log[0].subject.contains("main"));
     }
 
     #[test]
@@ -813,9 +1195,9 @@ mod tests {
             message: "CONFLICT (content): Merge conflict in src/lib.rs".into(),
         });
 
-        let outcome = mgr.merge_into("impl/T-1-x", "main").unwrap();
-        assert!(!outcome.merged);
-        assert_eq!(outcome.conflicts, vec!["src/lib.rs".to_string()]);
+        let report = mgr.merge_into("impl/T-1-x", "main").unwrap();
+        assert!(!report.outcome.merged);
+        assert_eq!(report.outcome.conflicts, vec!["src/lib.rs".to_string()]);
         assert!(
             rx.try_recv().is_err(),
             "a conflicted merge must not publish worktree.merged"

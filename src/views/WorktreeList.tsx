@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Icon, StatusDot } from "../components/Icon";
+import { useChecks } from "../state/checks";
 import { useDiffs } from "../state/diffs";
+import { useUI } from "../state/ui";
 import { activeSessionCount, useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
 import type { WorktreeInfo } from "../types/worktrees";
@@ -18,6 +20,7 @@ function StatusBadges({ wt }: { wt: WorktreeInfo }) {
   const diffFiles = useDiffs((s) =>
     wt.branch ? (s.snapshots[`${wt.branch}|worktree`]?.files.length ?? null) : null,
   );
+  const check = useChecks((s) => (wt.branch ? s.results[wt.branch] : undefined));
 
   const list = sessions ?? [];
   const working = list.some((s) => s.status === "streaming" || s.status === "spawning");
@@ -32,6 +35,21 @@ function StatusBadges({ wt }: { wt: WorktreeInfo }) {
       {failed && (
         <span className="badge badge-failed">
           <Icon name="alert" size={11} /> failed
+        </span>
+      )}
+      {check?.status === "running" && (
+        <span className="badge badge-info">
+          <Icon name="spinner" size={11} spin /> checks
+        </span>
+      )}
+      {check?.status === "passed" && (
+        <span className="badge badge-active" title="Latest check run passed">
+          <Icon name="check" size={11} /> checks
+        </span>
+      )}
+      {check?.status === "failed" && (
+        <span className="badge badge-failed" title="Latest check run failed">
+          <Icon name="close" size={11} /> checks
         </span>
       )}
       {awaiting && (
@@ -122,11 +140,14 @@ function RepoPicker({ current, onDone }: { current: string | null; onDone: () =>
 }
 
 export function WorktreeList() {
-  const { repo, worktrees, selected, loading, error, refresh, remove, select, clearError } =
+  const { repo, worktrees, selected, loading, error, refresh, remove, sync, select, clearError } =
     useWorktrees();
-  const [showCreate, setShowCreate] = useState(false);
+  const showCreate = useUI((s) => s.dialog === "create");
+  const openDialog = useUI((s) => s.openDialog);
+  const closeDialog = useUI((s) => s.closeDialog);
   const [switchingRepo, setSwitchingRepo] = useState(false);
   const [mergeSource, setMergeSource] = useState<WorktreeInfo | null>(null);
+  const [syncing, setSyncing] = useState<string | null>(null);
 
   useEffect(() => {
     // refresh is a stable zustand action; run once on mount.
@@ -143,12 +164,39 @@ export function WorktreeList() {
     }
   };
 
+  const onSync = async (branch: string) => {
+    setSyncing(branch);
+    const outcome = await sync(branch);
+    setSyncing(null);
+    if (!outcome) return; // the failure is already on the error banner / toast
+    const { useToasts } = await import("../state/toasts");
+    if (outcome.merged) {
+      useToasts.getState().push({
+        severity: "info",
+        code: "synced",
+        message: `'${branch}' is up to date with its base.`,
+      });
+    } else if (outcome.conflicts.length > 0) {
+      useToasts.getState().push({
+        severity: "warning",
+        code: "sync-conflicts",
+        message: `Sync of '${branch}' stopped on ${outcome.conflicts.length} conflicting file${outcome.conflicts.length > 1 ? "s" : ""} — resolve in its worktree and commit, or run git merge --abort there.`,
+      });
+    } else {
+      useToasts.getState().push({
+        severity: "warning",
+        code: "sync-failed",
+        message: outcome.message || `Sync of '${branch}' failed.`,
+      });
+    }
+  };
+
   return (
     <aside className="worktree-list">
       <div className="panel-header">
         <h2>Worktrees</h2>
         {repo && (
-          <button className="small" onClick={() => setShowCreate(true)} title="New worktree">
+          <button className="small" onClick={() => openDialog("create")} title="New worktree">
             <Icon name="plus" /> New
           </button>
         )}
@@ -195,6 +243,22 @@ export function WorktreeList() {
                   <div className="wt-meta">
                     {wt.task_id && <span className="wt-task">{wt.task_id}</span>}
                     <span className="wt-actions">
+                      {!wt.is_primary && wt.branch && (
+                        <button
+                          className="small icon-only ghost wt-merge"
+                          title="Sync with base (merge the base branch in)"
+                          disabled={syncing === wt.branch}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void onSync(wt.branch as string);
+                          }}
+                        >
+                          <Icon
+                            name={syncing === wt.branch ? "spinner" : "arrow-down"}
+                            spin={syncing === wt.branch}
+                          />
+                        </button>
+                      )}
                       {wt.branch && worktrees.length > 1 && (
                         <button
                           className="small icon-only ghost wt-merge"
@@ -228,13 +292,12 @@ export function WorktreeList() {
         </>
       )}
 
-      {showCreate && repo && (
-        <CreateWorktreeDialog repo={repo} onClose={() => setShowCreate(false)} />
-      )}
+      {showCreate && repo && <CreateWorktreeDialog repo={repo} onClose={closeDialog} />}
       {mergeSource && (
         <MergeDialog
           source={mergeSource}
           worktrees={worktrees}
+          repo={repo}
           onClose={() => setMergeSource(null)}
         />
       )}

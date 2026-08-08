@@ -1,4 +1,5 @@
 import { Icon, type IconName } from "../components/Icon";
+import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useAttention } from "../state/attention";
 import { useWorktrees } from "../state/worktrees";
 import type { AttentionItem } from "../types/attention";
@@ -22,6 +23,7 @@ export function AttentionPanel({ onClose }: { onClose: () => void }) {
     useAttention();
   const select = useWorktrees((s) => s.select);
   const setTab = useWorktrees((s) => s.setTab);
+  useEscapeToClose(onClose);
 
   const navigate = (item: AttentionItem) => {
     if (item.branch) {

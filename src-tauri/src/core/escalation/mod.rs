@@ -498,7 +498,7 @@ mod tests {
             engine.clone(),
         ));
         let worktrees = Arc::new(crate::core::worktree::WorktreeManager::new(
-            Arc::new(crate::core::worktree::GitCli),
+            Arc::new(crate::core::worktree::GitCli::new()),
             store.clone(),
             bus.clone(),
         ));

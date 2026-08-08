@@ -15,6 +15,7 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::core::agent::protocol::Attachment;
 use crate::core::attention::{AttentionItem, AttentionManager};
 use crate::core::bus::{Event, EventBus};
+use crate::core::checks::{CheckResult, ChecksManager};
 use crate::core::diff::{DiffManager, DiffScope, DiffSnapshot, FileDiff};
 use crate::core::gate::{GateManager, GateParam, PendingGate};
 use crate::core::notes::{Notes, NotesManager};
@@ -23,8 +24,8 @@ use crate::core::questions::{LineQuestionInfo, LineQuestionManager};
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
 use crate::core::store::{Branch, Store};
 use crate::core::worktree::{
-    BlameLine, CreateWorktreeRequest, MergeOutcome, RemoveOutcome, RepoInfo, WorktreeInfo,
-    WorktreeManager,
+    BlameLine, CreateWorktreeRequest, LogEntry, MergeReport, RemoveOutcome, RepoInfo,
+    RestoreOutcome, Snapshot, WorktreeInfo, WorktreeManager,
 };
 use crate::error::MaestroError;
 
@@ -42,6 +43,7 @@ pub struct AppState {
     pub prompts: Arc<PromptManager>,
     pub notes: Arc<NotesManager>,
     pub attention: Arc<AttentionManager>,
+    pub checks: Arc<ChecksManager>,
 }
 
 /// Forward every bus event to the frontend over a single Tauri event channel.
@@ -142,19 +144,163 @@ pub async fn remove_worktree(
     run_core(state.bus.clone(), move || mgr.remove(&branch, force)).await
 }
 
-/// Merge `source_branch` into whatever branch `target_branch`'s worktree has
-/// checked out.
+/// Open a worktree's directory in an external tool: `"explorer"` or `"editor"`
+/// (the configured/auto-detected editor — Rider by default).
+#[tauri::command]
+pub async fn open_worktree(
+    state: State<'_, AppState>,
+    branch: String,
+    target: String,
+) -> Result<(), String> {
+    let mgr = state.worktrees.clone();
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        let worktree = mgr
+            .list()?
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some(branch.as_str()))
+            .ok_or_else(|| MaestroError::InvalidData {
+                message: format!("no worktree for branch: {branch}"),
+            })?;
+        match target.as_str() {
+            "explorer" => crate::core::launcher::open_in_explorer(&worktree.path),
+            "editor" => crate::core::launcher::open_in_editor(store.as_ref(), &worktree.path),
+            other => Err(MaestroError::InvalidData {
+                message: format!("unknown open target: {other}"),
+            }),
+        }
+    })
+    .await
+}
+
+/// Merge `source_branch` into `target_branch` — in the target's own worktree
+/// when it has one, otherwise in the primary worktree (switched to the target
+/// first, so the result is visible in the editor that has the primary open).
 #[tauri::command]
 pub async fn merge_worktree(
     state: State<'_, AppState>,
     source_branch: String,
     target_branch: String,
-) -> Result<MergeOutcome, String> {
+) -> Result<MergeReport, String> {
     let mgr = state.worktrees.clone();
     run_core(state.bus.clone(), move || {
         mgr.merge_into(&source_branch, &target_branch)
     })
     .await
+}
+
+/// Merge `branch`'s (freshly fetched) base branch into it — "my branch is
+/// behind develop", fixed in one click per worktree.
+#[tauri::command]
+pub async fn sync_worktree(
+    state: State<'_, AppState>,
+    branch: String,
+) -> Result<MergeReport, String> {
+    let mgr = state.worktrees.clone();
+    run_core(state.bus.clone(), move || mgr.sync_with_base(&branch)).await
+}
+
+/// Stage everything and commit in `branch`'s worktree (the user's own commit
+/// button — agent commits still pass the gate). Returns `<short-sha> <subject>`.
+#[tauri::command]
+pub async fn commit_worktree(
+    state: State<'_, AppState>,
+    branch: String,
+    message: String,
+) -> Result<String, String> {
+    let mgr = state.worktrees.clone();
+    run_core(state.bus.clone(), move || mgr.commit_all(&branch, &message)).await
+}
+
+/// Push `branch` to its remote. The caller (PushDialog) has shown the user the
+/// exact command and got an explicit confirmation.
+#[tauri::command]
+pub async fn push_worktree(state: State<'_, AppState>, branch: String) -> Result<String, String> {
+    let mgr = state.worktrees.clone();
+    run_core(state.bus.clone(), move || mgr.push(&branch)).await
+}
+
+/// Commits on `branch` that its base does not have (newest first, capped).
+#[tauri::command]
+pub async fn branch_log(
+    state: State<'_, AppState>,
+    branch: String,
+) -> Result<Vec<LogEntry>, String> {
+    let mgr = state.worktrees.clone();
+    run_core(state.bus.clone(), move || mgr.branch_log(&branch, 100)).await
+}
+
+// ---------- checks ----------
+
+/// The configured check command, if any — the frontend hides check UI without one.
+#[tauri::command]
+pub async fn get_check_command(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let checks = state.checks.clone();
+    run_core(state.bus.clone(), move || checks.command()).await
+}
+
+/// Start the configured check in `branch`'s worktree; progress travels the bus.
+#[tauri::command]
+pub async fn run_check(state: State<'_, AppState>, branch: String) -> Result<(), String> {
+    let checks = state.checks.clone();
+    run_core(state.bus.clone(), move || checks.run(&branch)).await
+}
+
+/// Latest check result for `branch` (None until a check has run this app session).
+#[tauri::command]
+pub async fn get_check(
+    state: State<'_, AppState>,
+    branch: String,
+) -> Result<Option<CheckResult>, String> {
+    Ok(state.checks.get(&branch))
+}
+
+// ---------- worktree snapshots ----------
+
+#[tauri::command]
+pub async fn take_snapshot(
+    state: State<'_, AppState>,
+    branch: String,
+    label: String,
+) -> Result<(), String> {
+    let mgr = state.worktrees.clone();
+    run_core(state.bus.clone(), move || {
+        mgr.snapshot_take(&branch, &label)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_snapshots(
+    state: State<'_, AppState>,
+    branch: String,
+) -> Result<Vec<Snapshot>, String> {
+    let mgr = state.worktrees.clone();
+    run_core(state.bus.clone(), move || mgr.snapshot_list(&branch)).await
+}
+
+#[tauri::command]
+pub async fn restore_snapshot(
+    state: State<'_, AppState>,
+    branch: String,
+    id: String,
+    confirmed: bool,
+) -> Result<RestoreOutcome, String> {
+    let mgr = state.worktrees.clone();
+    run_core(state.bus.clone(), move || {
+        mgr.snapshot_restore(&branch, &id, confirmed)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn drop_snapshot(
+    state: State<'_, AppState>,
+    branch: String,
+    id: String,
+) -> Result<(), String> {
+    let mgr = state.worktrees.clone();
+    run_core(state.bus.clone(), move || mgr.snapshot_drop(&branch, &id)).await
 }
 
 // ---------- sessions ----------

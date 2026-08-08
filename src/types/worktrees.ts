@@ -34,10 +34,23 @@ export interface CreateWorktreeRequest {
 
 export type RemoveOutcome = { outcome: "removed" } | { outcome: "dirty_confirmation_required" };
 
+/** One saved worktree snapshot (a specially-labeled git stash entry). */
+export interface Snapshot {
+  /** Stash reference (`stash@{N}`). Positional — refresh the list before use. */
+  id: string;
+  label: string;
+  created_at: string;
+}
+
+export type RestoreOutcome = { outcome: "restored" } | { outcome: "dirty_confirmation_required" };
+
 export interface MergeOutcome {
   merged: boolean;
   /** Paths with conflict markers, when `merged` is false because of a conflict. */
   conflicts: string[];
   /** Git's own stdout/stderr, shown verbatim on an unexpected (non-conflict) failure. */
   message: string;
+  /** True when the primary worktree was switched to the target branch to host the
+   * merge (the target was not checked out in any worktree). */
+  switched_primary: boolean;
 }

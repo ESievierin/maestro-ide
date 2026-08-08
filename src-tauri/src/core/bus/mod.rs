@@ -29,6 +29,18 @@ pub enum Event {
     #[serde(rename = "worktree.merged")]
     WorktreeMerged { source: String, target: String },
 
+    /// The configured check command started running in `branch`'s worktree.
+    #[serde(rename = "check.started")]
+    CheckStarted { branch: String },
+
+    /// The check command finished (or timed out / failed to launch).
+    #[serde(rename = "check.finished")]
+    CheckFinished {
+        branch: String,
+        passed: bool,
+        exit_code: Option<i32>,
+    },
+
     #[serde(rename = "session.status_changed")]
     SessionStatusChanged {
         session_id: String,
@@ -273,6 +285,8 @@ impl Event {
             Event::WorktreeCreated { .. } => "worktree.created",
             Event::WorktreeRemoved { .. } => "worktree.removed",
             Event::WorktreeMerged { .. } => "worktree.merged",
+            Event::CheckStarted { .. } => "check.started",
+            Event::CheckFinished { .. } => "check.finished",
             Event::SessionStatusChanged { .. } => "session.status_changed",
             Event::SessionStreamDelta { .. } => "session.stream_delta",
             Event::SessionToolUse { .. } => "session.tool_use",

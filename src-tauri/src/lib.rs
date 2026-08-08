@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crate::core::agent::{SidecarConfig, SidecarEngine};
 use crate::core::attention::AttentionManager;
 use crate::core::bus::EventBus;
+use crate::core::checks::ChecksManager;
 use crate::core::config::Config;
 use crate::core::diff::DiffManager;
 use crate::core::escalation::EscalationManager;
@@ -66,7 +67,7 @@ pub fn run() {
         tracing::warn!(error = %err, "could not apply config.toml");
     }
 
-    let git: Arc<GitCli> = Arc::new(GitCli);
+    let git: Arc<GitCli> = Arc::new(GitCli::new());
     let worktrees = Arc::new(WorktreeManager::new(
         git.clone(),
         store.clone(),
@@ -143,6 +144,11 @@ pub fn run() {
         as std::sync::Weak<dyn core::session::manager::EscalationHandler>);
 
     let attention = Arc::new(AttentionManager::new(bus.clone()));
+    let checks = Arc::new(ChecksManager::new(
+        store.clone(),
+        worktrees.clone(),
+        bus.clone(),
+    ));
 
     let state = AppState {
         bus: bus.clone(),
@@ -155,6 +161,7 @@ pub fn run() {
         prompts,
         notes,
         attention: attention.clone(),
+        checks: checks.clone(),
     };
 
     tauri::Builder::default()
@@ -170,6 +177,18 @@ pub fn run() {
             ipc::create_worktree,
             ipc::remove_worktree,
             ipc::merge_worktree,
+            ipc::sync_worktree,
+            ipc::commit_worktree,
+            ipc::open_worktree,
+            ipc::take_snapshot,
+            ipc::list_snapshots,
+            ipc::restore_snapshot,
+            ipc::drop_snapshot,
+            ipc::get_check_command,
+            ipc::run_check,
+            ipc::get_check,
+            ipc::push_worktree,
+            ipc::branch_log,
             ipc::spawn_session,
             ipc::send_prompt,
             ipc::interrupt_session,
@@ -206,6 +225,7 @@ pub fn run() {
             tauri::async_runtime::spawn(questions.clone().run_loop(bus.clone()));
             tauri::async_runtime::spawn(attention.clone().run_loop(bus.clone()));
             tauri::async_runtime::spawn(escalations.clone().run_loop(bus.clone()));
+            tauri::async_runtime::spawn(checks.clone().run_auto_loop(bus.clone()));
             tracing::info!("event forwarder, session manager, and diff invalidator started");
             Ok(())
         })

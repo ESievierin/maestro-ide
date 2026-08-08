@@ -1445,7 +1445,7 @@ mod tests {
         let engine = Arc::new(MockEngine::default());
         let dir = tempfile::tempdir().unwrap();
         let worktrees = Arc::new(crate::core::worktree::WorktreeManager::new(
-            Arc::new(crate::core::worktree::GitCli),
+            Arc::new(crate::core::worktree::GitCli::new()),
             store.clone(),
             bus.clone(),
         ));

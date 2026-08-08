@@ -22,7 +22,9 @@ import { BranchLogDialog } from "./views/BranchLogDialog";
 import { HotkeysDialog } from "./views/HotkeysDialog";
 import { MergeDialog } from "./views/MergeDialog";
 import { CommandPalette } from "./views/CommandPalette";
+import { DaemonPanel } from "./views/DaemonPanel";
 import { useChecks } from "./state/checks";
+import { useDaemon } from "./state/daemon";
 
 function MainPanel() {
   const selected = useWorktrees((s) => s.selected);
@@ -221,6 +223,7 @@ export default function App() {
           <Icon name="branch" size={16} className="brand-mark" /> MaestroIDE
         </h1>
         <div className="actions">
+          <DaemonChip />
           <AttentionArea count={attentionCount} />
           <button
             className="small ghost"
@@ -263,8 +266,40 @@ export default function App() {
       <GateDialog />
       {dialog === "prompts" && <PromptEditor onClose={closeDialog} />}
       {dialog === "hotkeys" && <HotkeysDialog onClose={closeDialog} />}
+      {dialog === "daemon" && <DaemonPanel onClose={closeDialog} />}
       {paletteOpen && <CommandPalette onClose={() => setPalette(false)} />}
     </div>
+  );
+}
+
+/** Daemon status in the header: hidden until first fetch, then shows on/off,
+ * queue depth and a spinning icon while a task runs. Opens the daemon panel. */
+function DaemonChip() {
+  const status = useDaemon((s) => s.status);
+  const fetchStatus = useDaemon((s) => s.fetchStatus);
+  const openDialog = useUI((s) => s.openDialog);
+
+  useEffect(() => {
+    void fetchStatus();
+  }, [fetchStatus]);
+
+  if (!status) return null;
+  const busy = status.running !== null;
+  return (
+    <button
+      className={`small ghost ${status.last_error ? "attention-alert" : ""}`}
+      onClick={() => openDialog("daemon")}
+      title={
+        status.enabled
+          ? `Daemon on — acting as ${status.account || "?"}${status.repo ? ` on ${status.repo}` : ""}`
+          : "GitHub daemon (off)"
+      }
+    >
+      <Icon name="bot" spin={busy} /> Daemon
+      {status.enabled && (status.queued > 0 || busy) && (
+        <span className="count-pill">{status.queued + (busy ? 1 : 0)}</span>
+      )}
+    </button>
   );
 }
 

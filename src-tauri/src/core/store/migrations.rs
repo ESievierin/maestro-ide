@@ -55,5 +55,23 @@ pub fn runner() -> Migrations<'static> {
             // S2-T2: which extra tool profile a session ran with (audit + resume).
             "ALTER TABLE sessions ADD COLUMN tools_profile TEXT;",
         ),
+        M::up(
+            // Этап 3: the GitHub daemon's task queue. `key` is the idempotency
+            // anchor (issue:{slug}#{n} / pr-comment:{slug}#{pr}:{comment}) — a
+            // restart can re-discover the same event without duplicating work.
+            r#"
+        CREATE TABLE daemon_tasks (
+            key         TEXT PRIMARY KEY,
+            kind        TEXT NOT NULL,
+            state       TEXT NOT NULL,
+            title       TEXT NOT NULL,
+            payload     TEXT NOT NULL,
+            branch      TEXT,
+            session_id  TEXT,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
+        "#,
+        ),
     ])
 }

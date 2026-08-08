@@ -3,6 +3,7 @@ pub mod attention;
 pub mod bus;
 pub mod checks;
 pub mod config;
+pub mod daemon;
 pub mod diff;
 pub mod escalation;
 pub mod gate;

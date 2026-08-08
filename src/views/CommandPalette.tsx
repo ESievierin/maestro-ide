@@ -175,6 +175,12 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         run: () => openDialog("prompts"),
       },
       {
+        id: "app:daemon",
+        icon: "bot",
+        label: "GitHub daemon…",
+        run: () => openDialog("daemon"),
+      },
+      {
         id: "app:hotkeys",
         icon: "question",
         label: "Keyboard shortcuts",

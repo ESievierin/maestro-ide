@@ -166,6 +166,8 @@ export type BusEvent =
       type: "escalation.failed";
       data: { asking_session_id: string; target_session_id: string; reason: string };
     }
+  | { type: "daemon.updated"; data: Record<string, never> }
+  | { type: "daemon.task_finished"; data: { key: string; title: string; ok: boolean } }
   | { type: "notes.updated"; data: { branch: string } }
   | { type: "attention.updated"; data: { count: number } }
   | {

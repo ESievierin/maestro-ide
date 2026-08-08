@@ -1,10 +1,19 @@
 # GitHub Daemon (Этап 3) — build-ready design
 
-Status: **designed, not yet implemented.** This document turns the Этап 3 idea
-list into an architecture mapped onto the existing core, so implementation can
-start without re-deciding anything fundamental. It was deliberately _not_ built
-unattended: the daemon talks to the real work GitHub account, and its first run
-should happen with the user present (auth account choice, thresholds, dry-run).
+Status: **implemented** (`core/daemon/`), not yet exercised against live
+GitHub. Deviations from this design, made during implementation:
+
+- No `daemon_expected_login` guard; instead `daemon_account` **selects** the
+  account (picker in the daemon panel, default = gh's active account) and every
+  API call carries that account's token via `GH_TOKEN` — the daemon never
+  depends on, nor switches, gh's globally active account.
+- `daemon_repo = "owner/name"` optionally overrides the watched repository;
+  default derives from the open repository's origin remote.
+- Issue keys are `issue:{owner/repo}#{n}` and each issue gets a dedicated
+  research worktree (`GH-{n}`) instead of reverse-parsing task ids.
+- The PR-comment flow spawns a plan-mode research session writing
+  `REVIEW_PLAN.md`; the `gh_pr_comment` gate rule (posting replies) remains
+  future work — today nothing daemon-related can post at all.
 
 ## What it does
 

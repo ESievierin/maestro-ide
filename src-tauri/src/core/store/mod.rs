@@ -26,6 +26,26 @@ pub struct Branch {
     pub created_at: DateTime<Utc>,
 }
 
+/// One unit of daemon work, keyed for idempotency (see `daemon_tasks` migration).
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct DaemonTask {
+    pub key: String,
+    /// `"issue"` or `"pr_comment"`.
+    pub kind: String,
+    /// `queued | running | done | failed | dismissed`.
+    pub state: String,
+    /// Human-readable line for the queue panel.
+    pub title: String,
+    /// JSON blob the flow needs (issue body, comment text, head ref, …).
+    pub payload: String,
+    /// Worktree branch, once the task got one.
+    pub branch: Option<String>,
+    /// Session it spawned, once running.
+    pub session_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Storage boundary. Concrete impl: SQLite. Test doubles implement this trait.
 pub trait Store: Send + Sync {
     /// Insert the branch if new. On conflict, `task_id`/`base_branch` are only
@@ -63,6 +83,29 @@ pub trait Store: Send + Sync {
 
     fn get_setting(&self, key: &str) -> Result<Option<String>>;
     fn set_setting(&self, key: &str, value: &str) -> Result<()>;
+
+    // ---------- daemon task queue ----------
+
+    /// Insert a new task in `queued` state. Returns `false` (and changes
+    /// nothing) when the key was already seen — the idempotency contract.
+    fn insert_daemon_task(&self, task: &DaemonTask) -> Result<bool>;
+    /// Every task, newest first — the queue panel's listing.
+    fn list_daemon_tasks(&self) -> Result<Vec<DaemonTask>>;
+    /// Update a task's state (and optionally attach a branch / session id).
+    fn update_daemon_task(
+        &self,
+        key: &str,
+        state: &str,
+        branch: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<()>;
+    /// Oldest task still in `queued` state, if any.
+    fn next_queued_daemon_task(&self) -> Result<Option<DaemonTask>>;
+    /// The task currently in `running` state, if any (the daemon runs one at a time).
+    fn running_daemon_task(&self) -> Result<Option<DaemonTask>>;
+    /// Put any `running` tasks back to `queued` — app restart: their sessions
+    /// are already failed by `fail_stale_sessions`, the work is not lost.
+    fn requeue_running_daemon_tasks(&self) -> Result<usize>;
 }
 
 /// SQLite-backed store. A single connection behind a mutex is sufficient for the
@@ -346,6 +389,121 @@ impl Store for SqliteStore {
             Ok(())
         })
     }
+
+    fn insert_daemon_task(&self, task: &DaemonTask) -> Result<bool> {
+        self.with_conn(|conn| {
+            let inserted = conn.execute(
+                "INSERT OR IGNORE INTO daemon_tasks
+                     (key, kind, state, title, payload, branch, session_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    task.key,
+                    task.kind,
+                    task.state,
+                    task.title,
+                    task.payload,
+                    task.branch,
+                    task.session_id,
+                    task.created_at,
+                    task.updated_at,
+                ],
+            )?;
+            Ok(inserted > 0)
+        })
+    }
+
+    fn list_daemon_tasks(&self) -> Result<Vec<DaemonTask>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {DAEMON_TASK_COLUMNS} FROM daemon_tasks ORDER BY created_at DESC"
+            ))?;
+            let tasks = stmt
+                .query_map([], daemon_task_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(tasks)
+        })
+    }
+
+    fn update_daemon_task(
+        &self,
+        key: &str,
+        state: &str,
+        branch: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "UPDATE daemon_tasks SET
+                     state = ?2,
+                     branch = COALESCE(?3, branch),
+                     session_id = COALESCE(?4, session_id),
+                     updated_at = ?5
+                 WHERE key = ?1",
+                params![key, state, branch, session_id, Utc::now()],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn next_queued_daemon_task(&self) -> Result<Option<DaemonTask>> {
+        self.with_conn(|conn| {
+            let task = conn
+                .query_row(
+                    &format!(
+                        "SELECT {DAEMON_TASK_COLUMNS} FROM daemon_tasks
+                         WHERE state = 'queued' ORDER BY created_at ASC LIMIT 1"
+                    ),
+                    [],
+                    daemon_task_from_row,
+                )
+                .optional()?;
+            Ok(task)
+        })
+    }
+
+    fn running_daemon_task(&self) -> Result<Option<DaemonTask>> {
+        self.with_conn(|conn| {
+            let task = conn
+                .query_row(
+                    &format!(
+                        "SELECT {DAEMON_TASK_COLUMNS} FROM daemon_tasks
+                         WHERE state = 'running' ORDER BY created_at ASC LIMIT 1"
+                    ),
+                    [],
+                    daemon_task_from_row,
+                )
+                .optional()?;
+            Ok(task)
+        })
+    }
+
+    fn requeue_running_daemon_tasks(&self) -> Result<usize> {
+        self.with_conn(|conn| {
+            let n = conn.execute(
+                "UPDATE daemon_tasks SET state = 'queued', session_id = NULL, updated_at = ?1
+                 WHERE state = 'running'",
+                params![Utc::now()],
+            )?;
+            Ok(n)
+        })
+    }
+}
+
+const DAEMON_TASK_COLUMNS: &str =
+    "key, kind, state, title, payload, branch, session_id, created_at, updated_at";
+
+fn daemon_task_from_row(row: &Row) -> rusqlite::Result<DaemonTask> {
+    Ok(DaemonTask {
+        key: row.get("key")?,
+        kind: row.get("kind")?,
+        state: row.get("state")?,
+        title: row.get("title")?,
+        payload: row.get("payload")?,
+        branch: row.get("branch")?,
+        session_id: row.get("session_id")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+    })
 }
 
 #[cfg(test)]
@@ -355,6 +513,58 @@ mod tests {
 
     fn store() -> SqliteStore {
         SqliteStore::open_in_memory().expect("open in-memory store")
+    }
+
+    #[test]
+    fn daemon_task_queue_round_trip_with_idempotency_and_requeue() {
+        let s = store();
+        let task = DaemonTask {
+            key: "issue:owner/repo#7".into(),
+            kind: "issue".into(),
+            state: "queued".into(),
+            title: "Fix the flaky retry".into(),
+            payload: r#"{"number":7}"#.into(),
+            branch: None,
+            session_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        assert!(s.insert_daemon_task(&task).expect("insert"));
+        assert!(
+            !s.insert_daemon_task(&task).expect("re-insert"),
+            "the same key must never enqueue twice"
+        );
+
+        let next = s.next_queued_daemon_task().expect("next").expect("some");
+        assert_eq!(next.key, task.key);
+        assert!(s.running_daemon_task().expect("running").is_none());
+
+        s.update_daemon_task(
+            &task.key,
+            "running",
+            Some("research/GH-7-x"),
+            Some("sess-1"),
+        )
+        .expect("update");
+        let running = s.running_daemon_task().expect("running").expect("some");
+        assert_eq!(running.branch.as_deref(), Some("research/GH-7-x"));
+        assert_eq!(running.session_id.as_deref(), Some("sess-1"));
+        assert!(s.next_queued_daemon_task().expect("next").is_none());
+
+        // App restart: running goes back to queued, the branch it made is kept.
+        assert_eq!(s.requeue_running_daemon_tasks().expect("requeue"), 1);
+        let requeued = s.next_queued_daemon_task().expect("next").expect("some");
+        assert_eq!(requeued.state, "queued");
+        assert_eq!(requeued.branch.as_deref(), Some("research/GH-7-x"));
+        assert!(requeued.session_id.is_none());
+
+        s.update_daemon_task(&task.key, "done", None, None)
+            .expect("done");
+        assert!(s.next_queued_daemon_task().expect("next").is_none());
+        let all = s.list_daemon_tasks().expect("list");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].state, "done");
     }
 
     #[test]

@@ -41,6 +41,18 @@ pub enum Event {
         exit_code: Option<i32>,
     },
 
+    /// Daemon state changed (queue, status, settings) — the chip refetches.
+    #[serde(rename = "daemon.updated")]
+    DaemonUpdated {},
+
+    /// A daemon task's session reached a terminal state.
+    #[serde(rename = "daemon.task_finished")]
+    DaemonTaskFinished {
+        key: String,
+        title: String,
+        ok: bool,
+    },
+
     #[serde(rename = "session.status_changed")]
     SessionStatusChanged {
         session_id: String,
@@ -287,6 +299,8 @@ impl Event {
             Event::WorktreeMerged { .. } => "worktree.merged",
             Event::CheckStarted { .. } => "check.started",
             Event::CheckFinished { .. } => "check.finished",
+            Event::DaemonUpdated {} => "daemon.updated",
+            Event::DaemonTaskFinished { .. } => "daemon.task_finished",
             Event::SessionStatusChanged { .. } => "session.status_changed",
             Event::SessionStreamDelta { .. } => "session.stream_delta",
             Event::SessionToolUse { .. } => "session.tool_use",

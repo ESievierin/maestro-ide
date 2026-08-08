@@ -34,7 +34,8 @@ export type IconName =
   | "external-link"
   | "history"
   | "upload"
-  | "log";
+  | "log"
+  | "bot";
 
 /** Path data per icon, drawn on a 24×24 grid. */
 const PATHS: Record<IconName, ReactElement> = {
@@ -80,6 +81,14 @@ const PATHS: Record<IconName, ReactElement> = {
   history: <path d="M4.5 12a7.5 7.5 0 1 1 2.2 5.3M4.5 12l-2-2M4.5 12l2.2-1.8M12 8.5V12l2.7 1.8" />,
   upload: <path d="M4.5 19.5h15M12 15.5V4.5M7 9.5l5-5 5 5" />,
   log: <path d="M6 5.5h12M6 10h12M6 14.5h8M6 19h5" />,
+  bot: (
+    <>
+      <rect x="5" y="8" width="14" height="10" rx="2.5" />
+      <path d="M12 8V4.5M12 4.5h.01M9.5 21h5M9 18v3M15 18v3" />
+      <circle cx="9.5" cy="12.5" r="0.6" fill="currentColor" />
+      <circle cx="14.5" cy="12.5" r="0.6" fill="currentColor" />
+    </>
+  ),
 };
 
 interface Props {

@@ -16,13 +16,14 @@ use crate::core::agent::protocol::Attachment;
 use crate::core::attention::{AttentionItem, AttentionManager};
 use crate::core::bus::{Event, EventBus};
 use crate::core::checks::{CheckResult, ChecksManager};
+use crate::core::daemon::{DaemonManager, DaemonStatus};
 use crate::core::diff::{DiffManager, DiffScope, DiffSnapshot, FileDiff};
 use crate::core::gate::{GateManager, GateParam, PendingGate};
 use crate::core::notes::{Notes, NotesManager};
 use crate::core::prompts::{PromptFile, PromptManager};
 use crate::core::questions::{LineQuestionInfo, LineQuestionManager};
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
-use crate::core::store::{Branch, Store};
+use crate::core::store::{Branch, DaemonTask, Store};
 use crate::core::worktree::{
     BlameLine, CreateWorktreeRequest, LogEntry, MergeReport, RemoveOutcome, RepoInfo,
     RestoreOutcome, Snapshot, WorktreeInfo, WorktreeManager,
@@ -44,6 +45,7 @@ pub struct AppState {
     pub notes: Arc<NotesManager>,
     pub attention: Arc<AttentionManager>,
     pub checks: Arc<ChecksManager>,
+    pub daemon: Arc<DaemonManager>,
 }
 
 /// Forward every bus event to the frontend over a single Tauri event channel.
@@ -259,6 +261,44 @@ pub async fn get_check(
     branch: String,
 ) -> Result<Option<CheckResult>, String> {
     Ok(state.checks.get(&branch))
+}
+
+// ---------- GitHub daemon ----------
+
+/// Full daemon status for the chip and the panel (talks to `gh`, hence blocking).
+#[tauri::command]
+pub async fn daemon_status(state: State<'_, AppState>) -> Result<DaemonStatus, String> {
+    let daemon = state.daemon.clone();
+    run_core(state.bus.clone(), move || Ok(daemon.status())).await
+}
+
+/// Every daemon task, newest first (the panel's queue/history list).
+#[tauri::command]
+pub async fn list_daemon_tasks(state: State<'_, AppState>) -> Result<Vec<DaemonTask>, String> {
+    let daemon = state.daemon.clone();
+    run_core(state.bus.clone(), move || daemon.list_tasks()).await
+}
+
+/// Master switch. Turning it on makes the next loop tick poll immediately.
+#[tauri::command]
+pub async fn set_daemon_enabled(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let daemon = state.daemon.clone();
+    run_core(state.bus.clone(), move || daemon.set_enabled(enabled)).await
+}
+
+/// Which gh account the daemon acts as (per-call token; the global active
+/// account is never switched).
+#[tauri::command]
+pub async fn set_daemon_account(state: State<'_, AppState>, account: String) -> Result<(), String> {
+    let daemon = state.daemon.clone();
+    run_core(state.bus.clone(), move || daemon.set_account(&account)).await
+}
+
+/// Take a task out of the queue (or hide a finished one) without touching GitHub.
+#[tauri::command]
+pub async fn dismiss_daemon_task(state: State<'_, AppState>, key: String) -> Result<(), String> {
+    let daemon = state.daemon.clone();
+    run_core(state.bus.clone(), move || daemon.dismiss_task(&key)).await
 }
 
 // ---------- worktree snapshots ----------

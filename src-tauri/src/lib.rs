@@ -10,6 +10,7 @@ use crate::core::attention::AttentionManager;
 use crate::core::bus::EventBus;
 use crate::core::checks::ChecksManager;
 use crate::core::config::Config;
+use crate::core::daemon::{DaemonManager, GhCli, RealDaemonExec};
 use crate::core::diff::DiffManager;
 use crate::core::escalation::EscalationManager;
 use crate::core::gate::{self, GateManager};
@@ -150,6 +151,18 @@ pub fn run() {
         bus.clone(),
     ));
 
+    // GitHub daemon: off by default; polls gh as the configured account and
+    // spawns read-only research sessions. Never posts, never commits.
+    let daemon = Arc::new(DaemonManager::new(
+        store.clone(),
+        Arc::new(GhCli),
+        Arc::new(RealDaemonExec {
+            worktrees: worktrees.clone(),
+            sessions: sessions.clone(),
+        }),
+        bus.clone(),
+    ));
+
     let state = AppState {
         bus: bus.clone(),
         store,
@@ -162,6 +175,7 @@ pub fn run() {
         notes,
         attention: attention.clone(),
         checks: checks.clone(),
+        daemon: daemon.clone(),
     };
 
     tauri::Builder::default()
@@ -216,7 +230,12 @@ pub fn run() {
             ipc::mcp_server_action,
             ipc::get_notes,
             ipc::refresh_notes,
-            ipc::respond_user_dialog
+            ipc::respond_user_dialog,
+            ipc::daemon_status,
+            ipc::list_daemon_tasks,
+            ipc::set_daemon_enabled,
+            ipc::set_daemon_account,
+            ipc::dismiss_daemon_task
         ])
         .setup(move |app| {
             ipc::spawn_event_forwarder(app.handle().clone(), bus.clone());
@@ -226,6 +245,7 @@ pub fn run() {
             tauri::async_runtime::spawn(attention.clone().run_loop(bus.clone()));
             tauri::async_runtime::spawn(escalations.clone().run_loop(bus.clone()));
             tauri::async_runtime::spawn(checks.clone().run_auto_loop(bus.clone()));
+            tauri::async_runtime::spawn(daemon.clone().run_loop(bus.clone()));
             tracing::info!("event forwarder, session manager, and diff invalidator started");
             Ok(())
         })

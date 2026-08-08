@@ -1689,6 +1689,73 @@ input[type="checkbox"] {
   word-break: break-word;
 }
 
+/* ---------- Daemon panel ---------- */
+
+.daemon-modal {
+  width: min(720px, 90vw);
+}
+
+.daemon-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-3) 0 var(--space-2);
+}
+
+.daemon-controls .segmented {
+  display: inline-flex;
+}
+
+.daemon-facts {
+  margin: var(--space-2) 0;
+}
+
+.daemon-error {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--danger);
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0;
+}
+
+.daemon-task-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.daemon-task {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0.45rem 0.7rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.daemon-task:last-child {
+  border-bottom: none;
+}
+
+.daemon-task-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.daemon-task-title {
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ---------- Command palette ---------- */
 
 .palette-backdrop {

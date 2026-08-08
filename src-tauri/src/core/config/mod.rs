@@ -12,6 +12,11 @@ use serde::Deserialize;
 
 use crate::core::attention::SETTING_OS_NOTIFICATIONS;
 use crate::core::checks::{SETTING_CHECK_AUTO, SETTING_CHECK_COMMAND};
+use crate::core::daemon::{
+    SETTING_DAEMON_ACCOUNT, SETTING_DAEMON_ENABLED, SETTING_DAEMON_POLL_MINUTES,
+    SETTING_DAEMON_REPO, SETTING_DAEMON_RESEARCH_MODEL, SETTING_DAEMON_USAGE_THRESHOLD,
+    SETTING_DAEMON_VERIFY_MODEL,
+};
 use crate::core::gate::SETTING_GATE_COMMIT;
 use crate::core::launcher::SETTING_EDITOR_COMMAND;
 use crate::core::questions::SETTING_LINE_QUESTION_TARGET;
@@ -64,6 +69,33 @@ const DEFAULT_CONFIG: &str = r#"# MaestroIDE configuration (~/.maestro/config.to
 
 # Also run the check automatically whenever a session on the branch finishes.
 # check_auto = false
+
+# --- GitHub daemon (Этап 3) ---
+# Watches assigned issues and PR review comments, spawns read-only research
+# sessions. It never commits, never posts to GitHub — human in the loop.
+
+# Master switch (also toggleable from the daemon panel in the app).
+# daemon_enabled = false
+
+# Which gh account the daemon acts as. Default: gh's active account.
+# The global gh active account is never switched — the token is passed per call.
+# daemon_account = "ESievierin"
+
+# Repository to watch as "owner/name". Default: derived from the open
+# repository's origin remote.
+# daemon_repo = "owner/repo"
+
+# How often to poll GitHub, in minutes.
+# daemon_poll_minutes = 5
+
+# Hold the task queue while 5h-window utilization is above this percentage.
+# daemon_usage_threshold = 50.0
+
+# Model for issue-research sessions (empty = session default).
+# daemon_research_model = "sonnet"
+
+# Model for PR-comment-verification sessions (empty = session default).
+# daemon_verify_model = "sonnet"
 "#;
 
 /// Parsed config file. Every field is optional: absent means "leave the current setting".
@@ -79,6 +111,13 @@ pub struct Config {
     pub editor_command: Option<String>,
     pub check_command: Option<String>,
     pub check_auto: Option<bool>,
+    pub daemon_enabled: Option<bool>,
+    pub daemon_account: Option<String>,
+    pub daemon_repo: Option<String>,
+    pub daemon_poll_minutes: Option<u64>,
+    pub daemon_usage_threshold: Option<f64>,
+    pub daemon_research_model: Option<String>,
+    pub daemon_verify_model: Option<String>,
 }
 
 impl Config {
@@ -141,6 +180,28 @@ impl Config {
             (SETTING_EDITOR_COMMAND, self.editor_command.clone()),
             (SETTING_CHECK_COMMAND, self.check_command.clone()),
             (SETTING_CHECK_AUTO, self.check_auto.map(|b| b.to_string())),
+            (
+                SETTING_DAEMON_ENABLED,
+                self.daemon_enabled.map(|b| b.to_string()),
+            ),
+            (SETTING_DAEMON_ACCOUNT, self.daemon_account.clone()),
+            (SETTING_DAEMON_REPO, self.daemon_repo.clone()),
+            (
+                SETTING_DAEMON_POLL_MINUTES,
+                self.daemon_poll_minutes.map(|m| m.to_string()),
+            ),
+            (
+                SETTING_DAEMON_USAGE_THRESHOLD,
+                self.daemon_usage_threshold.map(|t| t.to_string()),
+            ),
+            (
+                SETTING_DAEMON_RESEARCH_MODEL,
+                self.daemon_research_model.clone(),
+            ),
+            (
+                SETTING_DAEMON_VERIFY_MODEL,
+                self.daemon_verify_model.clone(),
+            ),
         ] {
             if let Some(value) = value {
                 store.set_setting(key, &value)?;
@@ -192,6 +253,7 @@ mod tests {
             editor_command: Some("D:/tools/rider64.exe".into()),
             check_command: Some("dotnet build".into()),
             check_auto: Some(true),
+            ..Default::default()
         };
         config.apply(&store).expect("apply");
 

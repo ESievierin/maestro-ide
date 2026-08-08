@@ -1450,11 +1450,52 @@ input[type="checkbox"] {
   display: flex;
 }
 
+.diff-editor-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .cm-host {
   flex: 1;
   min-height: 0;
   min-width: 0;
   overflow: auto;
+}
+
+/* Two labeled line-ending sides above the split/unified editors: base on
+   the left (read-only — history), the current branch on the right (the
+   worktree file — a picker when it's actually convertible). */
+.eol-sides {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0.35rem var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+  font-size: var(--text-xs);
+}
+
+.eol-side {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.eol-side-name {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.eol-side-sep {
+  color: var(--text-tertiary);
 }
 
 /* Change-overview strip: a slim always-visible map of where the changes are

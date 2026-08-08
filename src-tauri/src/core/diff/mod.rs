@@ -177,8 +177,15 @@ impl DiffManager {
         let new_raw = match scope {
             DiffScope::Branch => self.git.show_file(&repo, branch, path)?,
             DiffScope::Worktree => {
+                // Raw bytes, lossy-decoded — same as `git show` on the other
+                // side. A strict UTF-8 read would refuse (→ `None` → an
+                // empty "new" side, i.e. the file looking fully deleted) the
+                // moment a real file carries so much as one non-UTF-8 byte
+                // (a codepage string literal in an old C# file, say).
                 let worktree = self.worktree_path(branch)?;
-                std::fs::read_to_string(worktree.join(path)).ok()
+                std::fs::read(worktree.join(path))
+                    .ok()
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
             }
         };
         let new_eol = new_raw.as_deref().map(detect_eol);
@@ -697,5 +704,80 @@ mod tests {
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].line, 3);
         assert!(manager.blame("no-such-branch", "x", 1, 1).is_err());
+    }
+
+    mod integration {
+        use super::*;
+        use crate::core::store::SqliteStore;
+        use crate::core::worktree::{CreateWorktreeRequest, GitCli};
+        use std::fs;
+        use std::process::Command;
+
+        fn git(dir: &Path, args: &[&str]) {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git runs");
+            assert!(out.status.success(), "git {args:?} failed");
+        }
+
+        fn init_repo(dir: &Path) {
+            git(dir, &["init", "-b", "main"]);
+            git(dir, &["config", "user.email", "t@t.t"]);
+            git(dir, &["config", "user.name", "t"]);
+            fs::write(dir.join("a.txt"), "base\n").unwrap();
+            git(dir, &["add", "-A"]);
+            git(dir, &["commit", "-m", "init"]);
+        }
+
+        /// The real-world case: a worktree file with a codepage-encoded string
+        /// literal is not valid UTF-8 at all. A strict UTF-8 read would refuse
+        /// it — turning it into `None`, i.e. the diff viewer's "new" side
+        /// looking as if the whole file was deleted — instead of the lossy
+        /// read `git show` already uses for the other side.
+        #[test]
+        fn a_non_utf8_worktree_file_still_produces_content() {
+            let tmp = tempfile::tempdir().unwrap();
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).unwrap();
+            init_repo(&repo);
+            fs::write(repo.join("service.cs"), "line one\n").unwrap();
+            git(&repo, &["add", "-A"]);
+            git(&repo, &["commit", "-m", "add service.cs"]);
+
+            let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+            let worktrees = Arc::new(WorktreeManager::new(
+                Arc::new(GitCli::new()),
+                store.clone(),
+                EventBus::new(),
+            ));
+            worktrees.set_repo(&repo).unwrap();
+            let info = worktrees
+                .create(CreateWorktreeRequest {
+                    existing_branch: None,
+                    kind: Some("impl".into()),
+                    task_id: Some("T-1".into()),
+                    slug: Some("diff test".into()),
+                    base: Some("main".into()),
+                })
+                .unwrap();
+            let branch = info.branch.unwrap();
+
+            let mut bytes = b"// comment: \xC0\xE0\xE1\xEB\xE8\xF6\xE0\n".to_vec();
+            bytes.extend_from_slice(b"fn ok() {}\n");
+            fs::write(info.path.join("service.cs"), &bytes).unwrap();
+
+            let manager =
+                DiffManager::new(Arc::new(GitCli::new()), store, worktrees, EventBus::new());
+            let diff = manager
+                .file_diff(&branch, "service.cs", DiffScope::Worktree)
+                .unwrap();
+            assert!(
+                diff.new.is_some(),
+                "a non-UTF-8 file must still produce content, not look deleted"
+            );
+            assert!(diff.new.unwrap().contains("fn ok() {}"));
+        }
     }
 }

@@ -90,54 +90,77 @@ const EOL_OPTIONS = [
   { value: "crlf", label: "CRLF" },
 ];
 
-/** A Rider-style line-ending indicator for the selected file: a plain label
- * when both sides agree, "LF → CRLF" when they don't (also the explanation
- * for "why does this show as modified when the diff looks empty" — see
- * `--ignore-cr-at-eol` in the core). In the working-tree scope it doubles as
- * a picker: choosing a style rewrites the on-disk file, same as Rider's own
- * line-separator selector. Only the *worktree* file is ever convertible —
- * the merge-base/branch side is a git blob, not something to rewrite. */
-function EolBadge({
+/** One side of {@link EolSidesHeader}: a name, then either a picker (the
+ * worktree file, when convertible) or a plain read-only badge. */
+function EolSide({
+  name,
+  eol,
+  onConvert,
+  busy,
+}: {
+  name: string;
+  eol: LineEnding | null;
+  onConvert?: (eol: "lf" | "crlf") => void;
+  busy?: boolean;
+}) {
+  const label = eolLabel(eol);
+  return (
+    <span className="eol-side">
+      <span className="eol-side-name" title={name}>
+        {name}
+      </span>
+      {onConvert && label ? (
+        <SelectMenu
+          title={`Line endings in ${name}: ${label}. Pick a style to rewrite the file on disk.`}
+          value={eol as string}
+          placeholder={label}
+          disabled={busy}
+          options={EOL_OPTIONS}
+          onChange={(v) => onConvert(v as "lf" | "crlf")}
+        />
+      ) : (
+        <span
+          className={`badge ${eol === "mixed" ? "badge-warn" : "badge-muted"}`}
+          title={label ? `Line endings in ${name}: ${label}` : `${name}: no file here`}
+        >
+          {label ?? "—"}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** Rider-style line-ending indicators for the selected file, one per side so
+ * "which side has which line ending" never has to be inferred: left is the
+ * base branch's blob (history — always read-only), right is the current
+ * branch (the worktree file, picker-enabled — choosing a style rewrites it
+ * on disk, same interaction as Rider's own line-separator selector). Also
+ * the explanation for "why does this show as modified when the diff looks
+ * empty": `--ignore-cr-at-eol` (in the core) keeps the visible diff clean,
+ * but git still flags the blob as modified when only the line endings
+ * differ between the two sides. */
+function EolSidesHeader({
+  baseName,
   oldEol,
+  branchName,
   newEol,
   onConvert,
   busy,
 }: {
+  baseName: string;
   oldEol: LineEnding | null;
+  branchName: string;
   newEol: LineEnding | null;
   onConvert?: (eol: "lf" | "crlf") => void;
   busy?: boolean;
 }) {
-  const oldLabel = eolLabel(oldEol);
-  const newLabel = eolLabel(newEol);
-  if (!oldLabel && !newLabel) return null;
-
-  const changed = !!(oldLabel && newLabel && oldLabel !== newLabel);
-  const mixed = oldEol === "mixed" || newEol === "mixed";
-  const title = changed
-    ? `Line endings changed: ${oldLabel} → ${newLabel}. If this file shows as modified with little or no visible diff, only the line endings differ.`
-    : mixed
-      ? "This file mixes CRLF and LF line endings."
-      : `Line endings: ${newLabel ?? oldLabel}`;
-
-  if (onConvert && newEol && newEol !== "none") {
-    return (
-      <SelectMenu
-        title={title}
-        value={newEol}
-        placeholder={changed ? `${oldLabel} → Mixed` : "Mixed"}
-        disabled={busy}
-        options={EOL_OPTIONS}
-        onChange={(v) => onConvert(v as "lf" | "crlf")}
-      />
-    );
-  }
-
-  const label = changed ? `${oldLabel} → ${newLabel}` : (newLabel ?? oldLabel);
+  if ((!oldEol || oldEol === "none") && (!newEol || newEol === "none")) return null;
   return (
-    <span className={`badge ${changed || mixed ? "badge-warn" : "badge-muted"}`} title={title}>
-      {label}
-    </span>
+    <div className="eol-sides">
+      <EolSide name={baseName} eol={oldEol} />
+      <span className="eol-side-sep">→</span>
+      <EolSide name={branchName} eol={newEol} onConvert={onConvert} busy={busy} />
+    </div>
   );
 }
 
@@ -666,18 +689,6 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
               Unified
             </button>
           </div>
-          {selectedPath && filePair?.path === selectedPath && (
-            <EolBadge
-              oldEol={filePair.oldEol}
-              newEol={filePair.newEol}
-              busy={eolBusy}
-              onConvert={
-                scope === "worktree"
-                  ? (eol) => void convertLineEnding(selectedPath, eol)
-                  : undefined
-              }
-            />
-          )}
           {selectedPath && (
             <button
               className="small icon-only ghost"
@@ -831,27 +842,41 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
               <p className="empty">{tooLarge.message}</p>
             ) : filePair && filePair.path === selectedPath ? (
               <div className="diff-editor-body">
-                {viewMode === "split" ? (
-                  <SplitFileDiff
-                    path={filePair.path}
-                    oldText={filePair.old}
-                    newText={filePair.new}
-                    questions={questions}
-                    onSelectionChange={handleSelectionChange}
-                    onViewReady={handleViewReady}
-                    onBoundaryChunk={selectAdjacentFile}
+                <div className="diff-editor-main">
+                  <EolSidesHeader
+                    baseName={snapshot?.base ?? "base"}
+                    oldEol={filePair.oldEol}
+                    branchName={branch}
+                    newEol={filePair.newEol}
+                    busy={eolBusy}
+                    onConvert={
+                      scope === "worktree"
+                        ? (eol) => void convertLineEnding(selectedPath, eol)
+                        : undefined
+                    }
                   />
-                ) : (
-                  <UnifiedFileDiff
-                    path={filePair.path}
-                    oldText={filePair.old}
-                    newText={filePair.new}
-                    questions={questions}
-                    onSelectionChange={handleSelectionChange}
-                    onViewReady={handleViewReady}
-                    onBoundaryChunk={selectAdjacentFile}
-                  />
-                )}
+                  {viewMode === "split" ? (
+                    <SplitFileDiff
+                      path={filePair.path}
+                      oldText={filePair.old}
+                      newText={filePair.new}
+                      questions={questions}
+                      onSelectionChange={handleSelectionChange}
+                      onViewReady={handleViewReady}
+                      onBoundaryChunk={selectAdjacentFile}
+                    />
+                  ) : (
+                    <UnifiedFileDiff
+                      path={filePair.path}
+                      oldText={filePair.old}
+                      newText={filePair.new}
+                      questions={questions}
+                      onSelectionChange={handleSelectionChange}
+                      onViewReady={handleViewReady}
+                      onBoundaryChunk={selectAdjacentFile}
+                    />
+                  )}
+                </div>
                 <ChangeOverview hunks={hunks} totalLines={totalLines} onJump={jumpToLine} />
               </div>
             ) : selectedPath ? (

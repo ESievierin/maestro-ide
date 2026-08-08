@@ -505,6 +505,15 @@ impl WorktreeManager {
     /// ungated file write: the same trust level as the user's own `commit_all`
     /// button, not an agent action. A no-op (no write at all) when the file
     /// already matches, so it never manufactures a phantom dirty state.
+    ///
+    /// Works on raw bytes, not `String`: a real-world file (an old C# service,
+    /// say) can carry non-UTF-8 bytes — a codepage-encoded string literal, a
+    /// stray byte from years of edits — and `\r`/`\n` are the same single byte
+    /// in every ASCII-compatible encoding regardless. Reading it as `String`
+    /// would refuse a legitimately non-UTF-8 file outright; rewriting it
+    /// through a lossy `String` round-trip would silently corrupt whatever
+    /// wasn't valid UTF-8 by replacing it with U+FFFD. Neither is acceptable
+    /// for a file mutation.
     pub fn set_line_ending(&self, branch: &str, path: &str, eol: &str) -> Result<()> {
         if eol != "lf" && eol != "crlf" {
             return Err(MaestroError::InvalidData {
@@ -518,17 +527,17 @@ impl WorktreeManager {
         }
         let worktree = self.worktree_path(branch)?;
         let file_path = worktree.join(path);
-        let content = std::fs::read_to_string(&file_path).map_err(|err| MaestroError::Config {
+        let content = std::fs::read(&file_path).map_err(|err| MaestroError::Config {
             message: format!("could not read {path}: {err}"),
         })?;
-        let lf = content.replace("\r\n", "\n");
+        let lf = strip_cr_before_lf(&content);
         let converted = if eol == "crlf" {
-            lf.replace('\n', "\r\n")
+            expand_lf_to_crlf(&lf)
         } else {
             lf
         };
         if converted != content {
-            std::fs::write(&file_path, converted).map_err(|err| MaestroError::Config {
+            std::fs::write(&file_path, &converted).map_err(|err| MaestroError::Config {
                 message: format!("could not write {path}: {err}"),
             })?;
             tracing::info!(branch, path, eol, "line endings converted");
@@ -689,6 +698,36 @@ fn worktree_path(repo: &Path, branch: &str, configured_root: Option<&str>) -> Pa
     root.join(branch.replace('/', "-"))
 }
 
+/// Drop the `\r` of every `\r\n` pair, byte-for-byte. A lone `\r` (old
+/// Mac-style, not followed by `\n`) is left alone — same rule as the diff
+/// engine's own `normalize_line_endings`.
+fn strip_cr_before_lf(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+            i += 1; // skip the \r; the \n is pushed on the next loop turn
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Insert a `\r` before every `\n`. Applied to already-LF-normalized bytes,
+/// so this is exactly the CRLF form regardless of what the input started as.
+fn expand_lf_to_crlf(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for &b in bytes {
+        if b == b'\n' {
+            out.push(b'\r');
+        }
+        out.push(b);
+    }
+    out
+}
+
 /// Render the branch naming convention. Unknown placeholders are left verbatim so a
 /// misconfigured template is visible rather than silently swallowed.
 pub fn render_branch_name(template: &str, kind: &str, task_id: &str, slug: &str) -> Result<String> {
@@ -779,6 +818,33 @@ mod tests {
     fn rejects_missing_components() {
         assert!(render_branch_name(DEFAULT_BRANCH_TEMPLATE, "impl", "", "x").is_err());
         assert!(render_branch_name(DEFAULT_BRANCH_TEMPLATE, "impl", "T-1", "").is_err());
+    }
+
+    #[test]
+    fn strips_cr_before_lf_only() {
+        assert_eq!(strip_cr_before_lf(b"a\r\nb\r\nc\r\n"), b"a\nb\nc\n");
+        assert_eq!(
+            strip_cr_before_lf(b"a\nb\n"),
+            b"a\nb\n",
+            "pure LF is untouched"
+        );
+        // A lone \r (old Mac-style, not followed by \n) is left exactly alone.
+        assert_eq!(strip_cr_before_lf(b"a\rb\n"), b"a\rb\n");
+        assert_eq!(strip_cr_before_lf(b""), b"");
+        // Non-UTF-8 bytes pass through byte-for-byte, untouched.
+        assert_eq!(strip_cr_before_lf(b"a\xFF\xFE\r\nb"), b"a\xFF\xFE\nb");
+    }
+
+    #[test]
+    fn expands_every_lf_to_crlf() {
+        assert_eq!(expand_lf_to_crlf(b"a\nb\nc\n"), b"a\r\nb\r\nc\r\n");
+        assert_eq!(
+            expand_lf_to_crlf(b"a\r\nb\r\n"),
+            b"a\r\r\nb\r\r\n",
+            "not idempotent on its own — callers strip first"
+        );
+        assert_eq!(expand_lf_to_crlf(b""), b"");
+        assert_eq!(expand_lf_to_crlf(b"a\xFF\nb"), b"a\xFF\r\nb");
     }
 
     #[test]
@@ -1637,6 +1703,27 @@ mod tests {
                 .set_line_ending(&branch, "service.cs", "cr")
                 .unwrap_err();
             assert!(err.to_string().contains("unsupported"));
+        }
+
+        /// The real-world case: an old file with a codepage-encoded string
+        /// literal (not valid UTF-8 at all). Byte-level conversion must not
+        /// refuse it, and must not corrupt the non-UTF-8 bytes.
+        #[test]
+        fn converts_a_non_utf8_file_without_corrupting_it() {
+            let (mgr, wt, branch, _tmp) = setup();
+            let path = wt.join("service.cs");
+            let mut content = b"// comment: \xC0\xE0\xE1\xEB\xE8\xF6\xE0\r\n".to_vec();
+            content.extend_from_slice(b"fn ok() {}\r\n");
+            fs::write(&path, &content).unwrap();
+
+            mgr.set_line_ending(&branch, "service.cs", "lf").unwrap();
+            let after = fs::read(&path).unwrap();
+            let mut expected = b"// comment: \xC0\xE0\xE1\xEB\xE8\xF6\xE0\n".to_vec();
+            expected.extend_from_slice(b"fn ok() {}\n");
+            assert_eq!(
+                after, expected,
+                "the non-UTF-8 bytes must survive untouched"
+            );
         }
     }
 }

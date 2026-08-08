@@ -780,6 +780,35 @@ impl SessionManager {
         }
     }
 
+    /// Called on a clean app exit, before the sidecar goes down with it. Unlike
+    /// `fail_stale_sessions` (which assumes the worst because it has no other
+    /// information), this runs while the store still reflects reality: a session
+    /// simply idle between turns did not fail, it was just waiting, so it closes
+    /// as `done` — the same outcome as the user closing it by hand. Only a
+    /// session still mid-turn loses work, and that is a cancellation, not a
+    /// failure. `fail_stale_sessions` remains the fallback for the next startup
+    /// in case the process dies before this ever runs.
+    pub fn shutdown_sessions(&self) {
+        let active = match self.store.list_active_sessions() {
+            Ok(sessions) => sessions,
+            Err(err) => {
+                crate::error::report(&self.bus, &err);
+                return;
+            }
+        };
+        for session in active {
+            if let Some(gates) = &self.gates {
+                gates.cancel_for_session(&session.id, "app closed");
+            }
+            let target = if session.status == SessionStatus::AwaitingInput {
+                SessionStatus::Done
+            } else {
+                SessionStatus::Cancelled
+            };
+            self.transition(&session.id, target);
+        }
+    }
+
     // ---------- event handling ----------
 
     fn handle_event(&self, event: SidecarEvent) {
@@ -2060,6 +2089,42 @@ mod tests {
         let stored = store.list_sessions("impl/T-6-x").unwrap();
         assert_eq!(stored[0].status, SessionStatus::Failed);
     }
+
+    #[tokio::test]
+    async fn shutdown_sessions_closes_idle_ones_as_done_and_in_flight_ones_as_cancelled() {
+        let (manager, _bus, _engine) = setup();
+        let idle = manager.spawn(spawn_params("impl/T-9-x")).unwrap();
+        let busy = manager.spawn(spawn_params("impl/T-9-x")).unwrap();
+        manager.handle_event(SidecarEvent::Status {
+            session_id: idle.id.clone(),
+            status: "streaming".into(),
+        });
+        manager.handle_event(SidecarEvent::Status {
+            session_id: idle.id.clone(),
+            status: "awaiting_input".into(),
+        });
+        manager.handle_event(SidecarEvent::Status {
+            session_id: busy.id.clone(),
+            status: "streaming".into(),
+        });
+
+        manager.shutdown_sessions();
+
+        let stored = manager.list_for_branch("impl/T-9-x").unwrap();
+        let idle_row = stored.iter().find(|s| s.id == idle.id).unwrap();
+        let busy_row = stored.iter().find(|s| s.id == busy.id).unwrap();
+        assert_eq!(
+            idle_row.status,
+            SessionStatus::Done,
+            "a session just waiting for input did not fail, it was simply idle"
+        );
+        assert_eq!(
+            busy_row.status,
+            SessionStatus::Cancelled,
+            "mid-turn work lost to a clean exit is a cancellation, not a failure"
+        );
+    }
+
     #[tokio::test]
     async fn runtime_model_and_effort_reach_engine_store_and_bus() {
         let (manager, bus, engine) = setup();

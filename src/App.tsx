@@ -214,20 +214,26 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // Closing the window with live sessions running deserves one honest question —
-  // an interrupted agent leaves a half-done worktree with no notes.
+  // Closing the window mid-turn deserves one honest question — an interrupted
+  // agent leaves a half-done worktree with no notes. A session just sitting at
+  // `awaiting_input` isn't doing anything, so it doesn't need to hold up the
+  // close: the backend closes it as `done`, exactly like closing it by hand.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void (async () => {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      unlisten = await getCurrentWindow().onCloseRequested((event) => {
+      unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
         const byBranch = useSessions.getState().byBranch;
         const active = Object.values(byBranch)
           .flat()
-          .filter((s) => ["spawning", "streaming", "awaiting_input"].includes(s.status)).length;
+          .filter((s) => ["spawning", "streaming"].includes(s.status)).length;
         if (active > 0) {
-          const ok = window.confirm(
-            `${active} session${active > 1 ? "s are" : " is"} still running. Quit anyway?`,
+          // A native dialog, not window.confirm() — the browser-synchronous
+          // version can hang the whole webview instead of showing a prompt.
+          const { confirm } = await import("@tauri-apps/plugin-dialog");
+          const ok = await confirm(
+            `${active} session${active > 1 ? "s are" : " is"} still working. Quit anyway?`,
+            { title: "MaestroIDE", kind: "warning" },
           );
           if (!ok) event.preventDefault();
         }

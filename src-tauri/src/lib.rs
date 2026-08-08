@@ -199,6 +199,8 @@ pub fn run() {
         prs,
     };
 
+    let sessions_for_shutdown = sessions.clone();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -278,6 +280,14 @@ pub fn run() {
             tracing::info!("event forwarder, session manager, and diff invalidator started");
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(move |_app_handle, event| {
+            // A clean exit means we know exactly what happened to each session —
+            // unlike the blanket "failed" sweep at next startup, which only runs
+            // because it has no better information at that point.
+            if let tauri::RunEvent::Exit = event {
+                sessions_for_shutdown.shutdown_sessions();
+            }
+        });
 }

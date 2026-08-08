@@ -145,12 +145,14 @@ pub async fn remove_worktree(
 }
 
 /// Open a worktree's directory in an external tool: `"explorer"` or `"editor"`
-/// (the configured/auto-detected editor — Rider by default).
+/// (the configured/auto-detected editor — Rider by default). With `file` set,
+/// the editor opens that file inside the worktree's project.
 #[tauri::command]
 pub async fn open_worktree(
     state: State<'_, AppState>,
     branch: String,
     target: String,
+    file: Option<String>,
 ) -> Result<(), String> {
     let mgr = state.worktrees.clone();
     let store = state.store.clone();
@@ -164,7 +166,11 @@ pub async fn open_worktree(
             })?;
         match target.as_str() {
             "explorer" => crate::core::launcher::open_in_explorer(&worktree.path),
-            "editor" => crate::core::launcher::open_in_editor(store.as_ref(), &worktree.path),
+            "editor" => crate::core::launcher::open_in_editor(
+                store.as_ref(),
+                &worktree.path,
+                file.as_deref(),
+            ),
             other => Err(MaestroError::InvalidData {
                 message: format!("unknown open target: {other}"),
             }),

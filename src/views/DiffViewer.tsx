@@ -558,6 +558,19 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
               Unified
             </button>
           </div>
+          {selectedPath && (
+            <button
+              className="small icon-only ghost"
+              title={`Open ${selectedPath} in the editor`}
+              onClick={() => {
+                void import("../utils/actions").then(({ openWorktree }) =>
+                  openWorktree(branch, "editor", selectedPath),
+                );
+              }}
+            >
+              <Icon name="external-link" size={13} />
+            </button>
+          )}
           <button
             className="small ghost"
             onClick={() => void refresh(branch, scope)}

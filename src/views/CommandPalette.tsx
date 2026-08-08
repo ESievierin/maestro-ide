@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon, type IconName } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useChecks } from "../state/checks";
+import { useSessions } from "../state/sessions";
 import { useUI } from "../state/ui";
 import { useWorktrees } from "../state/worktrees";
 import { copyPath, openWorktree } from "../utils/actions";
@@ -143,6 +144,21 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           run: () => openDialog("checks"),
         });
       }
+    }
+
+    const streaming = Object.values(useSessions.getState().byBranch)
+      .flat()
+      .filter((s) => s.status === "streaming");
+    if (streaming.length > 0) {
+      result.push({
+        id: "app:interrupt-all",
+        icon: "stop",
+        label: `Interrupt all running sessions (${streaming.length})`,
+        run: () => {
+          const interrupt = useSessions.getState().interrupt;
+          for (const s of streaming) void interrupt(s.id);
+        },
+      });
     }
 
     result.push(

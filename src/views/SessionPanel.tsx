@@ -1389,6 +1389,18 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
               ) : (
                 <>
                   <button
+                    className="small icon-only ghost"
+                    title="Collapse / expand every tool and thinking block"
+                    onClick={() => {
+                      const details =
+                        document.querySelectorAll<HTMLDetailsElement>(".transcript details");
+                      const anyOpen = [...details].some((d) => d.open);
+                      details.forEach((d) => (d.open = !anyOpen));
+                    }}
+                  >
+                    <Icon name="log" size={13} />
+                  </button>
+                  <button
                     className="small"
                     disabled={selected.status !== "streaming"}
                     onClick={() => void interrupt(selected.id)}

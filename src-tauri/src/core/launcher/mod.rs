@@ -28,10 +28,14 @@ pub fn open_in_explorer(path: &Path) -> Result<()> {
 
 /// Open `path` in the configured editor, auto-detecting Rider when nothing is
 /// configured. The `editor_command` setting holds the executable (path or name);
-/// the worktree path is passed as its single argument.
-pub fn open_in_editor(store: &dyn Store, path: &Path) -> Result<()> {
+/// the worktree path is passed as its first argument, and `file` (when given)
+/// as the second — JetBrains IDEs treat that as "this file, in this project".
+pub fn open_in_editor(store: &dyn Store, path: &Path, file: Option<&str>) -> Result<()> {
     let editor = resolve_editor(store)?;
-    let (program, args) = editor_invocation(&editor, path);
+    let (program, mut args) = editor_invocation(&editor, path);
+    if let Some(file) = file {
+        args.push(path.join(file).to_string_lossy().into_owned());
+    }
     spawn_detached(&program, &args)
 }
 

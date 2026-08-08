@@ -83,6 +83,37 @@ impl PrManager {
         resolve_slug(self.store.as_ref(), repo.as_deref())
     }
 
+    /// The base to open the PR against: an explicit override, else the
+    /// branch's stored base, else the repository's default branch. A
+    /// remote-tracking name ("origin/main") is reduced to its short form —
+    /// PRs target branch names, not refs.
+    fn resolve_pr_base(&self, branch: &str, base: Option<&str>) -> Result<String> {
+        let base = match base.map(str::trim).filter(|b| !b.is_empty()) {
+            Some(base) => base.to_string(),
+            None => match self.store.get_branch(branch)?.and_then(|b| b.base_branch) {
+                Some(base) => base,
+                None => {
+                    self.worktrees
+                        .repo_info()?
+                        .ok_or_else(|| MaestroError::Config {
+                            message: "no repository selected".into(),
+                        })?
+                        .default_branch
+                }
+            },
+        };
+        Ok(base
+            .rsplit_once('/')
+            .map_or(base.as_str(), |(maybe_remote, short)| {
+                if maybe_remote == "origin" {
+                    short
+                } else {
+                    base.as_str()
+                }
+            })
+            .to_string())
+    }
+
     /// Push `branch` and open a PR for it. The branch must be committed; the
     /// dialog handles the commit step first. `base` overrides the stored/
     /// default base when the user picked one explicitly.
@@ -107,32 +138,7 @@ impl PrManager {
             .ok_or_else(|| MaestroError::InvalidData {
                 message: format!("no worktree for branch: {branch}"),
             })?;
-        let base = match base.map(str::trim).filter(|b| !b.is_empty()) {
-            Some(base) => base.to_string(),
-            None => match self.store.get_branch(branch)?.and_then(|b| b.base_branch) {
-                Some(base) => base,
-                None => {
-                    self.worktrees
-                        .repo_info()?
-                        .ok_or_else(|| MaestroError::Config {
-                            message: "no repository selected".into(),
-                        })?
-                        .default_branch
-                }
-            },
-        };
-        // Base may be a remote-tracking name ("origin/main") — PRs target the
-        // short branch name.
-        let base = base
-            .rsplit_once('/')
-            .map_or(base.as_str(), |(maybe_remote, short)| {
-                if maybe_remote == "origin" {
-                    short
-                } else {
-                    base.as_str()
-                }
-            })
-            .to_string();
+        let base = self.resolve_pr_base(branch, base)?;
 
         let push_report = self.worktrees.push(branch)?;
         let (_, token) = self.token()?;
@@ -205,5 +211,122 @@ impl PrManager {
             "PR replies posted"
         );
         Ok(outcomes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::bus::EventBus;
+    use crate::core::daemon::github::{GhComment, GhPull};
+    use crate::core::daemon::{GhAccount, SETTING_DAEMON_REPO};
+    use crate::core::store::SqliteStore;
+    use crate::core::worktree::{CreateWorktreeRequest, GitCli, WorktreeManager};
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+
+    struct StubGh;
+    impl GhProvider for StubGh {
+        fn accounts(&self) -> Result<Vec<GhAccount>> {
+            Ok(vec![GhAccount {
+                login: "me".into(),
+                active: true,
+            }])
+        }
+        fn token(&self, _account: &str) -> Result<String> {
+            Ok("tok".into())
+        }
+        fn open_pulls(&self, _t: &str, _s: &str) -> Result<Vec<GhPull>> {
+            Ok(Vec::new())
+        }
+        fn pull_comments(&self, _t: &str, _s: &str, _n: u64) -> Result<Vec<GhComment>> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn git_cmd(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "git {args:?} failed");
+    }
+
+    fn setup() -> (PrManager, String, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        git_cmd(&repo, &["init", "-b", "main"]);
+        git_cmd(&repo, &["config", "user.email", "t@t.t"]);
+        git_cmd(&repo, &["config", "user.name", "t"]);
+        fs::write(repo.join("a.txt"), "base\n").unwrap();
+        git_cmd(&repo, &["add", "-A"]);
+        git_cmd(&repo, &["commit", "-m", "init"]);
+
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let worktrees = Arc::new(WorktreeManager::new(
+            Arc::new(GitCli::new()),
+            store.clone(),
+            EventBus::new(),
+        ));
+        worktrees.set_repo(&repo).unwrap();
+        let info = worktrees
+            .create(CreateWorktreeRequest {
+                existing_branch: None,
+                kind: Some("impl".into()),
+                task_id: Some("T-1".into()),
+                slug: Some("pr test".into()),
+                base: Some("main".into()),
+            })
+            .unwrap();
+        let branch = info.branch.unwrap();
+
+        store
+            .set_setting(SETTING_DAEMON_REPO, "owner/repo")
+            .unwrap();
+        let prs = PrManager::new(store, Arc::new(StubGh), worktrees, EventBus::new());
+        (prs, branch, tmp)
+    }
+
+    #[test]
+    fn an_explicit_base_wins_over_everything_stored() {
+        let (prs, branch, _tmp) = setup();
+        assert_eq!(
+            prs.resolve_pr_base(&branch, Some("develop")).unwrap(),
+            "develop"
+        );
+    }
+
+    #[test]
+    fn it_falls_back_to_the_branch_s_stored_base() {
+        let (prs, branch, _tmp) = setup();
+        // `setup` created the worktree with base "main" — the store row
+        // already carries that as `base_branch`.
+        assert_eq!(prs.resolve_pr_base(&branch, None).unwrap(), "main");
+    }
+
+    #[test]
+    fn a_blank_override_is_treated_as_absent() {
+        let (prs, branch, _tmp) = setup();
+        assert_eq!(prs.resolve_pr_base(&branch, Some("   ")).unwrap(), "main");
+    }
+
+    #[test]
+    fn a_remote_tracking_override_is_reduced_to_its_short_name() {
+        let (prs, branch, _tmp) = setup();
+        assert_eq!(
+            prs.resolve_pr_base(&branch, Some("origin/develop"))
+                .unwrap(),
+            "develop"
+        );
+    }
+
+    #[test]
+    fn create_refuses_an_empty_title() {
+        let (prs, branch, _tmp) = setup();
+        let err = prs.create(&branch, "  ", "body", None).unwrap_err();
+        assert!(err.to_string().contains("title"));
     }
 }

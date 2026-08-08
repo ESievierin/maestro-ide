@@ -1223,6 +1223,7 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
     setPermissionMode,
     setThinking,
     loadTranscript,
+    seedTranscript,
     error,
     clearError,
   } = useSessions();
@@ -1273,13 +1274,26 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
   };
 
   const resume = async (source: Session) => {
+    // Load before spawning, not after — the source is a finished session, so
+    // nothing about its history can still change in between.
+    await loadTranscript(source.id);
+    const priorHistory = useSessions.getState().transcripts[source.id] ?? [];
     const session = await spawn({
       branch,
       prompt: "",
       resume_from: source.id,
       permission_mode: source.permission_mode ?? undefined,
     });
-    if (session) setSelectedId(session.id);
+    if (session) {
+      // The new session is a fresh row (that's how resume-with-context works),
+      // but visually it should read as the same conversation continuing, not a
+      // second one starting from blank — so carry the old transcript forward.
+      seedTranscript(session.id, [
+        ...priorHistory,
+        { kind: "settings", text: "Resumed — continuing this session" },
+      ]);
+      setSelectedId(session.id);
+    }
   };
 
   /** The first thing the user asked a session — for tab labels and retries. */

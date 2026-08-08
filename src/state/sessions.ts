@@ -83,6 +83,14 @@ interface SessionsState {
   fetchMany: (branches: string[]) => Promise<void>;
   /** Hydrate a session's transcript from the backend, once, if nothing is in memory yet. */
   loadTranscript: (sessionId: string) => Promise<void>;
+  /**
+   * Prepend `items` in front of whatever a session already has — used to carry a
+   * resumed session's prior history into the new one it continues, so the chat view
+   * reads as one continuous conversation instead of restarting empty. Prepending
+   * (never overwriting) is what makes this safe against the new session's own
+   * events arriving before this runs.
+   */
+  seedTranscript: (sessionId: string, items: TranscriptItem[]) => void;
   spawn: (input: SpawnSessionInput) => Promise<Session | null>;
   send: (sessionId: string, prompt: string, attachments?: Attachment[]) => Promise<void>;
   interrupt: (sessionId: string) => Promise<void>;
@@ -219,6 +227,16 @@ export const useSessions = create<SessionsState>((set, get) => ({
     } catch (e) {
       set({ error: String(e) });
     }
+  },
+
+  seedTranscript: (sessionId, items) => {
+    if (items.length === 0) return;
+    set((s) => ({
+      transcripts: {
+        ...s.transcripts,
+        [sessionId]: [...items, ...(s.transcripts[sessionId] ?? [])],
+      },
+    }));
   },
 
   spawn: async (input) => {

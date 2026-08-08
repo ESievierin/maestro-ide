@@ -1222,6 +1222,7 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
     setEffort,
     setPermissionMode,
     setThinking,
+    loadTranscript,
     error,
     clearError,
   } = useSessions();
@@ -1232,6 +1233,19 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
     // fetch is a stable zustand action.
     void fetch(branch);
   }, [branch, fetch]);
+
+  useEffect(() => {
+    // A session opened after a restart has nothing live in memory yet — hydrate
+    // its transcript from the last autosave. A no-op once it's already loaded.
+    if (selectedId) void loadTranscript(selectedId);
+  }, [selectedId, loadTranscript]);
+
+  useEffect(() => {
+    // Tab labels read the first prompt out of the transcript — load every tab's
+    // history, not just the selected one, so restarted sessions aren't all
+    // stuck showing the generic "manual · 3f9c2a1b" fallback.
+    for (const session of sessions ?? []) void loadTranscript(session.id);
+  }, [sessions, loadTranscript]);
 
   const list = sessions ?? [];
   const selected = list.find((s) => s.id === selectedId) ?? null;

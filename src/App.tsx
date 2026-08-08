@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useSessions } from "./state/sessions";
+import { flushTranscripts, useSessions } from "./state/sessions";
 import { EventLog } from "./components/EventLog";
 import { Icon } from "./components/Icon";
 import { Toasts } from "./components/Toasts";
@@ -235,8 +235,14 @@ export default function App() {
             `${active} session${active > 1 ? "s are" : " is"} still working. Quit anyway?`,
             { title: "MaestroIDE", kind: "warning" },
           );
-          if (!ok) event.preventDefault();
+          if (!ok) {
+            event.preventDefault();
+            return;
+          }
         }
+        // Any debounced transcript save still pending loses its race with process
+        // exit otherwise — flush before the window is allowed to actually close.
+        await flushTranscripts();
       });
     })();
     return () => unlisten?.();

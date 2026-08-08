@@ -50,7 +50,11 @@ export interface SpawnSessionInput {
 interface SessionsState {
   /** Sessions per branch, as loaded from the store. */
   byBranch: Record<string, Session[]>;
-  /** Live transcripts per session id, built from bus events (not persisted). */
+  /**
+   * Transcripts per session id: built live from bus events for a session running in
+   * this process, or hydrated once from the backend via `loadTranscript` for one that
+   * isn't (a restart, or a session from before the app was closed).
+   */
   transcripts: Record<string, TranscriptItem[]>;
   /** Slash commands supported by each live session (for autocomplete). */
   commands: Record<string, CommandInfo[]>;
@@ -77,6 +81,8 @@ interface SessionsState {
 
   fetch: (branch: string) => Promise<void>;
   fetchMany: (branches: string[]) => Promise<void>;
+  /** Hydrate a session's transcript from the backend, once, if nothing is in memory yet. */
+  loadTranscript: (sessionId: string) => Promise<void>;
   spawn: (input: SpawnSessionInput) => Promise<Session | null>;
   send: (sessionId: string, prompt: string, attachments?: Attachment[]) => Promise<void>;
   interrupt: (sessionId: string) => Promise<void>;
@@ -197,6 +203,22 @@ export const useSessions = create<SessionsState>((set, get) => ({
 
   fetchMany: async (branches) => {
     await Promise.all(branches.map((b) => get().fetch(b)));
+  },
+
+  loadTranscript: async (sessionId) => {
+    if (get().transcripts[sessionId] !== undefined) return;
+    try {
+      const items = await invoke<TranscriptItem[] | null>("get_session_transcript", {
+        sessionId,
+      });
+      if (!items) return;
+      // A live session may have started streaming while this fetch was in flight —
+      // never overwrite something newer with a stale disk copy.
+      if (get().transcripts[sessionId] !== undefined) return;
+      set((s) => ({ transcripts: { ...s.transcripts, [sessionId]: items } }));
+    } catch (e) {
+      set({ error: String(e) });
+    }
   },
 
   spawn: async (input) => {
@@ -668,5 +690,52 @@ onBusEvent((event) => {
       }
       break;
     }
+  }
+});
+
+// Autosave: every transcript change is debounced to the backend, so history survives
+// a restart (or a clean `done`/`cancelled` close) without saving on every streamed
+// character.
+const SAVE_DEBOUNCE_MS = 800;
+const pendingSaves = new Map<string, ReturnType<typeof setTimeout>>();
+
+function persistTranscript(sessionId: string): Promise<void> {
+  const items = useSessions.getState().transcripts[sessionId];
+  if (!items) return Promise.resolve();
+  return invoke("save_session_transcript", { sessionId, items }).then(
+    () => undefined,
+    () => undefined, // best-effort — one missed autosave isn't worth surfacing
+  );
+}
+
+function scheduleSave(sessionId: string): void {
+  const existing = pendingSaves.get(sessionId);
+  if (existing) clearTimeout(existing);
+  pendingSaves.set(
+    sessionId,
+    setTimeout(() => {
+      pendingSaves.delete(sessionId);
+      void persistTranscript(sessionId);
+    }, SAVE_DEBOUNCE_MS),
+  );
+}
+
+/** Flush every pending autosave immediately — await this before the app can exit. */
+export async function flushTranscripts(): Promise<void> {
+  const sessionIds = [...pendingSaves.keys()];
+  for (const sessionId of sessionIds) {
+    clearTimeout(pendingSaves.get(sessionId));
+    pendingSaves.delete(sessionId);
+  }
+  await Promise.all(sessionIds.map((id) => persistTranscript(id)));
+}
+
+let previousTranscripts: SessionsState["transcripts"] = {};
+useSessions.subscribe((state) => {
+  const prev = previousTranscripts;
+  previousTranscripts = state.transcripts;
+  if (prev === state.transcripts) return;
+  for (const sessionId of Object.keys(state.transcripts)) {
+    if (state.transcripts[sessionId] !== prev[sessionId]) scheduleSave(sessionId);
   }
 });

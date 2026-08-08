@@ -234,6 +234,8 @@ pub fn run() {
             ipc::respond_permission,
             ipc::list_sessions,
             ipc::delete_session,
+            ipc::save_session_transcript,
+            ipc::get_session_transcript,
             ipc::get_diff,
             ipc::refresh_diff,
             ipc::get_file_diff,

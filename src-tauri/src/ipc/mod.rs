@@ -612,6 +612,45 @@ pub async fn delete_session(state: State<'_, AppState>, session_id: String) -> R
     run_core(state.bus.clone(), move || sessions.delete(&session_id)).await
 }
 
+/// Persist the frontend's own transcript for a session verbatim, so a restart
+/// (or a `done`/`cancelled` close) does not lose it. Opaque to the backend —
+/// it never parses `items`, only stores and returns it.
+#[tauri::command]
+pub async fn save_session_transcript(
+    state: State<'_, AppState>,
+    session_id: String,
+    items: serde_json::Value,
+) -> Result<(), String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        let json = serde_json::to_string(&items).map_err(|err| MaestroError::InvalidData {
+            message: format!("could not serialize transcript: {err}"),
+        })?;
+        store.save_transcript(&session_id, &json)
+    })
+    .await
+}
+
+/// The transcript saved for a session, if any — `None` for a session that
+/// never persisted one (e.g. still live in this process).
+#[tauri::command]
+pub async fn get_session_transcript(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<serde_json::Value>, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        let Some(raw) = store.get_transcript(&session_id)? else {
+            return Ok(None);
+        };
+        let value = serde_json::from_str(&raw).map_err(|err| MaestroError::InvalidData {
+            message: format!("corrupt transcript for {session_id}: {err}"),
+        })?;
+        Ok(Some(value))
+    })
+    .await
+}
+
 // ---------- diffs ----------
 
 /// Cached diff snapshot for a branch (computed on first access).

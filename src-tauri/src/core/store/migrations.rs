@@ -73,5 +73,19 @@ pub fn runner() -> Migrations<'static> {
         );
         "#,
         ),
+        M::up(
+            // The frontend's transcript (text/thinking/tool calls/status — everything
+            // rendered in the chat view) only ever lived in memory; a restart lost it
+            // even for a session that finished cleanly. `items_json` is the frontend's
+            // own serialized TranscriptItem[], so there is nothing to reparse or
+            // re-derive on the way back out.
+            r#"
+        CREATE TABLE session_transcripts (
+            session_id  TEXT PRIMARY KEY REFERENCES sessions(id),
+            items_json  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
+        "#,
+        ),
     ])
 }

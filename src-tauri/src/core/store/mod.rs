@@ -81,6 +81,11 @@ pub trait Store: Send + Sync {
     /// Delete a session row. Callers are responsible for ensuring it is terminal.
     fn delete_session(&self, id: &str) -> Result<()>;
 
+    /// Overwrite the transcript the frontend renders for this session — its own
+    /// serialized `TranscriptItem[]`, so a restart can restore it verbatim.
+    fn save_transcript(&self, session_id: &str, items_json: &str) -> Result<()>;
+    fn get_transcript(&self, session_id: &str) -> Result<Option<String>>;
+
     fn get_setting(&self, key: &str) -> Result<Option<String>>;
     fn set_setting(&self, key: &str, value: &str) -> Result<()>;
 
@@ -361,8 +366,37 @@ impl Store for SqliteStore {
 
     fn delete_session(&self, id: &str) -> Result<()> {
         self.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM session_transcripts WHERE session_id = ?1",
+                params![id],
+            )?;
             conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
             Ok(())
+        })
+    }
+
+    fn save_transcript(&self, session_id: &str, items_json: &str) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO session_transcripts (session_id, items_json, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_id) DO UPDATE SET items_json = ?2, updated_at = ?3",
+                params![session_id, items_json, Utc::now().to_rfc3339()],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn get_transcript(&self, session_id: &str) -> Result<Option<String>> {
+        self.with_conn(|conn| {
+            let value = conn
+                .query_row(
+                    "SELECT items_json FROM session_transcripts WHERE session_id = ?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(value)
         })
     }
 
@@ -646,6 +680,47 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].status, SessionStatus::Streaming);
         assert!(sessions[0].updated_at >= loaded.updated_at);
+    }
+
+    #[test]
+    fn transcript_round_trip_and_overwrite() {
+        let s = store();
+        s.upsert_branch("impl/T-3-x", None, None).expect("branch");
+        let session = Session::new("impl/T-3-x", SessionType::Manual, None, None, None);
+        s.insert_session(&session).expect("insert session");
+
+        assert_eq!(s.get_transcript(&session.id).expect("get"), None);
+
+        s.save_transcript(&session.id, r#"[{"kind":"user","text":"hi"}]"#)
+            .expect("save");
+        assert_eq!(
+            s.get_transcript(&session.id).expect("get"),
+            Some(r#"[{"kind":"user","text":"hi"}]"#.to_string())
+        );
+
+        // A later save overwrites rather than accumulating a second row.
+        s.save_transcript(
+            &session.id,
+            r#"[{"kind":"user","text":"hi"},{"kind":"text","text":"hey"}]"#,
+        )
+        .expect("overwrite");
+        assert_eq!(
+            s.get_transcript(&session.id).expect("get"),
+            Some(r#"[{"kind":"user","text":"hi"},{"kind":"text","text":"hey"}]"#.to_string())
+        );
+    }
+
+    #[test]
+    fn deleting_a_session_drops_its_transcript_too() {
+        let s = store();
+        s.upsert_branch("impl/T-4-x", None, None).expect("branch");
+        let session = Session::new("impl/T-4-x", SessionType::Manual, None, None, None);
+        s.insert_session(&session).expect("insert session");
+        s.save_transcript(&session.id, "[]").expect("save");
+
+        s.delete_session(&session.id).expect("delete");
+
+        assert_eq!(s.get_transcript(&session.id).expect("get"), None);
     }
 
     #[test]

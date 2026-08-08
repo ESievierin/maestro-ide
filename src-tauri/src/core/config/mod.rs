@@ -12,14 +12,13 @@ use serde::Deserialize;
 
 use crate::core::attention::SETTING_OS_NOTIFICATIONS;
 use crate::core::checks::{SETTING_CHECK_AUTO, SETTING_CHECK_COMMAND};
-use crate::core::compose::SETTING_COMPOSE_MODEL;
 use crate::core::daemon::jira::{
     SETTING_JIRA_BASE_URL, SETTING_JIRA_EMAIL, SETTING_JIRA_JQL, SETTING_JIRA_TOKEN,
 };
 use crate::core::daemon::{
     SETTING_DAEMON_ACCOUNT, SETTING_DAEMON_ENABLED, SETTING_DAEMON_POLL_MINUTES,
-    SETTING_DAEMON_REPO, SETTING_DAEMON_RESEARCH_MODEL, SETTING_DAEMON_USAGE_THRESHOLD,
-    SETTING_DAEMON_VERIFY_MODEL,
+    SETTING_DAEMON_REPO, SETTING_DAEMON_RESEARCH_EFFORT, SETTING_DAEMON_RESEARCH_MODEL,
+    SETTING_DAEMON_USAGE_THRESHOLD, SETTING_DAEMON_VERIFY_EFFORT, SETTING_DAEMON_VERIFY_MODEL,
 };
 use crate::core::gate::SETTING_GATE_COMMIT;
 use crate::core::launcher::SETTING_EDITOR_COMMAND;
@@ -95,11 +94,15 @@ const DEFAULT_CONFIG: &str = r#"# MaestroIDE configuration (~/.maestro/config.to
 # Hold the task queue while 5h-window utilization is above this percentage.
 # daemon_usage_threshold = 50.0
 
-# Model for issue-research sessions (empty = session default).
+# Model + effort for Jira-research sessions. Default: sonnet, high — a first
+# pass over unfamiliar ground doesn't need more.
 # daemon_research_model = "sonnet"
+# daemon_research_effort = "high"
 
-# Model for PR-review / PR-comment-verification sessions (empty = session default).
+# Model + effort for PR-review / PR-comment sessions. Default: sonnet, xhigh —
+# this is text a human reviewer actually reads.
 # daemon_verify_model = "sonnet"
+# daemon_verify_effort = "xhigh"
 
 # --- Jira (research flow) ---
 # All three must be set for the daemon to poll Jira. The token is an Atlassian
@@ -110,10 +113,6 @@ const DEFAULT_CONFIG: &str = r#"# MaestroIDE configuration (~/.maestro/config.to
 
 # What counts as "my work". Default: open unresolved issues assigned to you.
 # jira_jql = "assignee = currentUser() AND resolution = EMPTY ORDER BY updated DESC"
-
-# Model for one-shot generation: commit messages, PR descriptions, reply drafts
-# (empty = the Claude CLI's default model).
-# compose_model = "sonnet"
 "#;
 
 /// Parsed config file. Every field is optional: absent means "leave the current setting".
@@ -135,12 +134,13 @@ pub struct Config {
     pub daemon_poll_minutes: Option<u64>,
     pub daemon_usage_threshold: Option<f64>,
     pub daemon_research_model: Option<String>,
+    pub daemon_research_effort: Option<String>,
     pub daemon_verify_model: Option<String>,
+    pub daemon_verify_effort: Option<String>,
     pub jira_base_url: Option<String>,
     pub jira_email: Option<String>,
     pub jira_token: Option<String>,
     pub jira_jql: Option<String>,
-    pub compose_model: Option<String>,
 }
 
 impl Config {
@@ -222,14 +222,21 @@ impl Config {
                 self.daemon_research_model.clone(),
             ),
             (
+                SETTING_DAEMON_RESEARCH_EFFORT,
+                self.daemon_research_effort.clone(),
+            ),
+            (
                 SETTING_DAEMON_VERIFY_MODEL,
                 self.daemon_verify_model.clone(),
+            ),
+            (
+                SETTING_DAEMON_VERIFY_EFFORT,
+                self.daemon_verify_effort.clone(),
             ),
             (SETTING_JIRA_BASE_URL, self.jira_base_url.clone()),
             (SETTING_JIRA_EMAIL, self.jira_email.clone()),
             (SETTING_JIRA_TOKEN, self.jira_token.clone()),
             (SETTING_JIRA_JQL, self.jira_jql.clone()),
-            (SETTING_COMPOSE_MODEL, self.compose_model.clone()),
         ] {
             if let Some(value) = value {
                 store.set_setting(key, &value)?;

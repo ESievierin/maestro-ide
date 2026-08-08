@@ -1,31 +1,82 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../components/Icon";
+import { SelectMenu, type SelectMenuOption } from "../components/SelectMenu";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
+import { askViaNewSession, findResumableSession } from "../utils/agentAsk";
+import { useSessions } from "../state/sessions";
 import { usePr, openUrl, type CreatedPr } from "../state/pr";
 import { useWorktrees } from "../state/worktrees";
-import type { WorktreeInfo } from "../types/worktrees";
+import type { RepoInfo, WorktreeInfo } from "../types/worktrees";
+
+/** "TITLE: ...\n\nbody" → { title, body }; a missing TITLE: line falls back
+ * to the first line as the title. Mirrors the backend's own parser. */
+function parsePrDraft(raw: string): { title: string; body: string } {
+  const trimmed = raw.trim();
+  const rest = trimmed.startsWith("TITLE:") ? trimmed.slice("TITLE:".length) : trimmed;
+  const nl = rest.indexOf("\n");
+  if (nl === -1) return { title: rest.trim(), body: "" };
+  return { title: rest.slice(0, nl).trim(), body: rest.slice(nl + 1).trim() };
+}
+
+const GEN_MODEL = "sonnet";
+const GEN_EFFORT = "high";
 
 /**
- * One button from "pile of changes" to "PR is up": commit message on top
- * (typed or generated from the diff), PR title seeded from it, description
- * generated from the branch, then commit → push → `gh pr create` in a single
- * action. Generation runs through the editable `commit-message` /
- * `pr-description` prompt templates.
+ * One button from "pile of changes" to "PR is up": pick the base, a commit
+ * message on top (typed or generated), PR title seeded from it, description
+ * generated from the branch, then commit → push → `gh pr create`.
+ *
+ * Generation asks a real agent, not a stateless CLI call: it resumes the
+ * branch's own implementation session when one exists, so the answer
+ * reflects what that agent actually did and why — not just a diff read
+ * cold. The prompts themselves stay the editable `commit-message` /
+ * `pr-description` templates.
  */
 export function CreatePrDialog({
   worktree,
+  repo,
   onClose,
 }: {
   worktree: WorktreeInfo;
+  repo: RepoInfo | null;
   onClose: () => void;
 }) {
   const branch = worktree.branch as string;
   const dirty = worktree.status?.dirty ?? false;
-  const generateCommitMessage = usePr((s) => s.generateCommitMessage);
-  const generatePrDescription = usePr((s) => s.generatePrDescription);
+  const renderCommitPrompt = usePr((s) => s.renderCommitPrompt);
+  const renderPrPrompt = usePr((s) => s.renderPrPrompt);
   const createPr = usePr((s) => s.createPr);
   useEscapeToClose(onClose);
+
+  const baseOptions = useMemo<SelectMenuOption[]>(() => {
+    const seen = new Set<string>();
+    const options: SelectMenuOption[] = [];
+    for (const b of repo?.branches ?? []) {
+      if (b === branch || seen.has(b)) continue;
+      seen.add(b);
+      options.push({ value: b, label: b });
+    }
+    for (const remote of repo?.remote_branches ?? []) {
+      const short = remote.slice(remote.indexOf("/") + 1);
+      if (!short || short === branch || seen.has(short)) continue;
+      seen.add(short);
+      options.push({ value: short, label: short, description: `from ${remote}` });
+    }
+    return options;
+  }, [repo, branch]);
+
+  const [base, setBase] = useState<string>(() => {
+    const stored = worktree.base_branch;
+    const short = stored && stored.includes("/") ? stored.slice(stored.indexOf("/") + 1) : stored;
+    for (const candidate of [stored, short]) {
+      if (candidate && baseOptions.some((o) => o.value === candidate)) return candidate;
+    }
+    if (repo?.default_branch && baseOptions.some((o) => o.value === repo.default_branch)) {
+      return repo.default_branch;
+    }
+    return baseOptions[0]?.value ?? "";
+  });
 
   const [commitMessage, setCommitMessage] = useState("");
   const [title, setTitle] = useState("");
@@ -38,25 +89,63 @@ export function CreatePrDialog({
 
   const needCommit = dirty;
   const canSubmit =
-    !submitBusy && title.trim().length > 0 && (!needCommit || commitMessage.trim().length > 0);
+    !submitBusy &&
+    base.length > 0 &&
+    title.trim().length > 0 &&
+    (!needCommit || commitMessage.trim().length > 0);
+
+  /** The branch's own implementation session, if one is resumable — the
+   * generated text is only as good as the context it can see. */
+  const contextSession = async () => {
+    await useSessions.getState().fetch(branch);
+    return findResumableSession(branch, ["implementation"]);
+  };
 
   const genCommit = async () => {
     setGenCommitBusy(true);
-    const message = await generateCommitMessage(branch);
-    setGenCommitBusy(false);
-    if (message) {
-      setCommitMessage(message);
-      if (!title.trim()) setTitle(message.split("\n")[0] ?? "");
+    try {
+      const prompt = await renderCommitPrompt(branch, base || null);
+      if (!prompt) return;
+      const target = await contextSession();
+      const result = await askViaNewSession({
+        branch,
+        prompt,
+        resumeFrom: target?.id,
+        model: GEN_MODEL,
+        effort: GEN_EFFORT,
+        permissionMode: "plan",
+      });
+      if (result?.text) {
+        setCommitMessage(result.text);
+        if (!title.trim()) setTitle(result.text.split("\n")[0] ?? "");
+      }
+    } finally {
+      setGenCommitBusy(false);
     }
   };
 
   const genPr = async () => {
     setGenPrBusy(true);
-    const draft = await generatePrDescription(branch);
-    setGenPrBusy(false);
-    if (draft) {
-      if (draft.title) setTitle(draft.title);
-      setBody(draft.body);
+    try {
+      const rendered = await renderPrPrompt(branch, base || null);
+      if (!rendered) return;
+      setBase(rendered.base);
+      const target = await contextSession();
+      const result = await askViaNewSession({
+        branch,
+        prompt: rendered.prompt,
+        resumeFrom: target?.id,
+        model: GEN_MODEL,
+        effort: GEN_EFFORT,
+        permissionMode: "plan",
+      });
+      if (result?.text) {
+        const draft = parsePrDraft(result.text);
+        if (draft.title) setTitle(draft.title);
+        setBody(draft.body);
+      }
+    } finally {
+      setGenPrBusy(false);
     }
   };
 
@@ -72,7 +161,7 @@ export function CreatePrDialog({
         }
       }
       setPhase("Pushing & creating the PR…");
-      const created = await createPr(branch, title.trim(), body);
+      const created = await createPr(branch, title.trim(), body, base || null);
       if (created) {
         setResult(created);
         void useWorktrees.getState().refresh();
@@ -102,6 +191,16 @@ export function CreatePrDialog({
           </>
         ) : (
           <div className="form-grid">
+            <label>
+              Base branch
+              <SelectMenu
+                value={base}
+                onChange={setBase}
+                options={baseOptions}
+                placeholder={baseOptions.length === 0 ? "no other branch found" : undefined}
+              />
+            </label>
+
             {needCommit && (
               <label>
                 Commit message — uncommitted changes will be committed first
@@ -118,7 +217,7 @@ export function CreatePrDialog({
                   <button
                     className="small ghost"
                     disabled={genCommitBusy}
-                    title="Generate from the diff (commit-message prompt template)"
+                    title="Ask the branch's agent to write it, with full context of what it did"
                     onClick={() => void genCommit()}
                   >
                     {genCommitBusy ? <Icon name="spinner" spin /> : <Icon name="bot" />} Generate
@@ -149,7 +248,7 @@ export function CreatePrDialog({
                 <button
                   className="small ghost"
                   disabled={genPrBusy}
-                  title="Generate title + description from the branch (pr-description prompt template)"
+                  title="Ask the branch's agent — includes uncommitted changes, not just what's committed"
                   onClick={() => void genPr()}
                 >
                   {genPrBusy ? <Icon name="spinner" spin /> : <Icon name="bot" />} Generate

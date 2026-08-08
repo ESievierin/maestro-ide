@@ -84,8 +84,15 @@ impl PrManager {
     }
 
     /// Push `branch` and open a PR for it. The branch must be committed; the
-    /// dialog handles the commit step first.
-    pub fn create(&self, branch: &str, title: &str, body: &str) -> Result<CreatedPr> {
+    /// dialog handles the commit step first. `base` overrides the stored/
+    /// default base when the user picked one explicitly.
+    pub fn create(
+        &self,
+        branch: &str,
+        title: &str,
+        body: &str,
+        base: Option<&str>,
+    ) -> Result<CreatedPr> {
         let title = title.trim();
         if title.is_empty() {
             return Err(MaestroError::InvalidData {
@@ -100,16 +107,19 @@ impl PrManager {
             .ok_or_else(|| MaestroError::InvalidData {
                 message: format!("no worktree for branch: {branch}"),
             })?;
-        let base = match self.store.get_branch(branch)?.and_then(|b| b.base_branch) {
-            Some(base) => base,
-            None => {
-                self.worktrees
-                    .repo_info()?
-                    .ok_or_else(|| MaestroError::Config {
-                        message: "no repository selected".into(),
-                    })?
-                    .default_branch
-            }
+        let base = match base.map(str::trim).filter(|b| !b.is_empty()) {
+            Some(base) => base.to_string(),
+            None => match self.store.get_branch(branch)?.and_then(|b| b.base_branch) {
+                Some(base) => base,
+                None => {
+                    self.worktrees
+                        .repo_info()?
+                        .ok_or_else(|| MaestroError::Config {
+                            message: "no repository selected".into(),
+                        })?
+                        .default_branch
+                }
+            },
         };
         // Base may be a remote-tracking name ("origin/main") — PRs target the
         // short branch name.

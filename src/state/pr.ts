@@ -1,10 +1,11 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 
-/** Mirrors `PrDraft` in src-tauri/src/core/compose/. */
-export interface PrDraft {
-  title: string;
-  body: string;
+/** Mirrors `PrPromptResult` in src-tauri/src/ipc/. */
+export interface PrPromptResult {
+  /** The base actually used — echoes back an auto-detected one. */
+  base: string;
+  prompt: string;
 }
 
 /** Mirrors `CreatedPr` in src-tauri/src/core/pr/. */
@@ -30,17 +31,22 @@ export interface ReplyOutcome {
   detail: string;
 }
 
-/** Thin invoke wrappers; every failure already surfaced as an error toast via
- * error.raised, so callers just get null and keep their dialog state. */
+/** Thin invoke wrappers around the PR workflow's backend surface. Prompt
+ * rendering (git context in, text out) lives here; the actual generation
+ * happens through a real session — see `src/utils/agentAsk.ts`. Every
+ * failure already surfaced as an error toast via error.raised, so callers
+ * just get null and keep their dialog state. */
 interface PrState {
-  generateCommitMessage: (branch: string) => Promise<string | null>;
-  generatePrDescription: (branch: string) => Promise<PrDraft | null>;
-  createPr: (branch: string, title: string, body: string) => Promise<CreatedPr | null>;
-  listComments: (branch: string) => Promise<PrComment[] | null>;
-  generateReplies: (
+  renderCommitPrompt: (branch: string, base?: string | null) => Promise<string | null>;
+  renderPrPrompt: (branch: string, base?: string | null) => Promise<PrPromptResult | null>;
+  renderReplyFollowup: (extra?: string) => Promise<string | null>;
+  createPr: (
     branch: string,
-    comments: PrComment[],
-  ) => Promise<Record<number, string> | null>;
+    title: string,
+    body: string,
+    base?: string | null,
+  ) => Promise<CreatedPr | null>;
+  listComments: (branch: string) => Promise<PrComment[] | null>;
   postReplies: (
     pr: number,
     replies: { comment_id: number; body: string }[],
@@ -48,25 +54,33 @@ interface PrState {
 }
 
 export const usePr = create<PrState>(() => ({
-  generateCommitMessage: async (branch) => {
+  renderCommitPrompt: async (branch, base) => {
     try {
-      return await invoke<string>("generate_commit_message", { branch });
+      return await invoke<string>("render_commit_prompt", { branch, base: base ?? null });
     } catch {
       return null;
     }
   },
 
-  generatePrDescription: async (branch) => {
+  renderPrPrompt: async (branch, base) => {
     try {
-      return await invoke<PrDraft>("generate_pr_description", { branch });
+      return await invoke<PrPromptResult>("render_pr_prompt", { branch, base: base ?? null });
     } catch {
       return null;
     }
   },
 
-  createPr: async (branch, title, body) => {
+  renderReplyFollowup: async (extra) => {
     try {
-      return await invoke<CreatedPr>("create_pr", { branch, title, body });
+      return await invoke<string>("render_pr_reply_followup", { extra: extra ?? null });
+    } catch {
+      return null;
+    }
+  },
+
+  createPr: async (branch, title, body, base) => {
+    try {
+      return await invoke<CreatedPr>("create_pr", { branch, title, body, base: base ?? null });
     } catch {
       return null;
     }
@@ -75,22 +89,6 @@ export const usePr = create<PrState>(() => ({
   listComments: async (branch) => {
     try {
       return await invoke<PrComment[]>("list_pr_comments", { branch });
-    } catch {
-      return null;
-    }
-  },
-
-  generateReplies: async (branch, comments) => {
-    try {
-      return await invoke<Record<number, string>>("generate_pr_replies", {
-        branch,
-        comments: comments.map((c) => ({
-          comment_id: c.id,
-          author: c.author,
-          path: c.path,
-          body: c.body,
-        })),
-      });
     } catch {
       return null;
     }

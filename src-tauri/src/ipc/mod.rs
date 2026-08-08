@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
@@ -16,7 +16,7 @@ use crate::core::agent::protocol::Attachment;
 use crate::core::attention::{AttentionItem, AttentionManager};
 use crate::core::bus::{Event, EventBus};
 use crate::core::checks::{CheckResult, ChecksManager};
-use crate::core::compose::{ComposeManager, PrDraft};
+use crate::core::compose::ComposeManager;
 use crate::core::daemon::{DaemonManager, DaemonStatus};
 use crate::core::diff::{DiffManager, DiffScope, DiffSnapshot, FileDiff};
 use crate::core::gate::{GateManager, GateParam, PendingGate};
@@ -305,51 +305,69 @@ pub async fn dismiss_daemon_task(state: State<'_, AppState>, key: String) -> Res
     run_core(state.bus.clone(), move || daemon.dismiss_task(&key)).await
 }
 
-// ---------- PR workflow: generate, create, reply ----------
+// ---------- PR workflow: render prompts, create, reply ----------
+//
+// Generation is not done here: these commands only render the editable
+// templates (git context in, prompt text out). The frontend then asks a real
+// session — with `resume_from` the branch's own implementation session when
+// one exists — so the answer reflects that agent's actual context, not a
+// stateless read of the diff. See `src/utils/agentAsk.ts`.
 
-/// Generate a commit message for the branch's uncommitted changes (claude -p).
+/// Render the "commit-message" prompt for the branch's uncommitted changes.
 #[tauri::command]
-pub async fn generate_commit_message(
+pub async fn render_commit_prompt(
     state: State<'_, AppState>,
     branch: String,
+    base: Option<String>,
 ) -> Result<String, String> {
     let compose = state.compose.clone();
-    run_core(state.bus.clone(), move || compose.commit_message(&branch)).await
+    run_core(state.bus.clone(), move || {
+        compose.commit_prompt(&branch, base.as_deref())
+    })
+    .await
 }
 
-/// Generate a PR title + body for the branch against its base (claude -p).
+#[derive(Debug, Serialize)]
+pub struct PrPromptResult {
+    /// The base actually used — echoes back an auto-detected one.
+    pub base: String,
+    pub prompt: String,
+}
+
+/// Render the "pr-description" prompt for the branch against `base` (or the
+/// stored/default base when omitted).
 #[tauri::command]
-pub async fn generate_pr_description(
+pub async fn render_pr_prompt(
     state: State<'_, AppState>,
     branch: String,
-) -> Result<PrDraft, String> {
-    let compose = state.compose.clone();
-    run_core(state.bus.clone(), move || compose.pr_description(&branch)).await
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ReplyInput {
-    pub comment_id: u64,
-    pub author: String,
-    pub path: String,
-    pub body: String,
-}
-
-/// Draft replies for the given review comments (claude -p). Returns
-/// comment_id → draft; comments the model skipped are simply absent.
-#[tauri::command]
-pub async fn generate_pr_replies(
-    state: State<'_, AppState>,
-    branch: String,
-    comments: Vec<ReplyInput>,
-) -> Result<std::collections::HashMap<u64, String>, String> {
+    base: Option<String>,
+) -> Result<PrPromptResult, String> {
     let compose = state.compose.clone();
     run_core(state.bus.clone(), move || {
-        let tuples: Vec<(u64, String, String, String)> = comments
-            .into_iter()
-            .map(|c| (c.comment_id, c.author, c.path, c.body))
-            .collect();
-        compose.reply_drafts(&branch, &tuples)
+        let (base, prompt) = compose.pr_prompt(&branch, base.as_deref())?;
+        Ok(PrPromptResult { base, prompt })
+    })
+    .await
+}
+
+/// Render the follow-up asking an open review session for its final reply
+/// drafts. `extra` carries the user's clarifications on a regenerate.
+#[tauri::command]
+pub async fn render_pr_reply_followup(
+    state: State<'_, AppState>,
+    extra: Option<String>,
+) -> Result<String, String> {
+    let prompts = state.prompts.clone();
+    run_core(state.bus.clone(), move || {
+        let extra = match extra.as_deref().map(str::trim) {
+            Some(text) if !text.is_empty() => {
+                format!("\nAdditional instructions from the user:\n{text}\n")
+            }
+            _ => String::new(),
+        };
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("extra".to_string(), extra);
+        prompts.render("pr-reply", &vars)
     })
     .await
 }
@@ -361,10 +379,11 @@ pub async fn create_pr(
     branch: String,
     title: String,
     body: String,
+    base: Option<String>,
 ) -> Result<CreatedPr, String> {
     let prs = state.prs.clone();
     run_core(state.bus.clone(), move || {
-        prs.create(&branch, &title, &body)
+        prs.create(&branch, &title, &body, base.as_deref())
     })
     .await
 }

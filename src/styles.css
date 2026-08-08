@@ -1781,15 +1781,19 @@ input[type="checkbox"] {
   width: min(760px, 92vw);
 }
 
-.replies-toolbar {
+.replies-session-bar {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   margin: var(--space-2) 0;
 }
 
+.replies-session-bar .ac-desc {
+  flex: 1;
+}
+
 .replies-list {
-  max-height: 46vh;
+  max-height: 40vh;
   overflow: auto;
   display: flex;
   flex-direction: column;
@@ -1799,9 +1803,47 @@ input[type="checkbox"] {
   padding: var(--space-3);
 }
 
+.reply-group-path {
+  margin: 0 0 var(--space-2);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.reply-group + .reply-group {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.reply-item + .reply-item {
+  margin-top: var(--space-3);
+}
+
 .reply-item textarea {
   width: 100%;
   margin-top: var(--space-1);
+}
+
+.replies-generate {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.replies-generate textarea {
+  flex: 1;
+}
+
+.replies-generate > button {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .reply-comment {

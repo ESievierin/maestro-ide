@@ -43,7 +43,7 @@ use serde::Serialize;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::bus::{Event, EventBus};
-use crate::core::session::{SessionManager, SessionType, SpawnParams};
+use crate::core::session::{SessionManager, SessionStatus, SessionType, SpawnParams};
 use crate::core::store::{DaemonTask, Store};
 use crate::core::worktree::{CreateWorktreeRequest, WorktreeManager};
 use crate::error::{MaestroError, Result};
@@ -56,15 +56,26 @@ pub const SETTING_DAEMON_ACCOUNT: &str = "daemon_account";
 pub const SETTING_DAEMON_POLL_MINUTES: &str = "daemon_poll_minutes";
 /// Max 5h-window utilization (percent) at which queued tasks may still start.
 pub const SETTING_DAEMON_USAGE_THRESHOLD: &str = "daemon_usage_threshold";
-/// Model for research sessions (empty = CLI default).
+/// Model for research sessions (Jira). Empty = [`DEFAULT_RESEARCH_MODEL`].
 pub const SETTING_DAEMON_RESEARCH_MODEL: &str = "daemon_research_model";
-/// Model for PR-comment verification sessions (empty = CLI default).
+/// Reasoning effort for research sessions. Empty = [`DEFAULT_RESEARCH_EFFORT`].
+pub const SETTING_DAEMON_RESEARCH_EFFORT: &str = "daemon_research_effort";
+/// Model for PR-review / PR-comment sessions. Empty = [`DEFAULT_VERIFY_MODEL`].
 pub const SETTING_DAEMON_VERIFY_MODEL: &str = "daemon_verify_model";
+/// Reasoning effort for PR-review / PR-comment sessions. Empty = [`DEFAULT_VERIFY_EFFORT`].
+pub const SETTING_DAEMON_VERIFY_EFFORT: &str = "daemon_verify_effort";
 /// `owner/name` to watch. Empty = derived from the open repository's origin.
 pub const SETTING_DAEMON_REPO: &str = "daemon_repo";
 
 const DEFAULT_POLL_MINUTES: u64 = 5;
 const DEFAULT_USAGE_THRESHOLD: f64 = 50.0;
+/// Research is a first pass over unfamiliar ground — a capable model is enough.
+const DEFAULT_RESEARCH_MODEL: &str = "sonnet";
+const DEFAULT_RESEARCH_EFFORT: &str = "high";
+/// Verify produces text a human reviewer will actually read (a PR review, a
+/// reply to a comment) — worth the extra reasoning.
+const DEFAULT_VERIFY_MODEL: &str = "sonnet";
+const DEFAULT_VERIFY_EFFORT: &str = "xhigh";
 
 /// What the frontend chip/panel shows.
 #[derive(Clone, Debug, Serialize)]
@@ -320,8 +331,14 @@ impl DaemonManager {
                         }
                     }
                     Ok(Event::SessionStatusChanged { session_id, status, .. }) => {
-                        if status.is_terminal() {
-                            self.on_session_finished(&session_id, status.as_str() == "done");
+                        // A daemon session's own work is done as soon as its first turn
+                        // ends — awaiting_input, not just a terminal state. These sessions
+                        // are conversational (plan mode, ready for a follow-up); waiting
+                        // for the user to close them would stall the whole queue behind
+                        // whatever they happen to still have open.
+                        if status.is_terminal() || status == SessionStatus::AwaitingInput {
+                            let ok = !matches!(status, SessionStatus::Failed | SessionStatus::Cancelled);
+                            self.on_session_finished(&session_id, ok);
                         }
                     }
                     Ok(_) => {}
@@ -598,14 +615,13 @@ impl DaemonManager {
              Do NOT modify any files, do NOT commit, and do NOT post anything to GitHub — \
              the human decides what feedback to send."
         );
+        let (model, effort) = self.verify_model_effort();
         let session_id = self.exec.spawn(SpawnParams {
             branch: branch.clone(),
             cwd,
             session_type: SessionType::Research,
-            model: self
-                .setting(SETTING_DAEMON_VERIFY_MODEL)
-                .filter(|m| !m.is_empty()),
-            effort: None,
+            model,
+            effort,
             permission_mode: Some("plan".into()),
             thinking: None,
             tools_profile: None,
@@ -643,14 +659,13 @@ impl DaemonManager {
              worktree root: what the issue is really about, which files/modules are involved, \
              a suggested approach, open questions, and risks. Do not modify any other files."
         );
+        let (model, effort) = self.research_model_effort();
         let session_id = self.exec.spawn(SpawnParams {
             branch: branch.clone(),
             cwd,
             session_type: SessionType::Research,
-            model: self
-                .setting(SETTING_DAEMON_RESEARCH_MODEL)
-                .filter(|m| !m.is_empty()),
-            effort: None,
+            model,
+            effort,
             permission_mode: Some("plan".into()),
             thinking: None,
             tools_profile: None,
@@ -694,14 +709,13 @@ impl DaemonManager {
              Do NOT modify any other files, do NOT commit, and do NOT post anything to GitHub — \
              a human reviews the plan first."
         );
+        let (model, effort) = self.verify_model_effort();
         let session_id = self.exec.spawn(SpawnParams {
             branch: branch.clone(),
             cwd,
             session_type: SessionType::Research,
-            model: self
-                .setting(SETTING_DAEMON_VERIFY_MODEL)
-                .filter(|m| !m.is_empty()),
-            effort: None,
+            model,
+            effort,
             permission_mode: Some("plan".into()),
             thinking: None,
             tools_profile: None,
@@ -747,6 +761,41 @@ impl DaemonManager {
 
     fn setting(&self, key: &str) -> Option<String> {
         self.store.get_setting(key).ok().flatten()
+    }
+
+    /// Model + effort for the "research" bucket (Jira today): a capable model
+    /// is enough for a first pass over unfamiliar ground.
+    fn research_model_effort(&self) -> (Option<String>, Option<String>) {
+        (
+            Some(
+                self.setting(SETTING_DAEMON_RESEARCH_MODEL)
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(|| DEFAULT_RESEARCH_MODEL.to_string()),
+            ),
+            Some(
+                self.setting(SETTING_DAEMON_RESEARCH_EFFORT)
+                    .filter(|e| !e.is_empty())
+                    .unwrap_or_else(|| DEFAULT_RESEARCH_EFFORT.to_string()),
+            ),
+        )
+    }
+
+    /// Model + effort for the "verify" bucket (PR review, PR-comment reply
+    /// prep): the text a human reviewer actually reads deserves the extra
+    /// reasoning.
+    fn verify_model_effort(&self) -> (Option<String>, Option<String>) {
+        (
+            Some(
+                self.setting(SETTING_DAEMON_VERIFY_MODEL)
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(|| DEFAULT_VERIFY_MODEL.to_string()),
+            ),
+            Some(
+                self.setting(SETTING_DAEMON_VERIFY_EFFORT)
+                    .filter(|e| !e.is_empty())
+                    .unwrap_or_else(|| DEFAULT_VERIFY_EFFORT.to_string()),
+            ),
+        )
     }
 
     #[cfg(test)]
@@ -1028,9 +1077,41 @@ mod tests {
         assert!(spawned[0].prompt.contains("REVIEW.md"));
         assert!(spawned[0].prompt.contains("Add retry"));
         assert!(spawned[0].prompt.contains("do NOT post anything"));
+        assert_eq!(
+            spawned[0].model.as_deref(),
+            Some("sonnet"),
+            "the verify bucket defaults to sonnet"
+        );
+        assert_eq!(
+            spawned[0].effort.as_deref(),
+            Some("xhigh"),
+            "PR review is verify-bucket work — a human will read it"
+        );
 
         let running = mgr.store.running_daemon_task().unwrap().expect("running");
         assert_eq!(running.branch.as_deref(), Some("feature/retry"));
+    }
+
+    #[test]
+    fn an_explicit_daemon_model_setting_overrides_the_bucket_default() {
+        let gh = MockGh {
+            pulls: vec![review_request(12, "Add retry", "feature/retry")],
+            ..Default::default()
+        };
+        let (mgr, exec, _bus) = manager(gh, MockExec::default());
+        mgr.store
+            .set_setting(SETTING_DAEMON_VERIFY_MODEL, "opus")
+            .unwrap();
+        mgr.store
+            .set_setting(SETTING_DAEMON_VERIFY_EFFORT, "medium")
+            .unwrap();
+
+        mgr.poll_once();
+        mgr.drive_queue();
+
+        let spawned = exec.spawned.lock().unwrap();
+        assert_eq!(spawned[0].model.as_deref(), Some("opus"));
+        assert_eq!(spawned[0].effort.as_deref(), Some("medium"));
     }
 
     #[test]
@@ -1122,6 +1203,12 @@ mod tests {
         assert_eq!(spawned[0].permission_mode.as_deref(), Some("plan"));
         assert!(spawned[0].prompt.contains("ABC-123"));
         assert!(spawned[0].prompt.contains("RESEARCH.md"));
+        assert_eq!(spawned[0].model.as_deref(), Some("sonnet"));
+        assert_eq!(
+            spawned[0].effort.as_deref(),
+            Some("high"),
+            "research is a lighter first pass than a human-facing reply"
+        );
     }
 
     #[test]
@@ -1242,5 +1329,45 @@ mod tests {
         assert!(exec.spawned.lock().unwrap().is_empty());
         let tasks = mgr.list_tasks().unwrap();
         assert_eq!(tasks[0].state, "dismissed");
+    }
+
+    #[tokio::test]
+    async fn the_queue_advances_on_awaiting_input_without_the_session_being_closed() {
+        let gh = MockGh {
+            pulls: vec![
+                review_request(12, "Add retry", "feature/retry"),
+                review_request(13, "Add docs", "feature/docs"),
+            ],
+            ..Default::default()
+        };
+        let (mgr, exec, bus) = manager(gh, MockExec::default());
+        mgr.poll_once();
+        mgr.drive_queue();
+        assert_eq!(exec.spawned.lock().unwrap().len(), 1, "first task started");
+
+        let loop_handle = tokio::spawn(mgr.clone().run_loop(bus.clone()));
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+        // The session's turn ends — conversational plan-mode sessions go
+        // "awaiting_input", not "done", and nobody is going to close them.
+        bus.publish(Event::SessionStatusChanged {
+            session_id: "sess-1".into(),
+            branch: "feature/retry".into(),
+            status: SessionStatus::AwaitingInput,
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        loop_handle.abort();
+
+        let tasks = mgr.list_tasks().unwrap();
+        assert_eq!(
+            tasks.iter().filter(|t| t.state == "done").count(),
+            1,
+            "awaiting_input alone must finish the task"
+        );
+        assert_eq!(
+            exec.spawned.lock().unwrap().len(),
+            2,
+            "the second task starts without anyone closing the first session"
+        );
     }
 }

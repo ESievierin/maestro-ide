@@ -1,17 +1,57 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Icon } from "../components/Icon";
+import { Icon, StatusDot } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
+import { askViaFollowup, findResumableSession } from "../utils/agentAsk";
 import { usePr, openUrl, type PrComment, type ReplyOutcome } from "../state/pr";
+import { useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
 import type { WorktreeInfo } from "../types/worktrees";
 
+/** Parse `[reply to <id>]\n<text>` blocks into id → text. A block whose id
+ * isn't among the comments we actually asked about is dropped — a
+ * hallucinated id must not create a reply. */
+function parseReplyDrafts(raw: string, knownIds: number[]): Record<number, string> {
+  const known = new Set(knownIds);
+  const drafts: Record<number, string> = {};
+  let current: number | null = null;
+  let buffer: string[] = [];
+  const flush = () => {
+    if (current !== null) {
+      const text = buffer.join("\n").trim();
+      if (known.has(current) && text) drafts[current] = text;
+    }
+    buffer = [];
+  };
+  for (const line of raw.split("\n")) {
+    const match = /^\[reply to\s*(\d+)\]$/.exec(line.trim());
+    if (match) {
+      flush();
+      current = Number(match[1]);
+    } else if (current !== null) {
+      buffer.push(line);
+    }
+  }
+  flush();
+  return drafts;
+}
+
+const START_MODEL = "sonnet";
+const START_EFFORT = "high";
+const REPLY_EFFORT = "xhigh";
+
 /**
- * The review-comment round: every comment on this branch's PR with an editable
- * reply draft next to it. Drafts can be generated (pr-reply prompt template,
- * fed the branch diff), edited freely, and posted all at once — optionally
- * committing pending fixes in the same click. Nothing is posted until that
- * click: this dialog IS the human-in-the-loop step.
+ * The review-comment round, built around one persistent session per PR:
+ *
+ * 1. Comments are fetched once, grouped by file, and handed to a
+ *    `review_fix` session (resumed from the branch's implementation session
+ *    when one exists) — a real, visible chat session the user can discuss
+ *    the plan with, ask questions in, or use to actually implement fixes.
+ * 2. "Generate replies" sends that same session a follow-up asking for the
+ *    final `[reply to id]` drafts, at a bumped reasoning effort — editable,
+ *    and re-runnable with extra clarifications.
+ * 3. "Post" is the only thing that ever reaches GitHub, and only for the
+ *    drafts left non-empty.
  */
 export function PrRepliesDialog({
   worktree,
@@ -23,42 +63,104 @@ export function PrRepliesDialog({
   const branch = worktree.branch as string;
   const dirty = worktree.status?.dirty ?? false;
   const listComments = usePr((s) => s.listComments);
-  const generateReplies = usePr((s) => s.generateReplies);
+  const renderReplyFollowup = usePr((s) => s.renderReplyFollowup);
   const postReplies = usePr((s) => s.postReplies);
   useEscapeToClose(onClose);
 
-  const [loading, setLoading] = useState(true);
+  const [loadingComments, setLoadingComments] = useState(true);
   const [comments, setComments] = useState<PrComment[]>([]);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
+  const [extra, setExtra] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
+  const [startBusy, setStartBusy] = useState(false);
   const [genBusy, setGenBusy] = useState(false);
   const [postBusy, setPostBusy] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
   const [outcomes, setOutcomes] = useState<ReplyOutcome[] | null>(null);
 
+  // Reactive: the status line updates live even while the user is on the
+  // Chat tab actually talking to this session.
+  const session = useSessions((s) => {
+    const reviews = (s.byBranch[branch] ?? []).filter((sess) => sess.session_type === "review_fix");
+    return reviews.length > 0 ? reviews[reviews.length - 1] : undefined;
+  });
+  const sessionTerminal = session && ["done", "failed", "cancelled"].includes(session.status);
+
   useEffect(() => {
     void (async () => {
-      setLoading(true);
+      setLoadingComments(true);
       const list = await listComments(branch);
       setComments(list ?? []);
-      setLoading(false);
+      setLoadingComments(false);
     })();
+    void useSessions.getState().fetch(branch);
   }, [branch, listComments]);
 
-  const generate = async () => {
-    setGenBusy(true);
-    const generated = await generateReplies(branch, comments);
-    setGenBusy(false);
-    if (generated) {
-      // Generated text fills gaps; anything the user already typed wins.
-      setDrafts((existing) => {
-        const next = { ...existing };
-        for (const [id, text] of Object.entries(generated)) {
-          const key = Number(id);
-          if (!next[key]?.trim()) next[key] = text;
-        }
-        return next;
+  const grouped = useMemo(() => {
+    const byPath = new Map<string, PrComment[]>();
+    for (const c of comments) {
+      const key = c.path || "(general)";
+      if (!byPath.has(key)) byPath.set(key, []);
+      byPath.get(key)?.push(c);
+    }
+    return [...byPath.entries()];
+  }, [comments]);
+
+  const startReview = async () => {
+    setStartBusy(true);
+    try {
+      await useSessions.getState().fetch(branch);
+      // Prefer continuing a prior review conversation (it already has the
+      // implementer's context baked in); otherwise resume the implementer
+      // directly.
+      const resumeFrom = findResumableSession(branch, ["review_fix", "implementation"])?.id;
+      const prompt = grouped
+        .flatMap(([path, list]) => [
+          `## ${path}`,
+          ...list.map((c) => `[comment ${c.id}] ${c.author}:\n${c.body}\n${c.url}`),
+          "",
+        ])
+        .join("\n");
+      const spawned = await useSessions.getState().spawn({
+        branch,
+        prompt,
+        session_type: "review_fix",
+        model: START_MODEL,
+        effort: START_EFFORT,
+        resume_from: resumeFrom,
       });
+      if (spawned) {
+        useWorktrees.getState().setTab("chat");
+        onClose();
+      }
+    } finally {
+      setStartBusy(false);
+    }
+  };
+
+  const generateReplies = async () => {
+    if (!session) return;
+    setGenBusy(true);
+    setPhase("Asking the review session for final replies…");
+    try {
+      const prompt = await renderReplyFollowup(extra.trim() || undefined);
+      if (!prompt) return;
+      const { text } = await askViaFollowup({
+        sessionId: session.id,
+        prompt,
+        effort: REPLY_EFFORT,
+      });
+      if (text) {
+        setDrafts(
+          parseReplyDrafts(
+            text,
+            comments.map((c) => c.id),
+          ),
+        );
+      }
+    } finally {
+      setGenBusy(false);
+      setPhase(null);
     }
   };
 
@@ -97,7 +199,7 @@ export function PrRepliesDialog({
           <Icon name="reply" /> Review comments · {branch}
         </h3>
 
-        {loading ? (
+        {loadingComments ? (
           <p className="empty">
             <Icon name="spinner" spin /> Loading the PR's review comments…
           </p>
@@ -127,49 +229,90 @@ export function PrRepliesDialog({
           </div>
         ) : (
           <>
-            <div className="replies-toolbar">
-              <button
-                className="small"
-                disabled={genBusy}
-                title="Draft a reply per comment from the branch diff (pr-reply prompt template)"
-                onClick={() => void generate()}
-              >
-                {genBusy ? <Icon name="spinner" spin /> : <Icon name="bot" />} Generate replies
-              </button>
-              <span className="ac-desc">
-                {filled.length}/{comments.length} drafted — empty drafts are skipped
-              </span>
+            <div className="replies-session-bar">
+              {!session ? (
+                <button className="small" disabled={startBusy} onClick={() => void startReview()}>
+                  {startBusy ? <Icon name="spinner" spin /> : <Icon name="bot" />} Start review
+                  session
+                </button>
+              ) : (
+                <>
+                  <StatusDot tone={session.status} pulse={session.status === "streaming"} />
+                  <span className="ac-desc">Review session: {session.status}</span>
+                  <button
+                    className="small ghost"
+                    onClick={() => {
+                      useWorktrees.getState().setTab("chat");
+                      onClose();
+                    }}
+                  >
+                    <Icon name="chat" size={12} /> Open chat
+                  </button>
+                  {sessionTerminal && (
+                    <button
+                      className="small ghost"
+                      disabled={startBusy}
+                      title="Continue this conversation in a new session"
+                      onClick={() => void startReview()}
+                    >
+                      {startBusy ? <Icon name="spinner" spin /> : <Icon name="refresh" size={12} />}{" "}
+                      Start a new one
+                    </button>
+                  )}
+                </>
+              )}
             </div>
 
             <div className="replies-list">
-              {comments.map((c) => (
-                <div key={c.id} className="reply-item">
-                  <p className="reply-comment">
-                    <strong>{c.author}</strong>
-                    {c.path && (
-                      <>
-                        {" on "}
-                        <code>{c.path}</code>
-                      </>
-                    )}
-                    <button
-                      className="small icon-only ghost"
-                      title="Open the comment on GitHub"
-                      onClick={() => void openUrl(c.url)}
-                    >
-                      <Icon name="external-link" size={11} />
-                    </button>
+              {grouped.map(([path, list]) => (
+                <div key={path} className="reply-group">
+                  <p className="reply-group-path">
+                    <Icon name="file-text" size={12} /> {path}
                   </p>
-                  <blockquote className="reply-quote">{c.body}</blockquote>
-                  <textarea
-                    rows={2}
-                    placeholder="Reply (leave empty to skip)"
-                    value={drafts[c.id] ?? ""}
-                    onChange={(e) => setDrafts((d) => ({ ...d, [c.id]: e.target.value }))}
-                  />
+                  {list.map((c) => (
+                    <div key={c.id} className="reply-item">
+                      <p className="reply-comment">
+                        <strong>{c.author}</strong>
+                        <button
+                          className="small icon-only ghost"
+                          title="Open the comment on GitHub"
+                          onClick={() => void openUrl(c.url)}
+                        >
+                          <Icon name="external-link" size={11} />
+                        </button>
+                      </p>
+                      <blockquote className="reply-quote">{c.body}</blockquote>
+                      <textarea
+                        rows={2}
+                        placeholder="Reply (leave empty to skip)"
+                        value={drafts[c.id] ?? ""}
+                        onChange={(e) => setDrafts((d) => ({ ...d, [c.id]: e.target.value }))}
+                      />
+                    </div>
+                  ))}
                 </div>
               ))}
             </div>
+
+            {session && !sessionTerminal && (
+              <div className="replies-generate">
+                <textarea
+                  rows={2}
+                  placeholder="Optional clarifications for regenerating the replies…"
+                  value={extra}
+                  onChange={(e) => setExtra(e.target.value)}
+                />
+                <button
+                  className="small"
+                  disabled={genBusy}
+                  title="Ask the review session for its final reply drafts"
+                  onClick={() => void generateReplies()}
+                >
+                  {genBusy ? <Icon name="spinner" spin /> : <Icon name="bot" />}{" "}
+                  {Object.keys(drafts).length > 0 ? "Regenerate replies" : "Generate replies"}
+                </button>
+              </div>
+            )}
 
             {dirty && (
               <label className="replies-commit">

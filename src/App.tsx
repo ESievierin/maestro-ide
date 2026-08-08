@@ -183,7 +183,9 @@ function MainPanel() {
       {dialog === "merge" && (
         <MergeDialog source={worktree} worktrees={worktrees} repo={repo} onClose={closeDialog} />
       )}
-      {dialog === "createpr" && <CreatePrDialog worktree={worktree} onClose={closeDialog} />}
+      {dialog === "createpr" && (
+        <CreatePrDialog worktree={worktree} repo={repo} onClose={closeDialog} />
+      )}
       {dialog === "replies" && <PrRepliesDialog worktree={worktree} onClose={closeDialog} />}
     </div>
   );

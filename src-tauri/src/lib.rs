@@ -9,7 +9,7 @@ use crate::core::agent::{SidecarConfig, SidecarEngine};
 use crate::core::attention::AttentionManager;
 use crate::core::bus::EventBus;
 use crate::core::checks::ChecksManager;
-use crate::core::compose::{ClaudeCliGen, ComposeManager};
+use crate::core::compose::ComposeManager;
 use crate::core::config::Config;
 use crate::core::daemon::{DaemonManager, GhCli, JiraCli, RealDaemonExec};
 use crate::core::diff::DiffManager;
@@ -166,12 +166,14 @@ pub fn run() {
         bus.clone(),
     ));
 
-    // One-shot generation (commit messages, PR text) + user-initiated PR actions.
+    // Prompt rendering (commit messages, PR text) + user-initiated PR actions.
+    // Generation itself runs through a real session on the frontend, not a
+    // one-shot subprocess — this only gathers git context and renders the
+    // editable templates.
     let compose = Arc::new(ComposeManager::new(
         store.clone(),
         worktrees.clone(),
         prompts.clone(),
-        Arc::new(ClaudeCliGen),
     ));
     let prs = Arc::new(PrManager::new(
         store.clone(),
@@ -255,9 +257,9 @@ pub fn run() {
             ipc::set_daemon_enabled,
             ipc::set_daemon_account,
             ipc::dismiss_daemon_task,
-            ipc::generate_commit_message,
-            ipc::generate_pr_description,
-            ipc::generate_pr_replies,
+            ipc::render_commit_prompt,
+            ipc::render_pr_prompt,
+            ipc::render_pr_reply_followup,
             ipc::create_pr,
             ipc::list_pr_comments,
             ipc::reply_pr_comments,

@@ -463,7 +463,11 @@ button.selected {
   color: var(--accent);
 }
 
-input,
+/* Checkboxes/radios keep their native small box — the padded/bordered look
+   below is for text-like inputs only. Without this exclusion a checkbox
+   inherits the padding and border and renders as a large stretched
+   rectangle instead of a checkbox (the "notify" toggle used to do this). */
+input:not([type="checkbox"]):not([type="radio"]),
 select,
 textarea {
   background: var(--surface-recessed);

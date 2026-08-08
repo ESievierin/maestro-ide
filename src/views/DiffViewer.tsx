@@ -8,7 +8,7 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { Icon } from "../components/Icon";
 import { selectSnapshot, useDiffs } from "../state/diffs";
 import { selectQuestions, useQuestions } from "../state/questions";
-import type { ChangedFile, DiffScope } from "../types/diffs";
+import type { ChangedFile, DiffScope, LineEnding } from "../types/diffs";
 import type { LineQuestion } from "../types/questions";
 import type { WorktreeInfo } from "../types/worktrees";
 import {
@@ -71,6 +71,44 @@ function chunkNavKeymap(onBoundary: (direction: 1 | -1) => void) {
       },
     },
   ]);
+}
+
+function eolLabel(eol: LineEnding | null): string | null {
+  if (!eol || eol === "none") return null;
+  return eol === "lf" ? "LF" : eol === "crlf" ? "CRLF" : "Mixed";
+}
+
+/** A Rider-style line-ending indicator for the selected file: the plain
+ * label when both sides agree, and an explicit "LF → CRLF" (or "Mixed")
+ * warning when they don't — which is also the answer to "why does this file
+ * show as changed when the diff looks empty": `--ignore-cr-at-eol` keeps the
+ * visible diff clean, but git still (correctly) flags the blob as modified
+ * when only the line endings differ. */
+function EolBadge({ oldEol, newEol }: { oldEol: LineEnding | null; newEol: LineEnding | null }) {
+  const oldLabel = eolLabel(oldEol);
+  const newLabel = eolLabel(newEol);
+  if (!oldLabel && !newLabel) return null;
+
+  if (oldLabel && newLabel && oldLabel !== newLabel) {
+    return (
+      <span
+        className="badge badge-warn"
+        title={`Line endings changed: ${oldLabel} → ${newLabel}. If this file shows as modified with little or no visible diff, only the line endings differ.`}
+      >
+        {oldLabel} → {newLabel}
+      </span>
+    );
+  }
+  const label = newLabel ?? oldLabel;
+  const mixed = oldEol === "mixed" || newEol === "mixed";
+  return (
+    <span
+      className={`badge ${mixed ? "badge-warn" : "badge-muted"}`}
+      title={mixed ? "This file mixes CRLF and LF line endings." : `Line endings: ${label}`}
+    >
+      {label}
+    </span>
+  );
 }
 
 type ViewMode = "split" | "unified";
@@ -296,7 +334,13 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
   };
   const { fetch, refresh, loadFile, loading, error, clearError } = useDiffs();
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [filePair, setFilePair] = useState<{ path: string; old: string; new: string } | null>(null);
+  const [filePair, setFilePair] = useState<{
+    path: string;
+    old: string;
+    new: string;
+    oldEol: LineEnding | null;
+    newEol: LineEnding | null;
+  } | null>(null);
   /** Set when the core refused to send a file's contents (see MAX_FILE_DIFF_BYTES). */
   const [tooLarge, setTooLarge] = useState<{ path: string; message: string } | null>(null);
 
@@ -477,7 +521,13 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
         return;
       }
       setTooLarge(null);
-      setFilePair({ path: diff.path, old: diff.old ?? "", new: diff.new ?? "" });
+      setFilePair({
+        path: diff.path,
+        old: diff.old ?? "",
+        new: diff.new ?? "",
+        oldEol: diff.old_eol,
+        newEol: diff.new_eol,
+      });
     });
     return () => {
       stale = true;
@@ -558,6 +608,9 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
               Unified
             </button>
           </div>
+          {selectedPath && filePair?.path === selectedPath && (
+            <EolBadge oldEol={filePair.oldEol} newEol={filePair.newEol} />
+          )}
           {selectedPath && (
             <button
               className="small icon-only ghost"

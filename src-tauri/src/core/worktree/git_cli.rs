@@ -178,8 +178,11 @@ impl GitProvider for GitCli {
 
     fn merge_base_diff(&self, repo: &Path, branch: &str, base: &str) -> Result<String> {
         // `base...branch` diffs from the merge-base, exactly what the diff viewer needs.
+        // `--ignore-cr-at-eol`: a repo without consistent .gitattributes can have the
+        // same line committed with and without a trailing \r on either side of the
+        // range — without this flag that alone makes git diff every line in the file.
         let range = format!("{base}...{branch}");
-        self.run(repo, &["diff", &range])
+        self.run(repo, &["diff", "--ignore-cr-at-eol", &range])
     }
 
     fn merge_base(&self, repo: &Path, base: &str, branch: &str) -> Result<String> {
@@ -253,7 +256,10 @@ impl GitProvider for GitCli {
 
     fn changed_files(&self, repo: &Path, branch: &str, base: &str) -> Result<Vec<ChangedFile>> {
         let range = format!("{base}...{branch}");
-        let out = self.run(repo, &["diff", "--name-status", "-M", &range])?;
+        let out = self.run(
+            repo,
+            &["diff", "--ignore-cr-at-eol", "--name-status", "-M", &range],
+        )?;
         Ok(parse_name_status(&out))
     }
 
@@ -281,7 +287,7 @@ impl GitProvider for GitCli {
     }
 
     fn worktree_diff(&self, worktree: &Path, merge_base: &str) -> Result<String> {
-        self.run(worktree, &["diff", merge_base])
+        self.run(worktree, &["diff", "--ignore-cr-at-eol", merge_base])
     }
 
     fn worktree_changed_files(
@@ -289,7 +295,16 @@ impl GitProvider for GitCli {
         worktree: &Path,
         merge_base: &str,
     ) -> Result<Vec<ChangedFile>> {
-        let out = self.run(worktree, &["diff", "--name-status", "-M", merge_base])?;
+        let out = self.run(
+            worktree,
+            &[
+                "diff",
+                "--ignore-cr-at-eol",
+                "--name-status",
+                "-M",
+                merge_base,
+            ],
+        )?;
         let mut files = parse_name_status(&out);
 
         // Untracked files don't appear in `git diff` — pull them from status.
@@ -1075,6 +1090,73 @@ mod tests {
             assert_eq!(
                 cli.fresh_base_ref(&repo, "origin/develop"),
                 "origin/develop"
+            );
+        }
+
+        /// The bug report: a file committed on `main` with LF gets the exact same
+        /// content re-typed with CRLF on the branch (e.g. a Windows checkout with
+        /// no `.gitattributes` to normalize it). Git still lists it as modified —
+        /// the blob genuinely differs, `--name-status` is blob-hash based and does
+        /// not consult whitespace-ignore flags — but the *diff content* (what the
+        /// stats badge and the hunk view are built from) must come back empty
+        /// instead of flagging every line, which is what `--ignore-cr-at-eol` is
+        /// actually for.
+        #[test]
+        fn a_pure_crlf_rewrite_shows_modified_but_diffs_empty() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).expect("mkdir");
+            init_repo(&repo);
+            // Deterministic regardless of the host machine's global git config:
+            // with autocrlf on, `add`/`commit` would silently normalize the CRLF
+            // rewrite below back to LF ("nothing to commit") before this test
+            // ever gets to exercise the flag under test. Off is also the more
+            // realistic case — a repo with no `.gitattributes` and a clone that
+            // never had autocrlf configured, which is how these get committed at
+            // all in the first place.
+            git(&repo, &["config", "core.autocrlf", "false"]);
+            fs::write(repo.join("service.cs"), "line one\nline two\nline three\n").expect("write");
+            git(&repo, &["add", "."]);
+            git(&repo, &["commit", "-m", "add service.cs"]);
+
+            let cli = GitCli::new();
+            let wt = tmp.path().join("wt-crlf");
+            cli.create_worktree(&repo, &wt, "impl/T-crlf", Some("main"))
+                .expect("create worktree");
+            fs::write(
+                wt.join("service.cs"),
+                "line one\r\nline two\r\nline three\r\n",
+            )
+            .expect("rewrite with CRLF");
+            git(&wt, &["add", "."]);
+            git(&wt, &["commit", "-m", "same content, CRLF"]);
+
+            let files = cli
+                .changed_files(&repo, "impl/T-crlf", "main")
+                .expect("changed files");
+            assert_eq!(
+                files.len(),
+                1,
+                "the blob really did change — git is right to list it: {files:?}"
+            );
+            assert_eq!(files[0].status, "M");
+            let diff = cli
+                .merge_base_diff(&repo, "impl/T-crlf", "main")
+                .expect("diff");
+            assert!(
+                diff.trim().is_empty(),
+                "the visible diff content must be empty despite the M: {diff}"
+            );
+
+            // Same story worktree-scope: `wt` already has the CRLF commit checked
+            // out on disk, merge-base still has the original LF blob — the
+            // on-disk-vs-blob case the original bug report actually was (a
+            // Windows autocrlf checkout).
+            let merge_base = cli.merge_base(&repo, "main", "impl/T-crlf").expect("mb");
+            let wt_diff = cli.worktree_diff(&wt, &merge_base).expect("worktree diff");
+            assert!(
+                !wt_diff.contains("service.cs"),
+                "worktree diff text must not mention it either: {wt_diff}"
             );
         }
     }

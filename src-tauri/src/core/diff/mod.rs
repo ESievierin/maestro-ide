@@ -56,6 +56,36 @@ pub struct FileDiff {
     /// render it. Generated files and vendored bundles are the usual reason, and CodeMirror
     /// on a multi-megabyte side is what freezes the window.
     pub too_large: Option<String>,
+    /// Line-ending style of the merge-base content, detected before normalization —
+    /// `"lf" | "crlf" | "mixed" | "none"`. `None` when that side doesn't exist.
+    pub old_eol: Option<String>,
+    /// Line-ending style of the branch/worktree content, same detection.
+    pub new_eol: Option<String>,
+}
+
+/// Detect a text's line-ending style from its raw (un-normalized) content —
+/// this is what a Rider-style status bar indicator would show. `"none"` means
+/// no line ending at all (a one-line file, or empty).
+fn detect_eol(text: &str) -> &'static str {
+    let bytes = text.as_bytes();
+    let mut has_crlf = false;
+    let mut has_lf_only = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b != b'\n' {
+            continue;
+        }
+        if i > 0 && bytes[i - 1] == b'\r' {
+            has_crlf = true;
+        } else {
+            has_lf_only = true;
+        }
+    }
+    match (has_crlf, has_lf_only) {
+        (true, true) => "mixed",
+        (true, false) => "crlf",
+        (false, true) => "lf",
+        (false, false) => "none",
+    }
 }
 
 /// Largest side of a file diff Maestro will hand to the editor. A real repository has
@@ -140,22 +170,19 @@ impl DiffManager {
         // Normalizing both sides here is what git's own diff already effectively
         // does (via its own CRLF-aware comparison), just made explicit for the
         // plain strings we hand to CodeMirror.
-        let old = self
-            .git
-            .show_file(&repo, &snapshot.merge_base, old_path)?
-            .map(normalize_line_endings);
-        let new = match scope {
-            DiffScope::Branch => self
-                .git
-                .show_file(&repo, branch, path)?
-                .map(normalize_line_endings),
+        let old_raw = self.git.show_file(&repo, &snapshot.merge_base, old_path)?;
+        let old_eol = old_raw.as_deref().map(detect_eol);
+        let old = old_raw.map(normalize_line_endings);
+
+        let new_raw = match scope {
+            DiffScope::Branch => self.git.show_file(&repo, branch, path)?,
             DiffScope::Worktree => {
                 let worktree = self.worktree_path(branch)?;
-                std::fs::read_to_string(worktree.join(path))
-                    .ok()
-                    .map(normalize_line_endings)
+                std::fs::read_to_string(worktree.join(path)).ok()
             }
         };
+        let new_eol = new_raw.as_deref().map(detect_eol);
+        let new = new_raw.map(normalize_line_endings);
         // Both sides are read before the size check so a huge file still reports *which*
         // side is huge — the answer to "why can I not see this diff" is the file, not us.
         let biggest = old
@@ -181,6 +208,8 @@ impl DiffManager {
                     biggest as f64 / (1024.0 * 1024.0),
                     MAX_FILE_DIFF_BYTES as f64 / (1024.0 * 1024.0)
                 )),
+                old_eol: None,
+                new_eol: None,
             });
         }
 
@@ -189,6 +218,8 @@ impl DiffManager {
             old,
             new,
             too_large: None,
+            old_eol: old_eol.map(str::to_string),
+            new_eol: new_eol.map(str::to_string),
         })
     }
 
@@ -617,6 +648,18 @@ mod tests {
         // A bare `\r` (old Mac-style) is left alone — only `\r\n` is a checkout
         // artifact here; rewriting lone `\r` would be a different, unrelated fix.
         assert_eq!(normalize_line_endings("a\rb".into()), "a\rb");
+    }
+
+    #[test]
+    fn detects_line_ending_style() {
+        assert_eq!(detect_eol("a\nb\nc\n"), "lf");
+        assert_eq!(detect_eol("a\r\nb\r\nc\r\n"), "crlf");
+        assert_eq!(detect_eol("a\r\nb\nc\r\n"), "mixed");
+        assert_eq!(detect_eol("just one line, no newline"), "none");
+        assert_eq!(detect_eol(""), "none");
+        // A bare `\r` with no following `\n` is not a line ending either way —
+        // it doesn't make the file count as CRLF.
+        assert_eq!(detect_eol("a\rb\n"), "lf");
     }
 
     #[tokio::test]

@@ -1100,6 +1100,16 @@ pub async fn reset_prompt(state: State<'_, AppState>, name: String) -> Result<Pr
     run_core(state.bus.clone(), move || prompts.reset(&name)).await
 }
 
+/// Remove a custom template's file. Refuses templates with a built-in
+/// default (use `reset_prompt` for those) — the frontend hides the Delete
+/// button for them too, this is the backend-side guarantee that holds even
+/// if that check is ever bypassed.
+#[tauri::command]
+pub async fn delete_prompt(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    let prompts = state.prompts.clone();
+    run_core(state.bus.clone(), move || prompts.delete(&name)).await
+}
+
 // ---------- settings/prompts export-import ----------
 
 /// Write the portable-settings + every prompt template to `path` as one JSON

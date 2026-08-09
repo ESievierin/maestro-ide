@@ -139,6 +139,24 @@ impl PromptManager {
         self.save(name, default)
     }
 
+    /// Remove a custom template's file. Refuses templates with a built-in
+    /// default — "Reset to default" is the right operation for those;
+    /// deleting the file would just have it silently reappear as a fresh
+    /// default copy the next time `list()`/`new()` reinstalls it.
+    pub fn delete(&self, name: &str) -> Result<()> {
+        if Self::default_for(name).is_some() {
+            return Err(MaestroError::Config {
+                message: format!(
+                    "\"{name}\" has a built-in default — reset it instead of deleting"
+                ),
+            });
+        }
+        let path = self.path_of(name)?;
+        fs::remove_file(&path)?;
+        tracing::info!(name, path = %path.display(), "prompt template deleted");
+        Ok(())
+    }
+
     fn to_prompt_file(&self, name: &str, content: String) -> PromptFile {
         let parsed = parse_template(name, &content);
         let default = Self::default_for(name);
@@ -366,6 +384,28 @@ Just {{branch}}
         assert!(!custom.has_default);
         assert!(!custom.modified);
         assert!(manager.reset("my-own").is_err(), "nothing to reset to");
+    }
+
+    #[test]
+    fn delete_removes_a_custom_template_and_it_stops_being_listed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manager = PromptManager::new(tmp.path()).expect("new");
+        manager.save("my-own", "hello {{x}}").expect("save");
+        assert!(manager.list().unwrap().iter().any(|p| p.name == "my-own"));
+
+        manager.delete("my-own").expect("delete");
+        assert!(!manager.list().unwrap().iter().any(|p| p.name == "my-own"));
+        assert!(manager.read("my-own").is_err(), "the file is really gone");
+    }
+
+    #[test]
+    fn delete_refuses_a_template_with_a_built_in_default() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manager = PromptManager::new(tmp.path()).expect("new");
+        let err = manager.delete("commit-message").unwrap_err();
+        assert!(err.to_string().contains("built-in default"), "{err}");
+        // Refused, not just erroring cosmetically — the file must still be there.
+        assert!(manager.read("commit-message").is_ok());
     }
 
     #[test]

@@ -250,6 +250,7 @@ pub fn run() {
             ipc::list_prompts,
             ipc::save_prompt,
             ipc::reset_prompt,
+            ipc::delete_prompt,
             ipc::export_settings_bundle,
             ipc::import_settings_bundle,
             ipc::write_text_file,

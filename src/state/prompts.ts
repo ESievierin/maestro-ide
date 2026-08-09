@@ -13,6 +13,7 @@ interface PromptsState {
   fetch: () => Promise<void>;
   save: (name: string, content: string) => Promise<boolean>;
   reset: (name: string) => Promise<boolean>;
+  delete: (name: string) => Promise<boolean>;
   clearError: () => void;
 }
 
@@ -53,6 +54,17 @@ export const usePrompts = create<PromptsState>((set) => ({
     try {
       const updated = await invoke<PromptFile>("reset_prompt", { name });
       set((s) => ({ templates: replace(s.templates, updated) }));
+      return true;
+    } catch (e) {
+      set({ error: String(e) });
+      return false;
+    }
+  },
+
+  delete: async (name) => {
+    try {
+      await invoke("delete_prompt", { name });
+      set((s) => ({ templates: s.templates.filter((t) => t.name !== name) }));
       return true;
     } catch (e) {
       set({ error: String(e) });

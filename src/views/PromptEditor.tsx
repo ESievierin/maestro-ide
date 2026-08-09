@@ -8,7 +8,16 @@ import { usePrompts } from "../state/prompts";
  * editor over them. Saving takes effect on the next render in the core — no restart.
  */
 export function PromptEditor({ onClose }: { onClose: () => void }) {
-  const { templates, loading, error, fetch, save, reset, clearError } = usePrompts();
+  const {
+    templates,
+    loading,
+    error,
+    fetch,
+    save,
+    reset,
+    delete: deleteTemplate,
+    clearError,
+  } = usePrompts();
   const [selected, setSelected] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -47,6 +56,20 @@ export function PromptEditor({ onClose }: { onClose: () => void }) {
     setBusy(true);
     await reset(current.name);
     setBusy(false);
+  };
+
+  const doDelete = async () => {
+    if (!current) return;
+    const { confirm } = await import("@tauri-apps/plugin-dialog");
+    const ok = await confirm(`Delete the "${current.name}" template? This cannot be undone.`, {
+      title: "MaestroIDE",
+      kind: "warning",
+    });
+    if (!ok) return;
+    setBusy(true);
+    const deleted = await deleteTemplate(current.name);
+    setBusy(false);
+    if (deleted) setSelected(null);
   };
 
   return (
@@ -113,6 +136,16 @@ export function PromptEditor({ onClose }: { onClose: () => void }) {
                     {dirty ? "unsaved changes" : saved ? "saved" : ""}
                   </span>
                   <div className="actions">
+                    {!current.has_default && (
+                      <button
+                        className="small danger"
+                        disabled={busy}
+                        title="Delete this custom template"
+                        onClick={() => void doDelete()}
+                      >
+                        <Icon name="trash" size={12} /> Delete
+                      </button>
+                    )}
                     {current.has_default && (
                       <button
                         className="small"

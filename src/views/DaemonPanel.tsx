@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Icon, StatusDot } from "../components/Icon";
 import { SelectMenu } from "../components/SelectMenu";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
@@ -20,10 +21,24 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
   const dismiss = useDaemon((s) => s.dismiss);
   useEscapeToClose(onClose);
 
+  const [telemetryEnabled, setTelemetryEnabledState] = useState<boolean | null>(null);
+
   useEffect(() => {
     void fetchStatus();
     void fetchTasks();
+    void invoke<boolean>("get_telemetry_enabled").then(setTelemetryEnabledState);
   }, [fetchStatus, fetchTasks]);
+
+  const toggleTelemetry = async () => {
+    if (telemetryEnabled === null) return;
+    const next = !telemetryEnabled;
+    setTelemetryEnabledState(next);
+    try {
+      await invoke("set_telemetry_enabled", { enabled: next });
+    } catch {
+      setTelemetryEnabledState(!next); // revert; the error toast is already up
+    }
+  };
 
   const visible = tasks.filter((t) => t.state !== "dismissed");
 
@@ -91,6 +106,19 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
             <Icon name="spinner" spin /> Loading status…
           </p>
         )}
+
+        <label
+          className="daemon-telemetry-toggle notify-toggle"
+          title="Records every prompt and reply (and reasoning, when there is any) to ~/.maestro/telemetry for later analysis. Turning this off does not touch anything already written."
+        >
+          <input
+            type="checkbox"
+            checked={telemetryEnabled ?? true}
+            disabled={telemetryEnabled === null}
+            onChange={() => void toggleTelemetry()}
+          />
+          Record conversation telemetry
+        </label>
 
         <div className="daemon-tasks">
           {visible.length === 0 ? (

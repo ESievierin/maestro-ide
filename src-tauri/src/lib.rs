@@ -21,6 +21,7 @@ use crate::core::prompts::PromptManager;
 use crate::core::questions::LineQuestionManager;
 use crate::core::session::SessionManager;
 use crate::core::store::SqliteStore;
+use crate::core::telemetry::TelemetryManager;
 use crate::core::worktree::{GitCli, WorktreeManager};
 use crate::ipc::AppState;
 
@@ -114,9 +115,11 @@ pub fn run() {
     // TASK_NOTES.md: the record a task leaves for the next agent. The session manager
     // needs it (and the templates) to ask a closing implementation session for its notes.
     let notes = Arc::new(NotesManager::new(worktrees.clone(), bus.clone()));
+    let telemetry = Arc::new(TelemetryManager::new(maestro_home().join("telemetry")));
     let sessions = Arc::new(
         SessionManager::with_gates(store.clone(), bus.clone(), engine, Some(gates.clone()))
-            .with_notes(notes.clone(), prompts.clone()),
+            .with_notes(notes.clone(), prompts.clone())
+            .with_telemetry(telemetry),
     );
 
     // Sessions from a previous app run cannot be reattached (yet) — fail them.
@@ -261,6 +264,8 @@ pub fn run() {
             ipc::list_daemon_tasks,
             ipc::set_daemon_enabled,
             ipc::set_daemon_account,
+            ipc::get_telemetry_enabled,
+            ipc::set_telemetry_enabled,
             ipc::dismiss_daemon_task,
             ipc::render_commit_prompt,
             ipc::render_pr_prompt,

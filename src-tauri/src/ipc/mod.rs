@@ -26,6 +26,7 @@ use crate::core::prompts::{PromptFile, PromptManager};
 use crate::core::questions::{LineQuestionInfo, LineQuestionManager};
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
 use crate::core::store::{Branch, DaemonTask, Store};
+use crate::core::telemetry::SETTING_TELEMETRY_ENABLED;
 use crate::core::worktree::{
     BlameLine, CreateWorktreeRequest, LogEntry, MergeReport, RemoveOutcome, RepoInfo,
     RestoreOutcome, Snapshot, WorktreeInfo, WorktreeManager,
@@ -312,6 +313,35 @@ pub async fn set_daemon_enabled(state: State<'_, AppState>, enabled: bool) -> Re
 pub async fn set_daemon_account(state: State<'_, AppState>, account: String) -> Result<(), String> {
     let daemon = state.daemon.clone();
     run_core(state.bus.clone(), move || daemon.set_account(&account)).await
+}
+
+/// Whether conversation telemetry (prompts + replies, per `core::telemetry`) is
+/// being recorded. On by default.
+#[tauri::command]
+pub async fn get_telemetry_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        Ok(store
+            .get_setting(SETTING_TELEMETRY_ENABLED)?
+            .map(|v| v != "false")
+            .unwrap_or(true))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_telemetry_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        store.set_setting(
+            SETTING_TELEMETRY_ENABLED,
+            if enabled { "true" } else { "false" },
+        )
+    })
+    .await
 }
 
 /// Take a task out of the queue (or hide a finished one) without touching GitHub.

@@ -23,6 +23,7 @@ use crate::core::session::{
     SessionStatus, SessionType, EFFORT_LEVELS, READ_ONLY_MODE, THINKING_OPTIONS,
 };
 use crate::core::store::Store;
+use crate::core::telemetry::{TelemetryManager, SETTING_TELEMETRY_ENABLED};
 use crate::error::{MaestroError, Result, Severity};
 
 /// Setting key for what happens when a second writer is requested on a branch.
@@ -96,6 +97,8 @@ pub struct SessionManager {
     /// Notes + templates for the finalize step; `None` skips it entirely.
     notes: Option<Arc<NotesManager>>,
     prompts: Option<Arc<PromptManager>>,
+    /// Conversation telemetry (prompts + replies) — `None` skips it entirely.
+    telemetry: Option<Arc<TelemetryManager>>,
     runtime: Mutex<HashMap<String, RuntimeSession>>,
     /// Dialogs the agents are blocked on: request id → (session id, dialog kind). The
     /// engine keys dialogs by request id alone, and everything downstream needs both.
@@ -133,6 +136,7 @@ impl SessionManager {
             gates,
             notes: None,
             prompts: None,
+            telemetry: None,
             runtime: Mutex::new(HashMap::new()),
             dialogs: Mutex::new(HashMap::new()),
             finalizing: Mutex::new(HashMap::new()),
@@ -152,6 +156,23 @@ impl SessionManager {
         self.notes = Some(notes);
         self.prompts = Some(prompts);
         self
+    }
+
+    /// Additive: without it, sessions run exactly as before, just unrecorded.
+    pub fn with_telemetry(mut self, telemetry: Arc<TelemetryManager>) -> Self {
+        self.telemetry = Some(telemetry);
+        self
+    }
+
+    /// The `telemetry_enabled` setting — on by default, checked fresh on every
+    /// call so flipping it in the UI takes effect on the very next turn.
+    fn telemetry_enabled(&self) -> bool {
+        self.store
+            .get_setting(SETTING_TELEMETRY_ENABLED)
+            .ok()
+            .flatten()
+            .map(|v| v != "false")
+            .unwrap_or(true)
     }
 
     /// Consume engine signals until the channel closes. Run as a background task.
@@ -273,6 +294,17 @@ impl SessionManager {
         );
         self.publish_status(&session.id, &params.branch, SessionStatus::Spawning);
 
+        if let Some(telemetry) = &self.telemetry {
+            if self.telemetry_enabled() {
+                telemetry.record_user(
+                    &session.id,
+                    &params.branch,
+                    session.session_type.as_str(),
+                    &params.prompt,
+                );
+            }
+        }
+
         let spawn_result = self.engine.spawn_session(SpawnSessionRequest {
             session_id: session.id.clone(),
             cwd: params.cwd,
@@ -311,6 +343,18 @@ impl SessionManager {
 
     pub fn send(&self, session_id: &str, prompt: &str, attachments: &[Attachment]) -> Result<()> {
         self.ensure_live(session_id)?;
+        if let Some(telemetry) = &self.telemetry {
+            if self.telemetry_enabled() {
+                if let Ok(Some(session)) = self.store.get_session(session_id) {
+                    telemetry.record_user(
+                        session_id,
+                        &session.branch,
+                        session.session_type.as_str(),
+                        prompt,
+                    );
+                }
+            }
+        }
         self.engine.send_prompt(session_id, prompt, attachments)
     }
 
@@ -848,6 +892,15 @@ impl SessionManager {
                 text,
                 parent_tool_use_id,
             } => {
+                // Subagent (Task-tool child) output is a level of detail below
+                // "the answer" — only the top-level reply is telemetry-worthy.
+                if parent_tool_use_id.is_none() {
+                    if let Some(telemetry) = &self.telemetry {
+                        if self.telemetry_enabled() {
+                            telemetry.record_assistant_delta(&session_id, &text);
+                        }
+                    }
+                }
                 self.bus.publish(Event::SessionStreamDelta {
                     session_id,
                     text,
@@ -859,6 +912,13 @@ impl SessionManager {
                 text,
                 parent_tool_use_id,
             } => {
+                if parent_tool_use_id.is_none() {
+                    if let Some(telemetry) = &self.telemetry {
+                        if self.telemetry_enabled() {
+                            telemetry.record_thinking_delta(&session_id, &text);
+                        }
+                    }
+                }
                 self.bus.publish(Event::SessionThinkingDelta {
                     session_id,
                     text,
@@ -1138,6 +1198,17 @@ impl SessionManager {
                 ..
             } => {
                 tracing::info!(session_id, subtype, is_error, "session turn finished");
+                if let Some(telemetry) = &self.telemetry {
+                    if self.telemetry_enabled() {
+                        if let Ok(Some(session)) = self.store.get_session(&session_id) {
+                            telemetry.flush_turn(
+                                &session_id,
+                                &session.branch,
+                                session.session_type.as_str(),
+                            );
+                        }
+                    }
+                }
             }
             SidecarEvent::SessionClosed { session_id, reason } => {
                 if let Ok(mut finalizing) = self.finalizing.lock() {

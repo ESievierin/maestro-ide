@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Icon } from "../components/Icon";
 import { useSessions } from "../state/sessions";
+import { waitForTerminal } from "../utils/agentAsk";
 import type {
   DialogAnswer,
   DialogQuestion,
@@ -16,6 +17,8 @@ import {
   DIALOG_ASK_USER_QUESTION,
   DIALOG_ELICITATION,
   DIALOG_PLAN_APPROVAL,
+  isTerminalStatus,
+  isWriterMode,
 } from "../types/sessions";
 
 /** Per-question UI state: chosen option labels plus the free-text field. */
@@ -179,16 +182,62 @@ function ElicitationRequestView({
  * The plan the agent wants to act on. Approving it is what takes the session out of plan
  * mode, so the core re-checks the branch's single-writer rule first and the approval can
  * come back refused — the dialog stays open in that case, with the reason in the banner.
+ *
+ * A refusal almost always means another session on the same branch is already writing.
+ * Detecting that client-side (instead of only learning it from the failure) lets this
+ * offer to close the other one and retry in one click, rather than sending the user off
+ * to find it themselves.
  */
-function PlanReview({ dialog, plan }: { dialog: UserDialog; plan: string }) {
+function PlanReview({
+  dialog,
+  plan,
+  branch,
+}: {
+  dialog: UserDialog;
+  plan: string;
+  branch: string;
+}) {
   const respondDialog = useSessions((s) => s.respondDialog);
+  const close = useSessions((s) => s.close);
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
+  const [closingConflict, setClosingConflict] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const conflictingWriter = useSessions((s) =>
+    (s.byBranch[branch] ?? []).find(
+      (sess) =>
+        sess.id !== dialog.sessionId &&
+        isWriterMode(sess.permission_mode) &&
+        !isTerminalStatus(sess.status),
+    ),
+  );
 
   const submit = async (answer: DialogAnswer) => {
     setBusy(true);
+    setSubmitError(null);
     await respondDialog(dialog.sessionId, answer);
     setBusy(false);
+    if (useSessions.getState().dialogs[dialog.sessionId]) {
+      // Still pending after the call: the approval was refused, not just slow.
+      setSubmitError(useSessions.getState().error ?? "Could not start writing — try again.");
+    }
+  };
+
+  const closeConflictAndApprove = async () => {
+    if (!conflictingWriter) return;
+    setClosingConflict(true);
+    setSubmitError(null);
+    await close(conflictingWriter.id);
+    const cleared = await waitForTerminal(conflictingWriter.id, branch);
+    setClosingConflict(false);
+    if (!cleared) {
+      setSubmitError(
+        "The other session did not finish closing in time — check its tab, then try again.",
+      );
+      return;
+    }
+    await submit({ approved: true, ...(notes.trim() && { feedback: notes }) });
   };
 
   return (
@@ -200,6 +249,17 @@ function PlanReview({ dialog, plan }: { dialog: UserDialog; plan: string }) {
         <div className="plan-body md">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{plan}</ReactMarkdown>
         </div>
+        {conflictingWriter && (
+          <p className="hint warn">
+            <Icon name="alert" size={12} /> Another session is already writing on this branch —
+            approving needs it closed first.
+          </p>
+        )}
+        {submitError && (
+          <p className="hint warn">
+            <Icon name="alert" size={12} /> {submitError}
+          </p>
+        )}
         <textarea
           className="plan-notes"
           rows={2}
@@ -211,20 +271,30 @@ function PlanReview({ dialog, plan }: { dialog: UserDialog; plan: string }) {
           <span className="hint">Approving lets this session start writing.</span>
           <button
             className="ghost"
-            disabled={busy}
+            disabled={busy || closingConflict}
             onClick={() => void submit({ approved: false, feedback: notes })}
           >
             Keep planning
           </button>
-          <button
-            className="btn-primary"
-            disabled={busy}
-            onClick={() =>
-              void submit({ approved: true, ...(notes.trim() && { feedback: notes }) })
-            }
-          >
-            {busy ? "Starting…" : "Approve"}
-          </button>
+          {conflictingWriter ? (
+            <button
+              className="btn-primary"
+              disabled={closingConflict}
+              onClick={() => void closeConflictAndApprove()}
+            >
+              {closingConflict ? "Closing the other session…" : "Close it and approve"}
+            </button>
+          ) : (
+            <button
+              className="btn-primary"
+              disabled={busy}
+              onClick={() =>
+                void submit({ approved: true, ...(notes.trim() && { feedback: notes }) })
+              }
+            >
+              {busy ? "Starting…" : "Approve"}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -235,7 +305,7 @@ function PlanReview({ dialog, plan }: { dialog: UserDialog; plan: string }) {
  * The blocking dialog the agent raised. Renders the kinds Maestro understands and
  * dismisses anything else — an unrendered dialog would leave the agent parked.
  */
-export function QuestionDialog({ dialog }: { dialog: UserDialog }) {
+export function QuestionDialog({ dialog, branch }: { dialog: UserDialog; branch: string }) {
   const respondDialog = useSessions((s) => s.respondDialog);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [clarify, setClarify] = useState("");
@@ -266,7 +336,7 @@ export function QuestionDialog({ dialog }: { dialog: UserDialog }) {
     return draft.picked.length > 0 || draft.text.trim().length > 0;
   }).length;
 
-  if (plan) return <PlanReview dialog={dialog} plan={plan} />;
+  if (plan) return <PlanReview dialog={dialog} plan={plan} branch={branch} />;
   if (elicitation) return <ElicitationRequestView dialog={dialog} request={elicitation} />;
   if (!payload) return null;
 

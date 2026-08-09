@@ -1,4 +1,5 @@
 import { useSessions } from "../state/sessions";
+import { isTerminalStatus } from "../types/sessions";
 import type { Session, TranscriptItem } from "../types/sessions";
 
 /**
@@ -57,6 +58,37 @@ export function waitForTurn(
         }
       }
     });
+  });
+}
+
+/** Wait for `sessionId` (on `branch`) to reach a terminal status, or to
+ * disappear from the store entirely — used after closing a conflicting
+ * writer session before retrying a plan approval on another one. `close()`
+ * only *requests* the close; an implementation session's finalize-turn can
+ * keep it non-terminal for a while afterward. */
+export function waitForTerminal(
+  sessionId: string,
+  branch: string,
+  timeoutMs = 20_000,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsub();
+      resolve(ok);
+    };
+    const check = () => {
+      const session = (useSessions.getState().byBranch[branch] ?? []).find(
+        (s) => s.id === sessionId,
+      );
+      if (!session || isTerminalStatus(session.status)) finish(true);
+    };
+    check();
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    const unsub = useSessions.subscribe(check);
   });
 }
 

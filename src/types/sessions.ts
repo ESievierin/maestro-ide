@@ -251,6 +251,12 @@ export const THINKING_LABELS: Record<string, string> = {
 export const PERMISSION_MODES = ["default", "acceptEdits", "auto", "plan"] as const;
 export const READ_ONLY_MODE = "plan";
 
+/** Mirrors the backend's `is_writer_mode` exactly: everything but plan mode
+ * counts as a writer, including an unset mode (`null`). */
+export function isWriterMode(permissionMode: string | null): boolean {
+  return permissionMode !== READ_ONLY_MODE;
+}
+
 export const PERMISSION_MODE_LABELS: Record<string, string> = {
   default: "default (asks each time)",
   acceptEdits: "acceptEdits (edits auto, commands ask)",

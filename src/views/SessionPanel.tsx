@@ -1649,7 +1649,7 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
       )}
 
       {/* A dialog blocks the agent, so it is modal even if the user switched tabs. */}
-      {pendingDialog && <QuestionDialog dialog={pendingDialog} />}
+      {pendingDialog && <QuestionDialog dialog={pendingDialog} branch={branch} />}
 
       {showResumePicker && (
         <ResumePicker

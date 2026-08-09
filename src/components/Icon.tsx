@@ -37,7 +37,8 @@ export type IconName =
   | "log"
   | "bot"
   | "pr"
-  | "reply";
+  | "reply"
+  | "settings";
 
 /** Path data per icon, drawn on a 24×24 grid. */
 const PATHS: Record<IconName, ReactElement> = {
@@ -100,6 +101,12 @@ const PATHS: Record<IconName, ReactElement> = {
     </>
   ),
   reply: <path d="M9.5 4.5 4 10l5.5 5.5M4 10h10a6 6 0 0 1 6 6v3.5" />,
+  settings: (
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 3v2.5M12 18.5V21M21 12h-2.5M5.5 12H3M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8M18.5 18.5l-1.8-1.8M7.3 7.3 5.5 5.5" />
+    </>
+  ),
 };
 
 interface Props {

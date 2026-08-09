@@ -11,15 +11,19 @@ import { onBusEvent } from "./events";
 /** Stable empty list — selectors must never build a fresh value (see state/questions.ts). */
 const EMPTY: readonly AttentionItem[] = Object.freeze([]);
 
-const NOTIFICATIONS_KEY = "maestro.osNotifications";
+/** Legacy frontend-only flag — migrated once into the real `os_notifications`
+ * setting below, then never read again. */
+const LEGACY_NOTIFICATIONS_KEY = "maestro.osNotifications";
 
 interface AttentionState {
   items: readonly AttentionItem[];
-  /** Whether OS notifications are enabled (persisted locally, config-gated per brief). */
+  /** Whether OS notifications are enabled — backed by the `os_notifications`
+   * setting (config.toml-gated per the original brief), not just this window. */
   notificationsEnabled: boolean;
   error: string | null;
 
   fetch: () => Promise<void>;
+  fetchNotificationsEnabled: () => Promise<void>;
   dismiss: (id: string) => Promise<void>;
   setNotificationsEnabled: (enabled: boolean) => Promise<void>;
   clearError: () => void;
@@ -27,13 +31,22 @@ interface AttentionState {
 
 export const useAttention = create<AttentionState>((set) => ({
   items: EMPTY,
-  notificationsEnabled: localStorage.getItem(NOTIFICATIONS_KEY) === "true",
+  notificationsEnabled: false, // hydrated from the backend below
   error: null,
 
   fetch: async () => {
     try {
       const items = await invoke<AttentionItem[]>("list_attention");
       set({ items: items.length === 0 ? EMPTY : items });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  fetchNotificationsEnabled: async () => {
+    try {
+      const enabled = await invoke<boolean>("get_os_notifications_enabled");
+      set({ notificationsEnabled: enabled });
     } catch (e) {
       set({ error: String(e) });
     }
@@ -62,8 +75,12 @@ export const useAttention = create<AttentionState>((set) => ({
         return;
       }
     }
-    localStorage.setItem(NOTIFICATIONS_KEY, String(enabled));
-    set({ notificationsEnabled: enabled });
+    try {
+      await invoke("set_os_notifications_enabled", { enabled });
+      set({ notificationsEnabled: enabled });
+    } catch (e) {
+      set({ error: String(e) });
+    }
   },
 
   clearError: () => set({ error: null }),
@@ -108,3 +125,19 @@ onBusEvent((event) => {
 
 // Pick up anything already waiting when the UI (re)loads.
 void useAttention.getState().fetch();
+
+// One-time migration from the old frontend-only flag to the real setting,
+// then hydrate for real. Runs once: the legacy key is gone after this, so
+// later loads go straight to fetchNotificationsEnabled().
+void (async () => {
+  const legacy = localStorage.getItem(LEGACY_NOTIFICATIONS_KEY);
+  if (legacy === "true") {
+    try {
+      await invoke("set_os_notifications_enabled", { enabled: true });
+    } catch {
+      // Best-effort — worst case the user re-enables it once from Settings.
+    }
+  }
+  if (legacy !== null) localStorage.removeItem(LEGACY_NOTIFICATIONS_KEY);
+  await useAttention.getState().fetchNotificationsEnabled();
+})();

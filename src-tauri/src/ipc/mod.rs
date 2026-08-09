@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::agent::protocol::Attachment;
-use crate::core::attention::{AttentionItem, AttentionManager};
+use crate::core::attention::{AttentionItem, AttentionManager, SETTING_OS_NOTIFICATIONS};
 use crate::core::bus::{Event, EventBus};
 use crate::core::checks::{CheckResult, ChecksManager};
 use crate::core::compose::ComposeManager;
@@ -24,6 +24,10 @@ use crate::core::notes::{Notes, NotesManager};
 use crate::core::pr::{CreatedPr, PrComment, PrManager, ReplyOutcome};
 use crate::core::prompts::{PromptFile, PromptManager};
 use crate::core::questions::{LineQuestionInfo, LineQuestionManager};
+use crate::core::session::manager::{
+    DEFAULT_FINALIZE_TIMEOUT_SECS, DEFAULT_SINGLE_WRITER_POLICY, SETTING_NOTES_FINALIZE_TIMEOUT,
+    SETTING_SINGLE_WRITER_POLICY,
+};
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
 use crate::core::store::{Branch, DaemonTask, Store};
 use crate::core::telemetry::SETTING_TELEMETRY_ENABLED;
@@ -340,6 +344,87 @@ pub async fn set_telemetry_enabled(
             SETTING_TELEMETRY_ENABLED,
             if enabled { "true" } else { "false" },
         )
+    })
+    .await
+}
+
+/// Whether OS notifications are enabled — config-gated per the original brief,
+/// now also toggleable at runtime (previously only a frontend-local flag with
+/// no backend counterpart; unified so `config.toml` and the UI agree).
+#[tauri::command]
+pub async fn get_os_notifications_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        Ok(store
+            .get_setting(SETTING_OS_NOTIFICATIONS)?
+            .map(|v| v == "true")
+            .unwrap_or(false))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_os_notifications_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        store.set_setting(
+            SETTING_OS_NOTIFICATIONS,
+            if enabled { "true" } else { "false" },
+        )
+    })
+    .await
+}
+
+/// `"read_only"` (default) downgrades a second writer session on the same
+/// branch instead of rejecting it; `"reject"` refuses it outright.
+#[tauri::command]
+pub async fn get_single_writer_policy(state: State<'_, AppState>) -> Result<String, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        Ok(store
+            .get_setting(SETTING_SINGLE_WRITER_POLICY)?
+            .unwrap_or_else(|| DEFAULT_SINGLE_WRITER_POLICY.to_string()))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_single_writer_policy(
+    state: State<'_, AppState>,
+    policy: String,
+) -> Result<(), String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        store.set_setting(SETTING_SINGLE_WRITER_POLICY, &policy)
+    })
+    .await
+}
+
+/// Seconds an implementation session gets, on close, to write its
+/// `TASK_NOTES.md` before it is closed anyway. `0` disables the finalize step.
+#[tauri::command]
+pub async fn get_notes_finalize_timeout(state: State<'_, AppState>) -> Result<u64, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        Ok(store
+            .get_setting(SETTING_NOTES_FINALIZE_TIMEOUT)?
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_FINALIZE_TIMEOUT_SECS))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_notes_finalize_timeout(
+    state: State<'_, AppState>,
+    seconds: u64,
+) -> Result<(), String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        store.set_setting(SETTING_NOTES_FINALIZE_TIMEOUT, &seconds.to_string())
     })
     .await
 }

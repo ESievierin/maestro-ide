@@ -13,7 +13,8 @@ export type UIDialog =
   | "create"
   | "daemon"
   | "createpr"
-  | "replies";
+  | "replies"
+  | "settings";
 
 interface UIState {
   dialog: UIDialog | null;

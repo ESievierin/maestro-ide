@@ -22,8 +22,7 @@ const KIND_ICON: Record<AttentionItem["kind"], IconName> = {
 };
 
 export function AttentionPanel({ onClose }: { onClose: () => void }) {
-  const { items, notificationsEnabled, error, dismiss, setNotificationsEnabled, clearError } =
-    useAttention();
+  const { items, error, dismiss, clearError } = useAttention();
   const select = useWorktrees((s) => s.select);
   const setTab = useWorktrees((s) => s.setTab);
   useEscapeToClose(onClose);
@@ -51,14 +50,13 @@ export function AttentionPanel({ onClose }: { onClose: () => void }) {
           Needs you <span className="count">({items.length})</span>
         </h2>
         <div className="actions">
-          <label className="notify-toggle" title="OS notifications when an agent blocks">
-            <input
-              type="checkbox"
-              checked={notificationsEnabled}
-              onChange={(e) => void setNotificationsEnabled(e.target.checked)}
-            />
-            notify
-          </label>
+          <button
+            className="small icon-only"
+            title="Settings — notifications and other app-wide toggles"
+            onClick={() => useUI.getState().openDialog("settings")}
+          >
+            <Icon name="settings" />
+          </button>
           <button className="small icon-only" onClick={onClose} title="Close">
             <Icon name="close" />
           </button>

@@ -25,6 +25,7 @@ import { CommandPalette } from "./views/CommandPalette";
 import { CreatePrDialog } from "./views/CreatePrDialog";
 import { DaemonPanel } from "./views/DaemonPanel";
 import { PrRepliesDialog } from "./views/PrRepliesDialog";
+import { SettingsDialog } from "./views/SettingsDialog";
 import { useChecks } from "./state/checks";
 import { useDaemon } from "./state/daemon";
 
@@ -285,6 +286,13 @@ export default function App() {
           >
             <Icon name="sliders" />
           </button>
+          <button
+            className="small icon-only ghost"
+            onClick={() => openDialog("settings")}
+            title="Settings"
+          >
+            <Icon name="settings" />
+          </button>
         </div>
       </header>
       <div className="app-body">
@@ -299,6 +307,7 @@ export default function App() {
       {dialog === "prompts" && <PromptEditor onClose={closeDialog} />}
       {dialog === "hotkeys" && <HotkeysDialog onClose={closeDialog} />}
       {dialog === "daemon" && <DaemonPanel onClose={closeDialog} />}
+      {dialog === "settings" && <SettingsDialog onClose={closeDialog} />}
       {paletteOpen && <CommandPalette onClose={() => setPalette(false)} />}
     </div>
   );

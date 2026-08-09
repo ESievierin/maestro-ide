@@ -1734,6 +1734,45 @@ input[type="checkbox"] {
   word-break: break-word;
 }
 
+/* ---------- Settings dialog ---------- */
+
+.settings-modal {
+  width: min(520px, 90vw);
+}
+
+.settings-section {
+  margin: var(--space-3) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.settings-section h4 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+}
+
+.settings-field .hint {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
 /* ---------- Daemon panel ---------- */
 
 .daemon-modal {
@@ -2365,10 +2404,6 @@ kbd {
   font-size: var(--text-xs);
   color: var(--text-secondary);
   cursor: pointer;
-}
-
-.daemon-telemetry-toggle {
-  margin: var(--space-2) 0;
 }
 
 .attention-items {

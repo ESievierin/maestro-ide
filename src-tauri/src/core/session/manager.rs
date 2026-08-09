@@ -28,12 +28,15 @@ use crate::error::{MaestroError, Result, Severity};
 
 /// Setting key for what happens when a second writer is requested on a branch.
 pub const SETTING_SINGLE_WRITER_POLICY: &str = "single_writer_policy";
+/// Default for [`SETTING_SINGLE_WRITER_POLICY`]: downgrade the second session to
+/// read-only rather than reject it outright.
+pub const DEFAULT_SINGLE_WRITER_POLICY: &str = "read_only";
 
 /// How long an implementation session gets, on close, to write its `TASK_NOTES.md`.
 pub const SETTING_NOTES_FINALIZE_TIMEOUT: &str = "notes_finalize_timeout_secs";
 
 /// Default for [`SETTING_NOTES_FINALIZE_TIMEOUT`]. `0` disables the finalize step.
-const DEFAULT_FINALIZE_TIMEOUT_SECS: u64 = 120;
+pub const DEFAULT_FINALIZE_TIMEOUT_SECS: u64 = 120;
 
 /// Template a review session's first turn is rendered from.
 const REVIEW_TEMPLATE: &str = "review-fix";
@@ -232,7 +235,7 @@ impl SessionManager {
             let policy = self
                 .store
                 .get_setting(SETTING_SINGLE_WRITER_POLICY)?
-                .unwrap_or_else(|| "read_only".to_string());
+                .unwrap_or_else(|| DEFAULT_SINGLE_WRITER_POLICY.to_string());
             match policy.as_str() {
                 "reject" => {
                     return Err(MaestroError::InvalidData {

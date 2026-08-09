@@ -201,6 +201,12 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         run: () => openDialog("hotkeys"),
       },
       {
+        id: "app:settings",
+        icon: "settings",
+        label: "Settings…",
+        run: () => openDialog("settings"),
+      },
+      {
         id: "app:eventlog",
         icon: "sliders",
         label: "Toggle event log",

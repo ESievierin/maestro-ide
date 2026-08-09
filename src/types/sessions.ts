@@ -284,3 +284,12 @@ export interface SessionPreset {
   tools_profile: string | null;
   created_at: string;
 }
+
+/** Mirrors `SessionSearchResult` in src-tauri/src/core/store/. */
+export interface SessionSearchResult {
+  session_id: string;
+  branch: string;
+  session_type: string;
+  status: string;
+  snippet: string;
+}

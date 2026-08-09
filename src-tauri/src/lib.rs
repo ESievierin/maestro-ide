@@ -272,6 +272,7 @@ pub fn run() {
             ipc::set_single_writer_policy,
             ipc::get_notes_finalize_timeout,
             ipc::set_notes_finalize_timeout,
+            ipc::search_sessions,
             ipc::list_session_presets,
             ipc::save_session_preset,
             ipc::delete_session_preset,

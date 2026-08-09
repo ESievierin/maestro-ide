@@ -29,7 +29,9 @@ use crate::core::session::manager::{
     SETTING_SINGLE_WRITER_POLICY,
 };
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
-use crate::core::store::{Branch, DaemonTask, SessionPreset, Store, UsageSummary};
+use crate::core::store::{
+    Branch, DaemonTask, SessionPreset, SessionSearchResult, Store, UsageSummary,
+};
 use crate::core::telemetry::SETTING_TELEMETRY_ENABLED;
 use crate::core::worktree::{
     BlameLine, CreateWorktreeRequest, LogEntry, MergeReport, RemoveOutcome, RepoInfo,
@@ -764,6 +766,17 @@ pub async fn get_session_transcript(
         Ok(Some(value))
     })
     .await
+}
+
+/// Substring search across every session's transcript, across all branches —
+/// newest session first, capped at 50 results.
+#[tauri::command]
+pub async fn search_sessions(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<SessionSearchResult>, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || store.search_transcripts(&query)).await
 }
 
 // ---------- session presets ----------

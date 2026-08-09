@@ -229,6 +229,12 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         run: () => openDialog("settings"),
       },
       {
+        id: "app:search-sessions",
+        icon: "search",
+        label: "Search session history (all branches)…",
+        run: () => openDialog("search-sessions"),
+      },
+      {
         id: "app:eventlog",
         icon: "sliders",
         label: "Toggle event log",

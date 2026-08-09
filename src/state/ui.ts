@@ -14,7 +14,8 @@ export type UIDialog =
   | "daemon"
   | "createpr"
   | "replies"
-  | "settings";
+  | "settings"
+  | "search-sessions";
 
 interface UIState {
   dialog: UIDialog | null;

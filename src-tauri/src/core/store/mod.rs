@@ -77,6 +77,18 @@ pub struct UsageSummary {
     pub all_time: UsageTotals,
 }
 
+/// One transcript match — enough to show and jump to, without the caller
+/// needing to reparse the transcript itself.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SessionSearchResult {
+    pub session_id: String,
+    pub branch: String,
+    pub session_type: String,
+    pub status: String,
+    /// ~80 characters of context around the match, with `…` where truncated.
+    pub snippet: String,
+}
+
 /// Storage boundary. Concrete impl: SQLite. Test doubles implement this trait.
 pub trait Store: Send + Sync {
     /// Insert the branch if new. On conflict, `task_id`/`base_branch` are only
@@ -116,6 +128,10 @@ pub trait Store: Send + Sync {
     /// serialized `TranscriptItem[]`, so a restart can restore it verbatim.
     fn save_transcript(&self, session_id: &str, items_json: &str) -> Result<()>;
     fn get_transcript(&self, session_id: &str) -> Result<Option<String>>;
+    /// Substring match (case-insensitive) across every persisted transcript,
+    /// newest session first. A plain `LIKE` scan, not full-text search — fine
+    /// at the scale one project's sessions actually reach.
+    fn search_transcripts(&self, query: &str) -> Result<Vec<SessionSearchResult>>;
 
     fn get_setting(&self, key: &str) -> Result<Option<String>>;
     fn set_setting(&self, key: &str, value: &str) -> Result<()>;
@@ -202,6 +218,56 @@ impl SqliteStore {
         })?;
         f(&conn)
     }
+}
+
+/// Escapes `\`, `%`, `_` for a `LIKE ... ESCAPE '\'` pattern, so a query
+/// containing them is matched literally instead of as SQL wildcards.
+fn escape_like(raw: &str) -> String {
+    raw.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// The first transcript item whose text contains `query` (case-insensitive),
+/// trimmed to roughly 40 characters of context on each side. Falls back to a
+/// generic marker if the match can't be re-found by re-parsing (should not
+/// happen: the row only got here because the raw JSON already matched).
+fn extract_snippet(items_json: &str, query: &str) -> String {
+    const CONTEXT_CHARS: usize = 40;
+    let query_lower = query.to_lowercase();
+    let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(items_json) else {
+        return "(match found)".to_string();
+    };
+    for item in &items {
+        let Some(text) = item.get("text").and_then(|t| t.as_str()) else {
+            continue;
+        };
+        let text_lower = text.to_lowercase();
+        let Some(byte_pos) = text_lower.find(&query_lower) else {
+            continue;
+        };
+        let start = text[..byte_pos]
+            .char_indices()
+            .rev()
+            .nth(CONTEXT_CHARS)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let end_from = byte_pos + query.len();
+        let end = text[end_from..]
+            .char_indices()
+            .nth(CONTEXT_CHARS)
+            .map(|(i, _)| end_from + i)
+            .unwrap_or(text.len());
+        let mut snippet = text[start..end].to_string();
+        if start > 0 {
+            snippet = format!("…{snippet}");
+        }
+        if end < text.len() {
+            snippet = format!("{snippet}…");
+        }
+        return snippet;
+    }
+    "(match found)".to_string()
 }
 
 fn branch_from_row(row: &Row) -> rusqlite::Result<Branch> {
@@ -450,6 +516,32 @@ impl Store for SqliteStore {
                 )
                 .optional()?;
             Ok(value)
+        })
+    }
+
+    fn search_transcripts(&self, query: &str) -> Result<Vec<SessionSearchResult>> {
+        self.with_conn(|conn| {
+            let pattern = format!("%{}%", escape_like(query));
+            let mut stmt = conn.prepare(
+                "SELECT s.id, s.branch, s.type, s.status, st.items_json
+                 FROM session_transcripts st JOIN sessions s ON s.id = st.session_id
+                 WHERE st.items_json LIKE ?1 ESCAPE '\\' COLLATE NOCASE
+                 ORDER BY s.updated_at DESC
+                 LIMIT 50",
+            )?;
+            let mut rows = stmt.query(params![pattern])?;
+            let mut results = Vec::new();
+            while let Some(row) = rows.next()? {
+                let items_json: String = row.get(4)?;
+                results.push(SessionSearchResult {
+                    session_id: row.get(0)?,
+                    branch: row.get(1)?,
+                    session_type: row.get(2)?,
+                    status: row.get(3)?,
+                    snippet: extract_snippet(&items_json, query),
+                });
+            }
+            Ok(results)
         })
     }
 
@@ -956,6 +1048,59 @@ mod tests {
             s.get_transcript(&session.id).expect("get"),
             Some(r#"[{"kind":"user","text":"hi"},{"kind":"text","text":"hey"}]"#.to_string())
         );
+    }
+
+    #[test]
+    fn search_transcripts_matches_case_insensitively_with_a_snippet() {
+        let s = store();
+        s.upsert_branch("impl/T-9-x", None, None).expect("branch");
+        let session = Session::new("impl/T-9-x", SessionType::Manual, None, None, None);
+        s.insert_session(&session).expect("insert session");
+        s.save_transcript(
+            &session.id,
+            r#"[{"kind":"user","text":"The quick BROWN fox jumps over the lazy dog"}]"#,
+        )
+        .expect("save");
+
+        let results = s.search_transcripts("brown fox").expect("search");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].session_id, session.id);
+        assert_eq!(results[0].branch, "impl/T-9-x");
+        assert!(results[0].snippet.contains("BROWN fox"));
+    }
+
+    #[test]
+    fn search_transcripts_finds_nothing_for_no_match() {
+        let s = store();
+        s.upsert_branch("impl/T-10-x", None, None).expect("branch");
+        let session = Session::new("impl/T-10-x", SessionType::Manual, None, None, None);
+        s.insert_session(&session).expect("insert session");
+        s.save_transcript(&session.id, r#"[{"kind":"user","text":"hello there"}]"#)
+            .expect("save");
+
+        assert_eq!(
+            s.search_transcripts("nonexistent phrase").expect("search"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn search_transcripts_treats_percent_and_underscore_literally() {
+        let s = store();
+        s.upsert_branch("impl/T-11-x", None, None).expect("branch");
+        let session = Session::new("impl/T-11-x", SessionType::Manual, None, None, None);
+        s.insert_session(&session).expect("insert session");
+        s.save_transcript(
+            &session.id,
+            r#"[{"kind":"user","text":"we are 50% done_here"}]"#,
+        )
+        .expect("save");
+
+        // If `%`/`_` weren't escaped these would behave as SQL wildcards and
+        // match all sorts of unrelated text instead of the literal characters.
+        assert_eq!(s.search_transcripts("50%").expect("search").len(), 1);
+        assert_eq!(s.search_transcripts("done_here").expect("search").len(), 1);
+        assert_eq!(s.search_transcripts("50X").expect("search"), Vec::new());
     }
 
     #[test]

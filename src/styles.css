@@ -1767,6 +1767,54 @@ input[type="checkbox"] {
   word-break: break-word;
 }
 
+/* ---------- Session search dialog ---------- */
+
+.session-search-modal {
+  width: min(560px, 90vw);
+}
+
+.session-search-modal input[type="text"] {
+  width: 100%;
+  margin-top: var(--space-2);
+}
+
+.session-search-results {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.session-search-results li {
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.session-search-results li:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-recessed);
+}
+
+.session-search-result-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.session-search-snippet {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  word-break: break-word;
+}
+
 /* ---------- Settings dialog ---------- */
 
 .settings-modal {

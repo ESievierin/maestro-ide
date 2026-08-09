@@ -26,6 +26,7 @@ import { CreatePrDialog } from "./views/CreatePrDialog";
 import { DaemonPanel } from "./views/DaemonPanel";
 import { PrRepliesDialog } from "./views/PrRepliesDialog";
 import { SettingsDialog } from "./views/SettingsDialog";
+import { SessionSearchDialog } from "./views/SessionSearchDialog";
 import { useChecks } from "./state/checks";
 import { useDaemon } from "./state/daemon";
 
@@ -288,6 +289,13 @@ export default function App() {
           </button>
           <button
             className="small icon-only ghost"
+            onClick={() => openDialog("search-sessions")}
+            title="Search session history (all branches)"
+          >
+            <Icon name="search" />
+          </button>
+          <button
+            className="small icon-only ghost"
             onClick={() => openDialog("settings")}
             title="Settings"
           >
@@ -308,6 +316,7 @@ export default function App() {
       {dialog === "hotkeys" && <HotkeysDialog onClose={closeDialog} />}
       {dialog === "daemon" && <DaemonPanel onClose={closeDialog} />}
       {dialog === "settings" && <SettingsDialog onClose={closeDialog} />}
+      {dialog === "search-sessions" && <SessionSearchDialog onClose={closeDialog} />}
       {paletteOpen && <CommandPalette onClose={() => setPalette(false)} />}
     </div>
   );

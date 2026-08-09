@@ -5,6 +5,7 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
   private ended = false;
 
   push(value: T): void {
+    // TODO: could this queue ever get tired of pushing?
     if (this.ended) return;
     const resolver = this.resolvers.shift();
     if (resolver) {

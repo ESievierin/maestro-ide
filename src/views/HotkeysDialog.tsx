@@ -1,16 +1,9 @@
 import { Icon } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
+import { useHotkeyBindings } from "../state/hotkeys";
+import { useUI } from "../state/ui";
 
-const GROUPS: { title: string; keys: [string, string][] }[] = [
-  {
-    title: "Navigate",
-    keys: [
-      ["Alt+1…9", "Select the nth worktree"],
-      ["Alt+↑ / Alt+↓", "Previous / next worktree"],
-      ["Alt+C / Alt+D / Alt+N", "Chat / Diff / Notes tab"],
-      ["Ctrl+K", "Command palette"],
-    ],
-  },
+const STATIC_GROUPS: { title: string; keys: [string, string][] }[] = [
   {
     title: "Chat",
     keys: [
@@ -35,16 +28,29 @@ const GROUPS: { title: string; keys: [string, string][] }[] = [
   },
 ];
 
-/** Every shortcut in one place — discoverability beats memory. */
+/** Every shortcut in one place — discoverability beats memory. The "Navigate"
+ * group reflects whatever is actually bound right now, since every entry in
+ * it (except Alt+1…9) is rebindable from Settings → Keyboard shortcuts. */
 export function HotkeysDialog({ onClose }: { onClose: () => void }) {
   useEscapeToClose(onClose);
+  const comboFor = useHotkeyBindings((s) => s.comboFor);
+  const navigateKeys: [string, string][] = [
+    ["Alt+1…9", "Select the nth worktree"],
+    [`${comboFor("worktree-prev")} / ${comboFor("worktree-next")}`, "Previous / next worktree"],
+    [
+      `${comboFor("tab-chat")} / ${comboFor("tab-diff")} / ${comboFor("tab-notes")}`,
+      "Chat / Diff / Notes tab",
+    ],
+    [comboFor("command-palette"), "Command palette"],
+  ];
+  const groups = [{ title: "Navigate", keys: navigateKeys }, ...STATIC_GROUPS];
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="sliders" /> Keyboard shortcuts
         </h3>
-        {GROUPS.map((group) => (
+        {groups.map((group) => (
           <div key={group.title} className="hotkeys-group">
             <h4>{group.title}</h4>
             <dl className="hotkeys-list">
@@ -60,6 +66,15 @@ export function HotkeysDialog({ onClose }: { onClose: () => void }) {
           </div>
         ))}
         <div className="modal-actions">
+          <button
+            className="small ghost"
+            onClick={() => {
+              onClose();
+              useUI.getState().openDialog("settings");
+            }}
+          >
+            <Icon name="settings" size={12} /> Customize…
+          </button>
           <button className="ghost" onClick={onClose}>
             Close
           </button>

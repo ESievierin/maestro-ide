@@ -4,6 +4,7 @@ import { EventLog } from "./components/EventLog";
 import { Icon } from "./components/Icon";
 import { Toasts } from "./components/Toasts";
 import { useHotkeys } from "./hooks/useHotkeys";
+import { eventMatchesCombo, useHotkeyBindings } from "./state/hotkeys";
 import { useUI } from "./state/ui";
 import { useWorktrees } from "./state/worktrees";
 import { openWorktree, copyPath } from "./utils/actions";
@@ -43,6 +44,7 @@ function MainPanel() {
   const closeDialog = useUI((s) => s.closeDialog);
   const checkCommand = useChecks((s) => s.command);
   const fetchCheckCommand = useChecks((s) => s.fetchCommand);
+  const comboFor = useHotkeyBindings((s) => s.comboFor);
   // Total spend across this worktree's sessions (live ones report usage events).
   // A primitive return keeps the zustand snapshot stable when nothing changed.
   const branchCost = useSessions((s) => {
@@ -63,9 +65,10 @@ function MainPanel() {
       <div className="main-empty">
         <p>Select a worktree to see its details.</p>
         <p className="hint">
-          Sessions, diffs and notes are per worktree. Ctrl+K opens the command palette; Alt+1…9
-          jumps between worktrees, Alt+↑/↓ cycles, Alt+C / Alt+D / Alt+N switch chat, diff and
-          notes.
+          Sessions, diffs and notes are per worktree. {comboFor("command-palette")} opens the
+          command palette; Alt+1…9 jumps between worktrees, {comboFor("worktree-prev")}/
+          {comboFor("worktree-next")} cycles, {comboFor("tab-chat")} / {comboFor("tab-diff")} /{" "}
+          {comboFor("tab-notes")} switch chat, diff and notes.
         </p>
       </div>
     );
@@ -204,11 +207,13 @@ export default function App() {
   const setPalette = useUI((s) => s.setPalette);
   const toggleEventLog = useUI((s) => s.toggleEventLog);
   const attentionCount = useAttention(selectAttentionCount);
+  const paletteCombo = useHotkeyBindings((s) => s.comboFor("command-palette"));
 
-  // Ctrl+K from anywhere, inputs included — the palette is never in the way.
+  // The command palette shortcut fires from anywhere, inputs included — it's
+  // never in the way. Rebindable in Settings → Keyboard shortcuts.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+      if (eventMatchesCombo(e, useHotkeyBindings.getState().comboFor("command-palette"))) {
         e.preventDefault();
         useUI.getState().setPalette(!useUI.getState().paletteOpen);
       }
@@ -263,9 +268,9 @@ export default function App() {
           <button
             className="small ghost"
             onClick={() => setPalette(true)}
-            title="Command palette (Ctrl+K)"
+            title={`Command palette (${paletteCombo})`}
           >
-            <Icon name="sliders" /> Ctrl+K
+            <Icon name="sliders" /> {paletteCombo}
           </button>
           <button
             className="small ghost"

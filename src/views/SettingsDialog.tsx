@@ -5,7 +5,79 @@ import { Icon } from "../components/Icon";
 import { SelectMenu } from "../components/SelectMenu";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useAttention } from "../state/attention";
+import {
+  comboFromEvent,
+  HOTKEY_ACTIONS,
+  isBareModifierKey,
+  useHotkeyBindings,
+} from "../state/hotkeys";
 import { useUI } from "../state/ui";
+
+/** One rebindable shortcut: its current combo, a capture-next-keypress
+ * rebind control, and a per-row reset when it differs from the default. */
+function HotkeyRow({ action }: { action: (typeof HOTKEY_ACTIONS)[number] }) {
+  const combo = useHotkeyBindings((s) => s.comboFor(action.id));
+  const isCustom = useHotkeyBindings((s) => action.id in s.overrides);
+  const [listening, setListening] = useState(false);
+  const [conflict, setConflict] = useState<string | null>(null);
+
+  return (
+    <div className="hotkey-row">
+      <span className="hotkey-row-label">{action.label}</span>
+      {listening ? (
+        <button
+          type="button"
+          className="small hotkey-capture"
+          autoFocus
+          onBlur={() => setListening(false)}
+          onKeyDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.key === "Escape") {
+              setListening(false);
+              return;
+            }
+            if (isBareModifierKey(e.key)) return;
+            const next = comboFromEvent(e);
+            const owner = useHotkeyBindings.getState().actionBoundTo(next);
+            if (owner && owner !== action.id) {
+              const label = HOTKEY_ACTIONS.find((a) => a.id === owner)?.label ?? owner;
+              setConflict(`"${next}" is already used by "${label}".`);
+              return;
+            }
+            useHotkeyBindings.getState().setBinding(action.id, next);
+            setConflict(null);
+            setListening(false);
+          }}
+        >
+          Press a key… (Esc to cancel)
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="small ghost hotkey-combo"
+          onClick={() => {
+            setConflict(null);
+            setListening(true);
+          }}
+        >
+          <kbd>{combo}</kbd>
+        </button>
+      )}
+      {isCustom && !listening && (
+        <button
+          type="button"
+          className="small icon-only ghost"
+          title="Reset to default"
+          onClick={() => useHotkeyBindings.getState().resetOne(action.id)}
+        >
+          <Icon name="refresh" size={11} />
+        </button>
+      )}
+      {conflict && <span className="hint hotkey-conflict">{conflict}</span>}
+    </div>
+  );
+}
 
 interface UsageTotals {
   cost_usd: number;
@@ -276,6 +348,25 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               closed anyway.
             </span>
           </label>
+        </div>
+
+        <div className="settings-section">
+          <h4>Keyboard shortcuts</h4>
+          <p className="hint">
+            Click a shortcut to rebind it. Alt+1…9 (select the nth worktree) is fixed.
+          </p>
+          <div className="hotkey-rows">
+            {HOTKEY_ACTIONS.map((action) => (
+              <HotkeyRow key={action.id} action={action} />
+            ))}
+          </div>
+          <button
+            type="button"
+            className="small ghost"
+            onClick={() => useHotkeyBindings.getState().resetAll()}
+          >
+            Reset all to defaults
+          </button>
         </div>
 
         <div className="settings-section">

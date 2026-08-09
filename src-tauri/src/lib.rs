@@ -249,6 +249,8 @@ pub fn run() {
             ipc::list_prompts,
             ipc::save_prompt,
             ipc::reset_prompt,
+            ipc::export_settings_bundle,
+            ipc::import_settings_bundle,
             ipc::list_attention,
             ipc::dismiss_attention,
             ipc::refresh_models,

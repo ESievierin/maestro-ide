@@ -34,6 +34,7 @@ export type IconName =
   | "external-link"
   | "history"
   | "upload"
+  | "download"
   | "log"
   | "bot"
   | "pr"
@@ -84,6 +85,7 @@ const PATHS: Record<IconName, ReactElement> = {
   ),
   history: <path d="M4.5 12a7.5 7.5 0 1 1 2.2 5.3M4.5 12l-2-2M4.5 12l2.2-1.8M12 8.5V12l2.7 1.8" />,
   upload: <path d="M4.5 19.5h15M12 15.5V4.5M7 9.5l5-5 5 5" />,
+  download: <path d="M4.5 19.5h15M12 4.5v11M7 10.5l5 5 5-5" />,
   log: <path d="M6 5.5h12M6 10h12M6 14.5h8M6 19h5" />,
   bot: (
     <>

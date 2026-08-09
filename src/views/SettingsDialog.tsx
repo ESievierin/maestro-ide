@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { confirm, open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import { Icon } from "../components/Icon";
 import { SelectMenu } from "../components/SelectMenu";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
@@ -14,6 +15,12 @@ interface UsageTotals {
 interface UsageSummary {
   today: UsageTotals;
   all_time: UsageTotals;
+}
+
+interface ImportSummary {
+  settings_applied: number;
+  prompts_written: number;
+  settings_skipped: string[];
 }
 
 function formatUsage(t: UsageTotals): string {
@@ -53,11 +60,17 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [finalizeTimeout, setFinalizeTimeoutState] = useState<number | null>(null);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupMessage, setBackupMessage] = useState<string | null>(null);
 
-  useEffect(() => {
+  const refetchToggles = () => {
     void invoke<boolean>("get_telemetry_enabled").then(setTelemetryEnabledState);
     void invoke<string>("get_single_writer_policy").then(setWriterPolicyState);
     void invoke<number>("get_notes_finalize_timeout").then(setFinalizeTimeoutState);
+  };
+
+  useEffect(() => {
+    refetchToggles();
     void invoke<UsageSummary>("get_usage_summary").then(setUsage);
   }, []);
 
@@ -89,6 +102,54 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       await invoke("set_notes_finalize_timeout", { seconds });
     } catch (e) {
       setError(String(e));
+    }
+  };
+
+  const exportBundle = async () => {
+    const path = await saveFileDialog({
+      title: "Export settings & prompts",
+      defaultPath: "maestro-settings.json",
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!path) return;
+    setBackupBusy(true);
+    setBackupMessage(null);
+    try {
+      await invoke("export_settings_bundle", { path });
+      setBackupMessage(`Exported to ${path}`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const importBundle = async () => {
+    const picked = await openFileDialog({
+      title: "Import settings & prompts",
+      multiple: false,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    const path = typeof picked === "string" ? picked : null;
+    if (!path) return;
+    const ok = await confirm(
+      "Importing overwrites any matching settings and prompt templates with the file's versions. Continue?",
+      { title: "MaestroIDE", kind: "warning" },
+    );
+    if (!ok) return;
+    setBackupBusy(true);
+    setBackupMessage(null);
+    try {
+      const summary = await invoke<ImportSummary>("import_settings_bundle", { path });
+      setBackupMessage(
+        `Imported ${summary.settings_applied} setting${summary.settings_applied === 1 ? "" : "s"} and ` +
+          `${summary.prompts_written} prompt${summary.prompts_written === 1 ? "" : "s"}.`,
+      );
+      refetchToggles();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBackupBusy(false);
     }
   };
 
@@ -176,6 +237,24 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               closed anyway.
             </span>
           </label>
+        </div>
+
+        <div className="settings-section">
+          <h4>Backup</h4>
+          <p className="hint">
+            Export the portable subset of settings (not repo paths, accounts, or the Jira token)
+            plus every prompt template to a JSON file — carry it to another machine, or just keep it
+            as a backup.
+          </p>
+          <div className="settings-backup-actions">
+            <button className="small" disabled={backupBusy} onClick={() => void exportBundle()}>
+              <Icon name="download" size={12} /> Export…
+            </button>
+            <button className="small" disabled={backupBusy} onClick={() => void importBundle()}>
+              <Icon name="upload" size={12} /> Import…
+            </button>
+          </div>
+          {backupMessage && <p className="settings-usage-line">{backupMessage}</p>}
         </div>
 
         <div className="modal-actions">

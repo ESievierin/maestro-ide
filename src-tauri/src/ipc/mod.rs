@@ -995,6 +995,46 @@ pub async fn reset_prompt(state: State<'_, AppState>, name: String) -> Result<Pr
     run_core(state.bus.clone(), move || prompts.reset(&name)).await
 }
 
+// ---------- settings/prompts export-import ----------
+
+/// Write the portable-settings + every prompt template to `path` as one JSON
+/// file, for carrying to another machine or as a plain backup.
+#[tauri::command]
+pub async fn export_settings_bundle(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let store = state.store.clone();
+    let prompts = state.prompts.clone();
+    run_core(state.bus.clone(), move || {
+        let bundle = crate::core::backup::export(store.as_ref(), &prompts)?;
+        let json =
+            serde_json::to_string_pretty(&bundle).map_err(|err| MaestroError::InvalidData {
+                message: format!("could not serialize settings bundle: {err}"),
+            })?;
+        std::fs::write(&path, json)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Read a previously exported bundle from `path` and apply it: every setting
+/// still on the allowlist is written, every prompt entry overwrites its file.
+#[tauri::command]
+pub async fn import_settings_bundle(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<crate::core::backup::ImportSummary, String> {
+    let store = state.store.clone();
+    let prompts = state.prompts.clone();
+    run_core(state.bus.clone(), move || {
+        let json = std::fs::read_to_string(&path)?;
+        let bundle = crate::core::backup::parse(&json)?;
+        crate::core::backup::import(store.as_ref(), &prompts, &bundle)
+    })
+    .await
+}
+
 // ---------- attention queue ----------
 
 /// Everything waiting on the user, most urgent first (T9).

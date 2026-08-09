@@ -5,7 +5,8 @@ import { useChecks } from "../state/checks";
 import { useSessions } from "../state/sessions";
 import { useUI } from "../state/ui";
 import { useWorktrees } from "../state/worktrees";
-import { copyPath, openWorktree } from "../utils/actions";
+import { isTerminalStatus } from "../types/sessions";
+import { clearFinishedSessions, copyPath, openWorktree, removeWorktree } from "../utils/actions";
 
 interface PaletteItem {
   id: string;
@@ -156,6 +157,27 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           label: "Checks…",
           hint: checkCommand,
           run: () => openDialog("checks"),
+        });
+      }
+      const finishedCount = (useSessions.getState().byBranch[branch] ?? []).filter((s) =>
+        isTerminalStatus(s.status),
+      ).length;
+      if (finishedCount > 0) {
+        result.push({
+          id: "wt:clear-finished",
+          icon: "trash",
+          label: `Clear ${finishedCount} finished session${finishedCount === 1 ? "" : "s"}`,
+          hint: branch,
+          run: () => void clearFinishedSessions(branch, finishedCount),
+        });
+      }
+      if (!current.is_primary) {
+        result.push({
+          id: "wt:remove",
+          icon: "trash",
+          label: "Remove worktree…",
+          hint: branch,
+          run: () => void removeWorktree(branch),
         });
       }
     }

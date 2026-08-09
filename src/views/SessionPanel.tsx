@@ -31,6 +31,7 @@ import {
   TODO_STATUS_ORDER,
 } from "../types/sessions";
 import type { WorktreeInfo } from "../types/worktrees";
+import { clearFinishedSessions } from "../utils/actions";
 import { QuestionDialog } from "./QuestionDialog";
 
 const DEFAULT_OPTION: SelectMenuOption = { value: "", label: "Default" };
@@ -1434,24 +1435,13 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
     return oneLine.length > 26 ? `${oneLine.slice(0, 26)}…` : oneLine;
   };
 
-  const removeAllFinished = useSessions((s) => s.removeAllFinished);
   const finishedCount = list.filter((s) => isTerminalStatus(s.status)).length;
   const [clearingFinished, setClearingFinished] = useState(false);
 
   const clearFinished = async () => {
-    // A single stray row is not worth interrupting the user for; a pile of
-    // them is exactly what this button exists to clean up in one go.
-    if (finishedCount > 2) {
-      const { confirm } = await import("@tauri-apps/plugin-dialog");
-      const ok = await confirm(
-        `Delete ${finishedCount} finished session${finishedCount === 1 ? "" : "s"} on this branch? This cannot be undone.`,
-        { title: "MaestroIDE", kind: "warning" },
-      );
-      if (!ok) return;
-    }
     setClearingFinished(true);
     try {
-      await removeAllFinished(branch);
+      await clearFinishedSessions(branch, finishedCount);
     } finally {
       setClearingFinished(false);
     }

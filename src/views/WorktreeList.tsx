@@ -7,6 +7,7 @@ import { useUI } from "../state/ui";
 import { activeSessionCount, useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
 import type { WorktreeInfo } from "../types/worktrees";
+import { removeWorktree } from "../utils/actions";
 import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { MergeDialog } from "./MergeDialog";
 
@@ -140,7 +141,7 @@ function RepoPicker({ current, onDone }: { current: string | null; onDone: () =>
 }
 
 export function WorktreeList() {
-  const { repo, worktrees, selected, loading, error, refresh, remove, sync, select, clearError } =
+  const { repo, worktrees, selected, loading, error, refresh, sync, select, clearError } =
     useWorktrees();
   const showCreate = useUI((s) => s.dialog === "create");
   const openDialog = useUI((s) => s.openDialog);
@@ -154,16 +155,6 @@ export function WorktreeList() {
     // refresh is a stable zustand action; run once on mount.
     void refresh();
   }, [refresh]);
-
-  const onRemove = async (branch: string) => {
-    const outcome = await remove(branch, false);
-    if (outcome?.outcome === "dirty_confirmation_required") {
-      const forceIt = window.confirm(
-        `Worktree "${branch}" has uncommitted changes.\nRemove anyway and discard them?`,
-      );
-      if (forceIt) await remove(branch, true);
-    }
-  };
 
   const onSync = async (branch: string) => {
     setSyncing(branch);
@@ -316,7 +307,7 @@ export function WorktreeList() {
                           title="Remove worktree"
                           onClick={(e) => {
                             e.stopPropagation();
-                            void onRemove(wt.branch as string);
+                            void removeWorktree(wt.branch as string);
                           }}
                         >
                           <Icon name="trash" />

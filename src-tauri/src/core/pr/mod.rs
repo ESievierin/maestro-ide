@@ -369,6 +369,7 @@ mod tests {
             head_sha: "sha-1".into(),
             url: "https://github.com/owner/repo/pull/42".into(),
             requested_reviewers: Vec::new(),
+            labels: Vec::new(),
         }
     }
 

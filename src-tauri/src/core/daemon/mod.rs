@@ -70,6 +70,11 @@ pub const SETTING_DAEMON_REPO: &str = "daemon_repo";
 /// instead of listing) the single `daemon_account` posting identity. Empty =
 /// just that one account — today's single-account behavior, unchanged.
 pub const SETTING_DAEMON_WATCH_ACCOUNTS: &str = "daemon_watch_accounts";
+/// JSON array of label names (case-insensitive); a PR carrying any of them is
+/// skipped entirely — no review-request task, no comment-reply task. Empty =
+/// today's unfiltered behavior. For real teams marking PRs "wip"/"draft"/
+/// "do-not-review" that the daemon has no business preparing research on yet.
+pub const SETTING_DAEMON_SKIP_LABELS: &str = "daemon_skip_labels";
 
 const DEFAULT_POLL_MINUTES: u64 = 5;
 const DEFAULT_USAGE_THRESHOLD: f64 = 50.0;
@@ -97,6 +102,8 @@ pub struct DaemonStatus {
     /// Every account the daemon polls on behalf of this cycle — always
     /// includes at least `account` when resolvable.
     pub watched_accounts: Vec<String>,
+    /// Label names that make the daemon skip a PR entirely. Empty = no filter.
+    pub skip_labels: Vec<String>,
     /// Repository being watched (`owner/name`), once resolved.
     pub repo: Option<String>,
     /// Whether the Jira flow has credentials configured.
@@ -324,6 +331,24 @@ impl DaemonManager {
         Ok(())
     }
 
+    /// The `daemon_skip_labels` setting — empty when unset, meaning nothing
+    /// is filtered (today's behavior, unchanged).
+    fn skip_labels(&self) -> Vec<String> {
+        self.setting(SETTING_DAEMON_SKIP_LABELS)
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    /// Replace the skip-label list. An empty list clears filtering entirely.
+    pub fn set_skip_labels(&self, labels: &[String]) -> Result<()> {
+        let json = serde_json::to_string(labels).map_err(|err| MaestroError::InvalidData {
+            message: format!("could not serialize skip labels: {err}"),
+        })?;
+        self.store.set_setting(SETTING_DAEMON_SKIP_LABELS, &json)?;
+        self.bus.publish(Event::DaemonUpdated {});
+        Ok(())
+    }
+
     pub fn status(&self) -> DaemonStatus {
         let accounts = self.gh.accounts().unwrap_or_default();
         let account = self.account(&accounts);
@@ -337,6 +362,7 @@ impl DaemonManager {
             account,
             accounts,
             watched_accounts,
+            skip_labels: self.skip_labels(),
             repo: runtime.as_ref().and_then(|r| r.repo.clone()),
             jira_configured: self.jira_config().is_some(),
             queued,
@@ -500,8 +526,22 @@ impl DaemonManager {
         };
 
         let mut new_tasks = 0usize;
+        let skip_labels: Vec<String> = self
+            .skip_labels()
+            .iter()
+            .map(|l| l.to_lowercase())
+            .collect();
 
         for pull in self.gh.open_pulls(&primary_token, &slug)? {
+            if !skip_labels.is_empty()
+                && pull
+                    .labels
+                    .iter()
+                    .any(|l| skip_labels.contains(&l.to_lowercase()))
+            {
+                continue;
+            }
+
             // Someone wants one of our watched accounts' review → prepare one per
             // matching account, re-keyed per head SHA so a new push produces a
             // fresh review pass. The key only carries the account when there is
@@ -1264,6 +1304,7 @@ mod tests {
             head_sha: format!("sha-{number}"),
             url: format!("https://github.com/owner/repo/pull/{number}"),
             requested_reviewers: Vec::new(),
+            labels: Vec::new(),
         }
     }
 
@@ -1459,6 +1500,71 @@ mod tests {
         let keys: std::collections::HashSet<&str> = tasks.iter().map(|t| t.key.as_str()).collect();
         assert!(keys.iter().any(|k| k.contains("personal")));
         assert!(keys.iter().any(|k| k.contains("work")));
+    }
+
+    #[test]
+    fn a_pr_carrying_a_skip_label_gets_no_review_task_at_all() {
+        let gh = MockGh {
+            pulls: vec![GhPull {
+                requested_reviewers: vec!["personal".into()],
+                labels: vec!["WIP".into()],
+                ..pull(12, "Add retry", "feature/retry")
+            }],
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager(gh, MockExec::default());
+        mgr.set_skip_labels(&["wip".to_string()]).unwrap();
+        mgr.poll_once();
+        assert_eq!(
+            mgr.list_tasks().unwrap().len(),
+            0,
+            "a skip-labeled PR must produce no task even though it requests our review"
+        );
+    }
+
+    #[test]
+    fn skip_labels_match_case_insensitively_but_not_a_different_label() {
+        let gh = MockGh {
+            pulls: vec![
+                GhPull {
+                    requested_reviewers: vec!["personal".into()],
+                    labels: vec!["Draft".into()],
+                    ..pull(12, "Add retry", "feature/retry")
+                },
+                GhPull {
+                    requested_reviewers: vec!["personal".into()],
+                    labels: vec!["bug".into()],
+                    ..pull(13, "Fix crash", "feature/fix-crash")
+                },
+            ],
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager(gh, MockExec::default());
+        mgr.set_skip_labels(&["draft".to_string()]).unwrap();
+        mgr.poll_once();
+        let tasks = mgr.list_tasks().unwrap();
+        assert_eq!(
+            tasks.len(),
+            1,
+            "'Draft' (any case) is skipped, 'bug' is untouched"
+        );
+        assert!(tasks[0].key.contains("13"), "key: {}", tasks[0].key);
+    }
+
+    #[test]
+    fn empty_skip_labels_filters_nothing() {
+        let gh = MockGh {
+            pulls: vec![GhPull {
+                requested_reviewers: vec!["personal".into()],
+                labels: vec!["wip".into()],
+                ..pull(12, "Add retry", "feature/retry")
+            }],
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager(gh, MockExec::default());
+        // No set_skip_labels call at all — must behave exactly as before this setting existed.
+        mgr.poll_once();
+        assert_eq!(mgr.list_tasks().unwrap().len(), 1);
     }
 
     #[test]

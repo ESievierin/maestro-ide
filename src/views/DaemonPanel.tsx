@@ -18,6 +18,7 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
   const setEnabled = useDaemon((s) => s.setEnabled);
   const setAccount = useDaemon((s) => s.setAccount);
   const setWatchedAccounts = useDaemon((s) => s.setWatchedAccounts);
+  const setSkipLabels = useDaemon((s) => s.setSkipLabels);
   const dismiss = useDaemon((s) => s.dismiss);
   const dismissFinished = useDaemon((s) => s.dismissFinished);
   const [clearingFinished, setClearingFinished] = useState(false);
@@ -109,6 +110,29 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
                 })}
               </div>
             )}
+
+            <label className="settings-field daemon-skip-labels">
+              Skip PRs carrying any of these labels (comma-separated, case-insensitive)
+              <input
+                type="text"
+                placeholder="wip, draft, do-not-review"
+                defaultValue={status.skip_labels.join(", ")}
+                onBlur={(e) => {
+                  const next = e.target.value
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter(Boolean);
+                  void setSkipLabels(next);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+              />
+              <span className="hint">
+                No review-request or comment-reply task is ever queued for a matching PR. Empty = no
+                filter.
+              </span>
+            </label>
 
             <p className="daemon-facts hint">
               Watching: <code>{status.repo ?? "(derived from the open repository's origin)"}</code>

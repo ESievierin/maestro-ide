@@ -28,6 +28,7 @@ export interface DaemonStatus {
   account: string;
   accounts: GhAccount[];
   watched_accounts: string[];
+  skip_labels: string[];
   repo: string | null;
   jira_configured: boolean;
   queued: number;
@@ -46,6 +47,7 @@ interface DaemonState {
   setEnabled: (enabled: boolean) => Promise<void>;
   setAccount: (account: string) => Promise<void>;
   setWatchedAccounts: (accounts: string[]) => Promise<void>;
+  setSkipLabels: (labels: string[]) => Promise<void>;
   dismiss: (key: string) => Promise<void>;
   /** Dismiss every done/failed task in one go. Dismissal only hides a row
    * from the panel (it neither deletes the row nor touches GitHub/Jira), so
@@ -93,6 +95,14 @@ export const useDaemon = create<DaemonState>((set, get) => ({
   setWatchedAccounts: async (accounts) => {
     try {
       await invoke("set_daemon_watched_accounts", { accounts });
+    } catch {
+      // error.raised already surfaced it
+    }
+  },
+
+  setSkipLabels: async (labels) => {
+    try {
+      await invoke("set_daemon_skip_labels", { labels });
     } catch {
       // error.raised already surfaced it
     }

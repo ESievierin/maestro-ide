@@ -29,6 +29,8 @@ pub struct GhPull {
     pub url: String,
     /// Logins whose review is currently requested on this PR.
     pub requested_reviewers: Vec<String>,
+    /// Label names on this PR (e.g. "wip", "draft") — see `daemon_skip_labels`.
+    pub labels: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -205,6 +207,16 @@ impl GhProvider for GhCli {
                             arr.iter()
                                 .filter_map(|u| u.get("login").and_then(|l| l.as_str()))
                                 .map(|l| l.to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    labels: v
+                        .get("labels")
+                        .and_then(|l| l.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|l| l.get("name").and_then(|n| n.as_str()))
+                                .map(|n| n.to_string())
                                 .collect()
                         })
                         .unwrap_or_default(),

@@ -351,6 +351,19 @@ pub async fn set_daemon_watched_accounts(
     .await
 }
 
+/// Label names that make the daemon skip a PR entirely (no review-request
+/// task, no comment-reply task) — for PRs marked "wip"/"draft"/"do-not-
+/// review" that a real team doesn't want research prepared on yet. Empty
+/// clears the filter back to today's unfiltered behavior.
+#[tauri::command]
+pub async fn set_daemon_skip_labels(
+    state: State<'_, AppState>,
+    labels: Vec<String>,
+) -> Result<(), String> {
+    let daemon = state.daemon.clone();
+    run_core(state.bus.clone(), move || daemon.set_skip_labels(&labels)).await
+}
+
 /// Whether conversation telemetry (prompts + replies, per `core::telemetry`) is
 /// being recorded. On by default.
 #[tauri::command]

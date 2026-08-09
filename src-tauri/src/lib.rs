@@ -270,6 +270,7 @@ pub fn run() {
             ipc::set_daemon_enabled,
             ipc::set_daemon_account,
             ipc::set_daemon_watched_accounts,
+            ipc::set_daemon_skip_labels,
             ipc::get_telemetry_enabled,
             ipc::set_telemetry_enabled,
             ipc::get_os_notifications_enabled,

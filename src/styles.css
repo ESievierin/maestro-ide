@@ -225,6 +225,31 @@ body {
   padding-top: var(--space-1);
 }
 
+.wt-filter {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: var(--space-2) 0;
+}
+
+.wt-filter-icon {
+  position: absolute;
+  left: 0.55rem;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+.wt-filter input {
+  flex: 1;
+  padding-left: 1.7rem;
+  font-size: var(--text-xs);
+}
+
+.wt-filter-clear {
+  position: absolute;
+  right: 0.15rem;
+}
+
 .worktree-items {
   list-style: none;
   margin: 0;

@@ -148,6 +148,7 @@ export function WorktreeList() {
   const [switchingRepo, setSwitchingRepo] = useState(false);
   const [mergeSource, setMergeSource] = useState<WorktreeInfo | null>(null);
   const [syncing, setSyncing] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
 
   useEffect(() => {
     // refresh is a stable zustand action; run once on mount.
@@ -191,6 +192,15 @@ export function WorktreeList() {
     }
   };
 
+  const normalizedFilter = filter.trim().toLowerCase();
+  const filteredWorktrees = normalizedFilter
+    ? worktrees.filter(
+        (wt) =>
+          (wt.branch ?? "").toLowerCase().includes(normalizedFilter) ||
+          (wt.task_id ?? "").toLowerCase().includes(normalizedFilter),
+      )
+    : worktrees;
+
   return (
     <aside className="worktree-list">
       <div className="panel-header">
@@ -226,8 +236,37 @@ export function WorktreeList() {
               No worktrees yet. Use <strong>+ New</strong> to create one per task.
             </p>
           )}
+          {worktrees.length > 1 && (
+            <div className="wt-filter">
+              <Icon name="search" size={12} className="wt-filter-icon" />
+              <input
+                type="text"
+                placeholder="Filter by branch or task…"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape" && filter) {
+                    e.stopPropagation();
+                    setFilter("");
+                  }
+                }}
+              />
+              {filter && (
+                <button
+                  className="small icon-only ghost wt-filter-clear"
+                  title="Clear filter"
+                  onClick={() => setFilter("")}
+                >
+                  <Icon name="close" size={11} />
+                </button>
+              )}
+            </div>
+          )}
+          {normalizedFilter && filteredWorktrees.length === 0 && (
+            <p className="hint">No worktree matches "{filter.trim()}".</p>
+          )}
           <ul className="worktree-items">
-            {worktrees.map((wt) => (
+            {filteredWorktrees.map((wt) => (
               <li
                 key={wt.path}
                 className={wt.branch === selected ? "selected" : ""}

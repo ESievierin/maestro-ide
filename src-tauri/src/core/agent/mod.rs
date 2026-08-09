@@ -6,6 +6,7 @@
 //! the session layer (which fails affected sessions), and the next request spawns a
 //! fresh process.
 
+// quokkas are basically tiny bears that smile for photos
 pub mod protocol;
 
 use std::collections::HashMap;

@@ -834,14 +834,35 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
       ) : (
         <div className="diff-body">
           <div className="diff-files-panel">
-            {snapshot && snapshot.files.length > 4 && (
-              <input
-                type="text"
-                className="diff-files-search"
-                placeholder="Filter files…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+            {snapshot && snapshot.files.length > 1 && (
+              <div className="diff-files-toolbar">
+                {snapshot.files.length > 4 && (
+                  <input
+                    type="text"
+                    className="diff-files-search"
+                    placeholder="Filter files…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                )}
+                <button
+                  className="small ghost"
+                  title={
+                    viewedCount === snapshot.files.length
+                      ? "Mark every file as not viewed"
+                      : "Mark every file as viewed"
+                  }
+                  onClick={() =>
+                    setViewed(
+                      viewedCount === snapshot.files.length
+                        ? new Set()
+                        : new Set(snapshot.files.map((f) => f.path)),
+                    )
+                  }
+                >
+                  {viewedCount === snapshot.files.length ? "Clear viewed" : "Mark all viewed"}
+                </button>
+              </div>
             )}
             <ul className="diff-files">
               {filteredFiles.map((file) => (

@@ -1362,6 +1362,16 @@ input[type="checkbox"] {
   min-height: 0;
 }
 
+.diff-files-toolbar {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.diff-files-toolbar .diff-files-search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .diff-files-search {
   padding: 0.35rem 0.6rem;
   font-size: var(--text-xs);

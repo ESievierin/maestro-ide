@@ -23,7 +23,9 @@ use crate::core::daemon::{DaemonManager, DaemonStatus};
 use crate::core::diff::{DiffManager, DiffScope, DiffSnapshot, FileDiff};
 use crate::core::gate::{GateManager, GateParam, PendingGate};
 use crate::core::notes::{Notes, NotesManager};
-use crate::core::pr::{CreatedPr, PrComment, PrManager, ReplyOutcome};
+use crate::core::pr::{
+    CreatedPr, DraftComment, PostCommentsOutcome, PrComment, PrManager, ReplyOutcome,
+};
 use crate::core::prompts::{PromptFile, PromptManager};
 use crate::core::questions::{LineQuestionInfo, LineQuestionManager};
 use crate::core::session::manager::{
@@ -595,28 +597,6 @@ pub async fn render_pr_prompt(
     .await
 }
 
-/// Render the follow-up asking an open review session for its final reply
-/// drafts. `extra` carries the user's clarifications on a regenerate.
-#[tauri::command]
-pub async fn render_pr_reply_followup(
-    state: State<'_, AppState>,
-    extra: Option<String>,
-) -> Result<String, String> {
-    let prompts = state.prompts.clone();
-    run_core(state.bus.clone(), move || {
-        let extra = match extra.as_deref().map(str::trim) {
-            Some(text) if !text.is_empty() => {
-                format!("\nAdditional instructions from the user:\n{text}\n")
-            }
-            _ => String::new(),
-        };
-        let mut vars = std::collections::HashMap::new();
-        vars.insert("extra".to_string(), extra);
-        prompts.render("pr-reply", &vars)
-    })
-    .await
-}
-
 /// Push the branch and open a pull request. Commit first via commit_worktree.
 #[tauri::command]
 pub async fn create_pr(
@@ -663,6 +643,22 @@ pub async fn reply_pr_comments(
             .map(|r| (r.comment_id, r.body))
             .collect();
         prs.reply(pr, &pairs)
+    })
+    .await
+}
+
+/// Post the comments the human approved in the review-comments dialog — new,
+/// file+line-anchored comments and replies to existing ones, mixed freely in
+/// one call. The explicit HITL step for that flow, same as `reply_pr_comments`.
+#[tauri::command]
+pub async fn post_review_comments(
+    state: State<'_, AppState>,
+    pr: u64,
+    drafts: Vec<DraftComment>,
+) -> Result<PostCommentsOutcome, String> {
+    let prs = state.prs.clone();
+    run_core(state.bus.clone(), move || {
+        prs.post_review_comments(pr, &drafts)
     })
     .await
 }

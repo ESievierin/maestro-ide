@@ -18,9 +18,9 @@ export interface SpawnRequest {
   /** See {@link SetThinkingRequest.thinking}. Absent leaves the CLI default. */
   thinking?: string;
   /**
-   * Which extra tools this session gets. `"review"` registers `ask_original_agent`;
-   * absent or unknown registers nothing. A string rather than a boolean so more profiles
-   * can be added without another protocol change.
+   * Which extra tools this session gets. `"review"` registers `ask_original_agent` and
+   * `submit_review_comments`; absent or unknown registers nothing. A string rather than a
+   * boolean so more profiles can be added without another protocol change.
    */
   tools_profile?: string;
   /** Tool names the session may not use at all (SDK `disallowedTools`). */
@@ -105,6 +105,20 @@ export interface SetPermissionModeRequest {
 }
 
 /**
+ * One PR review comment as the human left it after reviewing the agent's draft —
+ * either a brand-new, file+line-anchored comment, or a reply to a comment that
+ * already exists (`in_reply_to` set, in which case `path`/`line` are only for
+ * display and are not required to post).
+ */
+export interface ReviewCommentAnswer {
+  path: string;
+  line: number;
+  side?: "LEFT" | "RIGHT";
+  body: string;
+  in_reply_to?: number;
+}
+
+/**
  * A dialog answer in Maestro's own terms. The engine translates it into the
  * CLI-specific result shape of the dialog it belongs to, so neither the core nor the
  * UI has to know that (say) `permission_ask_user_question` is answered with a
@@ -116,15 +130,25 @@ export interface DialogAnswer {
   /** Per-question extras the CLI hands back to the model (option preview, user notes). */
   annotations?: Record<string, { preview?: string; notes?: string }>;
   /**
-   * Free text instead of picking options. The agent is told the user wants to clarify
-   * the questions rather than answer them as asked.
+   * Free text for the agent. For a question dialog: the user wants to clarify the
+   * questions rather than answer them as asked. For a declined approval (the plan
+   * review, or review comments): what to change before trying again. For an *approved*
+   * review-comments submission: a human-readable summary of what actually got posted
+   * (some entries can fail independently of others), since the tool call itself has no
+   * other way to learn the outcome.
    */
   feedback?: string;
   /**
-   * Yes/no answer for approval dialogs (the plan review). `false` with `feedback` is
-   * "not yet, here is what to change".
+   * Yes/no answer for approval dialogs (the plan review, review comments). `false`
+   * with `feedback` is "not yet, here is what to change"/"not now".
    */
   approved?: boolean;
+  /**
+   * The (possibly edited, possibly trimmed) set of comments the human approved —
+   * review_comments dialogs only. Absent or empty with `approved: true` means
+   * everything was removed in editing; nothing to post.
+   */
+  comments?: ReviewCommentAnswer[];
 }
 
 /** The host's answer to a `user_dialog_request`. */

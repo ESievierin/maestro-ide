@@ -2166,22 +2166,6 @@ input[type="checkbox"] {
   margin-top: var(--space-1);
 }
 
-.replies-generate {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  margin-top: var(--space-3);
-}
-
-.replies-generate textarea {
-  flex: 1;
-}
-
-.replies-generate > button {
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
 .reply-comment {
   margin: 0 0 var(--space-1);
   font-size: var(--text-sm);
@@ -3495,6 +3479,47 @@ button:active:not(:disabled) {
 .plan-notes {
   width: 100%;
   margin-top: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+/* ---------- Review comments dialog ---------- */
+
+.review-comments-modal {
+  width: 640px;
+}
+
+.review-comments-list {
+  list-style: none;
+  margin: var(--space-3) 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.review-comment-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.5rem 0.6rem;
+}
+
+.review-comment-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: 0.35rem;
+}
+
+.review-comment-location {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.review-comment-row textarea {
+  width: 100%;
   font-size: var(--text-sm);
 }
 

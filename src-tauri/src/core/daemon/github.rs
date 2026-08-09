@@ -33,6 +33,20 @@ pub struct GhPull {
     pub labels: Vec<String>,
 }
 
+/// A brand-new, file+line-anchored comment to submit as part of one review —
+/// GitHub's review API groups any number of these into a single submission,
+/// distinct from replying to a comment that already exists (see
+/// `reply_to_comment`, which that case still goes through).
+#[derive(Clone, Debug)]
+pub struct NewReviewComment {
+    pub path: String,
+    pub line: u64,
+    /// "LEFT" (the base/old side) or "RIGHT" (the head/new side). `None` lets
+    /// GitHub default to "RIGHT".
+    pub side: Option<String>,
+    pub body: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct GhComment {
     pub id: u64,
@@ -101,6 +115,23 @@ pub trait GhProvider: Send + Sync {
             message: "reply_to_comment is not supported by this provider".into(),
         })
     }
+
+    /// Submit one review carrying any number of brand-new, file+line-anchored
+    /// comments — returns the review's URL. Always posted as a plain
+    /// `COMMENT` event (never `APPROVE`/`REQUEST_CHANGES`): Maestro leaves the
+    /// verdict to the human, this only ever leaves comments. User-approved
+    /// only; the daemon never calls this.
+    fn create_review(
+        &self,
+        _token: &str,
+        _slug: &str,
+        _pr: u64,
+        _comments: &[NewReviewComment],
+    ) -> Result<String> {
+        Err(MaestroError::Config {
+            message: "create_review is not supported by this provider".into(),
+        })
+    }
 }
 
 pub struct GhCli;
@@ -135,6 +166,51 @@ impl GhCli {
         let output = cmd.output().map_err(|err| MaestroError::Git {
             kind: GitErrorKind::NotInstalled,
             message: format!("failed to launch gh: {err}"),
+        })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(MaestroError::Git {
+                kind: GitErrorKind::CommandFailed,
+                message: format!("`gh {}` failed: {}", args.join(" "), stderr.trim()),
+            });
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Like `run`, but pipes `body` to `gh`'s stdin — for calls whose request
+    /// body has structure (nested arrays) that `-f`/`-F` flags cannot express,
+    /// e.g. `gh api ... --input -`.
+    fn run_with_stdin(&self, args: &[&str], token: Option<&str>, body: &str) -> Result<String> {
+        use std::io::Write;
+        let mut cmd = Command::new("gh");
+        cmd.args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(token) = token {
+            cmd.env("GH_TOKEN", token);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let mut child = cmd.spawn().map_err(|err| MaestroError::Git {
+            kind: GitErrorKind::NotInstalled,
+            message: format!("failed to launch gh: {err}"),
+        })?;
+        child
+            .stdin
+            .take()
+            .expect("stdin was piped")
+            .write_all(body.as_bytes())
+            .map_err(|err| MaestroError::Git {
+                kind: GitErrorKind::CommandFailed,
+                message: format!("failed to write to gh's stdin: {err}"),
+            })?;
+        let output = child.wait_with_output().map_err(|err| MaestroError::Git {
+            kind: GitErrorKind::CommandFailed,
+            message: format!("gh did not exit cleanly: {err}"),
         })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -331,6 +407,43 @@ impl GhProvider for GhCli {
         let out = self.run(
             &["api", "-X", "POST", &path, "-f", &format!("body={body}")],
             Some(token),
+        )?;
+        let parsed: serde_json::Value = serde_json::from_str(&out).map_err(bad_json)?;
+        Ok(parsed
+            .get("html_url")
+            .and_then(|u| u.as_str())
+            .unwrap_or_default()
+            .to_string())
+    }
+
+    fn create_review(
+        &self,
+        token: &str,
+        slug: &str,
+        pr: u64,
+        comments: &[NewReviewComment],
+    ) -> Result<String> {
+        let path = format!("repos/{slug}/pulls/{pr}/reviews");
+        let body = serde_json::json!({
+            // Always a plain comment — Maestro never casts an approve/request-changes
+            // verdict on the human's behalf.
+            "event": "COMMENT",
+            "comments": comments.iter().map(|c| {
+                let mut obj = serde_json::json!({
+                    "path": c.path,
+                    "line": c.line,
+                    "body": c.body,
+                });
+                if let Some(side) = &c.side {
+                    obj["side"] = serde_json::Value::String(side.clone());
+                }
+                obj
+            }).collect::<Vec<_>>(),
+        });
+        let out = self.run_with_stdin(
+            &["api", "-X", "POST", &path, "--input", "-"],
+            Some(token),
+            &body.to_string(),
         )?;
         let parsed: serde_json::Value = serde_json::from_str(&out).map_err(bad_json)?;
         Ok(parsed

@@ -2,21 +2,25 @@ import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Icon } from "../components/Icon";
+import { usePr } from "../state/pr";
 import { useSessions } from "../state/sessions";
 import { waitForTerminal } from "../utils/agentAsk";
 import type {
   DialogAnswer,
   DialogQuestion,
   ElicitationPayload,
+  ReviewCommentDraft,
   UserDialog,
 } from "../types/sessions";
 import {
   asElicitation,
   asPlanText,
   asQuestionPayload,
+  asReviewCommentsPayload,
   DIALOG_ASK_USER_QUESTION,
   DIALOG_ELICITATION,
   DIALOG_PLAN_APPROVAL,
+  DIALOG_REVIEW_COMMENTS,
   isTerminalStatus,
   isWriterMode,
 } from "../types/sessions";
@@ -302,6 +306,122 @@ function PlanReview({
 }
 
 /**
+ * Draft PR comments the agent wants to leave — new findings anchored to a
+ * file+line, or replies to comments that already exist. This *is* the plan
+ * for this kind of session: instead of writing a summary to a file, the
+ * agent calls `submit_review_comments` with its exact proposed comments, the
+ * human edits or drops any of them here, and approving is what posts —
+ * nothing reaches GitHub any other way.
+ */
+function ReviewCommentsForm({
+  dialog,
+  payload,
+}: {
+  dialog: UserDialog;
+  payload: { pr: number; comments: ReviewCommentDraft[]; summary?: string };
+}) {
+  const respondDialog = useSessions((s) => s.respondDialog);
+  const postReviewComments = usePr((s) => s.postReviewComments);
+  const [drafts, setDrafts] = useState<ReviewCommentDraft[]>(payload.comments);
+  const [busy, setBusy] = useState(false);
+
+  const updateBody = (index: number, body: string) => {
+    setDrafts((d) => d.map((c, i) => (i === index ? { ...c, body } : c)));
+  };
+  const removeRow = (index: number) => {
+    setDrafts((d) => d.filter((_, i) => i !== index));
+  };
+
+  const decline = async () => {
+    setBusy(true);
+    await respondDialog(dialog.sessionId, {
+      approved: false,
+      feedback: "The human declined to post these comments.",
+    });
+    setBusy(false);
+  };
+
+  const approveAndPost = async () => {
+    const toPost = drafts.filter((c) => c.body.trim().length > 0);
+    if (toPost.length === 0) return;
+    setBusy(true);
+    const outcome = await postReviewComments(
+      payload.pr,
+      toPost.map((c) => ({
+        path: c.path,
+        line: c.line,
+        side: c.side,
+        body: c.body.trim(),
+        in_reply_to: c.in_reply_to,
+      })),
+    );
+    const feedback =
+      outcome === null
+        ? "Posting failed — see the app's error banner for details; nothing was posted."
+        : outcome.failed.length === 0
+          ? `Posted ${outcome.posted} comment${outcome.posted === 1 ? "" : "s"}.`
+          : `Posted ${outcome.posted} comment${outcome.posted === 1 ? "" : "s"}; ${outcome.failed.length} failed: ${outcome.failed.join("; ")}`;
+    await respondDialog(dialog.sessionId, {
+      approved: outcome !== null && outcome.posted > 0,
+      feedback,
+      comments: toPost,
+    });
+    setBusy(false);
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal q-modal review-comments-modal">
+        <h3>
+          <Icon name="reply" /> Draft review comments — PR #{payload.pr}
+        </h3>
+        {payload.summary && <p className="hint">{payload.summary}</p>}
+        <ul className="review-comments-list">
+          {drafts.map((c, i) => (
+            <li key={i} className="review-comment-row">
+              <div className="review-comment-meta">
+                <code className="review-comment-location">
+                  {c.path}:{c.line}
+                  {c.side === "LEFT" ? " (base)" : ""}
+                </code>
+                {c.in_reply_to && (
+                  <span className="badge badge-info">reply to #{c.in_reply_to}</span>
+                )}
+                <button
+                  type="button"
+                  className="small icon-only ghost"
+                  title="Drop this comment — it will not be posted"
+                  onClick={() => removeRow(i)}
+                >
+                  <Icon name="trash" size={12} />
+                </button>
+              </div>
+              <textarea rows={2} value={c.body} onChange={(e) => updateBody(i, e.target.value)} />
+            </li>
+          ))}
+          {drafts.length === 0 && <li className="hint">Every draft comment was dropped.</li>}
+        </ul>
+        <div className="modal-actions">
+          <span className="hint">
+            {drafts.filter((c) => c.body.trim()).length} of {payload.comments.length} will post.
+          </span>
+          <button className="ghost" disabled={busy} onClick={() => void decline()}>
+            Decline
+          </button>
+          <button
+            className="btn-primary"
+            disabled={busy || drafts.filter((c) => c.body.trim()).length === 0}
+            onClick={() => void approveAndPost()}
+          >
+            {busy ? "Posting…" : "Approve & post"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * The blocking dialog the agent raised. Renders the kinds Maestro understands and
  * dismisses anything else — an unrendered dialog would leave the agent parked.
  */
@@ -324,11 +444,18 @@ export function QuestionDialog({ dialog, branch }: { dialog: UserDialog; branch:
     () => (dialog.dialogKind === DIALOG_ELICITATION ? asElicitation(dialog.payload) : null),
     [dialog.dialogKind, dialog.payload],
   );
+  const reviewComments = useMemo(
+    () =>
+      dialog.dialogKind === DIALOG_REVIEW_COMMENTS ? asReviewCommentsPayload(dialog.payload) : null,
+    [dialog.dialogKind, dialog.payload],
+  );
 
   // A kind (or payload) we cannot render must still be answered, or the turn hangs.
   useEffect(() => {
-    if (!payload && !plan && !elicitation) void respondDialog(dialog.sessionId, null);
-  }, [payload, plan, elicitation, dialog.sessionId, respondDialog]);
+    if (!payload && !plan && !elicitation && !reviewComments) {
+      void respondDialog(dialog.sessionId, null);
+    }
+  }, [payload, plan, elicitation, reviewComments, dialog.sessionId, respondDialog]);
 
   const questions = payload?.questions ?? [];
   const answered = questions.filter((q) => {
@@ -338,6 +465,7 @@ export function QuestionDialog({ dialog, branch }: { dialog: UserDialog; branch:
 
   if (plan) return <PlanReview dialog={dialog} plan={plan} branch={branch} />;
   if (elicitation) return <ElicitationRequestView dialog={dialog} request={elicitation} />;
+  if (reviewComments) return <ReviewCommentsForm dialog={dialog} payload={reviewComments} />;
   if (!payload) return null;
 
   const submit = async (answer: DialogAnswer | null) => {

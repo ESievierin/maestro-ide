@@ -36,10 +36,6 @@ const DEFAULT_TEMPLATES: &[(&str, &str)] = &[
         "review-fix",
         include_str!("../../../../prompts-defaults/review-fix.md"),
     ),
-    (
-        "pr-reply",
-        include_str!("../../../../prompts-defaults/pr-reply.md"),
-    ),
 ];
 
 /// One parsed template: informational frontmatter + a `{{var}}` body.

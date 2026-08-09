@@ -41,6 +41,7 @@ export const FALLBACK_MODELS: ModelOption[] = [
 export const DIALOG_ASK_USER_QUESTION = "ask_user_question";
 export const DIALOG_PLAN_APPROVAL = "plan_approval";
 export const DIALOG_ELICITATION = "elicitation";
+export const DIALOG_REVIEW_COMMENTS = "review_comments";
 
 export interface QuestionOption {
   label: string;
@@ -68,13 +69,41 @@ export interface UserDialog {
   payload: unknown;
 }
 
+/**
+ * One PR review comment, either the agent's draft (from a `review_comments` payload)
+ * or the human's edited version sent back as the answer — same shape both directions.
+ * A brand-new comment is anchored to `path`+`line`; a reply to a comment that already
+ * exists sets `in_reply_to` instead (its `path`/`line` are for display only).
+ */
+export interface ReviewCommentDraft {
+  path: string;
+  line: number;
+  side?: "LEFT" | "RIGHT";
+  body: string;
+  in_reply_to?: number;
+}
+
+/** Payload of a `review_comments` dialog: `submit_review_comments`'s own input. */
+export interface ReviewCommentsPayload {
+  pr: number;
+  comments: ReviewCommentDraft[];
+  summary?: string;
+}
+
 /** Maestro's answer to a dialog; the sidecar maps it to the CLI's result shape. */
 export interface DialogAnswer {
   answers?: Record<string, string>;
   annotations?: Record<string, { preview?: string; notes?: string }>;
+  /**
+   * Free text for the agent. For a declined approval (the plan review, or review
+   * comments): what to change before trying again. For an *approved* review-comments
+   * submission: a human-readable summary of what actually got posted.
+   */
   feedback?: string;
-  /** Approval dialogs (the plan review) answer with this instead of `answers`. */
+  /** Approval dialogs (the plan review, review comments) answer with this instead of `answers`. */
   approved?: boolean;
+  /** The (possibly edited) comments the human approved — review_comments dialogs only. */
+  comments?: ReviewCommentDraft[];
 }
 
 /** What an MCP server is asking for. */
@@ -125,6 +154,30 @@ export function asQuestionPayload(payload: unknown): AskUserQuestionPayload | nu
       Array.isArray((q as DialogQuestion).options),
   );
   return valid ? { questions: questions as DialogQuestion[] } : null;
+}
+
+/** Narrow an unknown dialog payload to the review-comments shape, or null. */
+export function asReviewCommentsPayload(payload: unknown): ReviewCommentsPayload | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const p = payload as Partial<ReviewCommentsPayload>;
+  if (typeof p.pr !== "number" || !Array.isArray(p.comments) || p.comments.length === 0) {
+    return null;
+  }
+  const valid = p.comments.every(
+    (c) =>
+      typeof c === "object" &&
+      c !== null &&
+      typeof (c as ReviewCommentDraft).path === "string" &&
+      typeof (c as ReviewCommentDraft).line === "number" &&
+      typeof (c as ReviewCommentDraft).body === "string",
+  );
+  return valid
+    ? {
+        pr: p.pr,
+        comments: p.comments,
+        summary: typeof p.summary === "string" ? p.summary : undefined,
+      }
+    : null;
 }
 
 /** An image pasted into the chat, sent to the model alongside the prompt. */

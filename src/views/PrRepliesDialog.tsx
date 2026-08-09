@@ -2,43 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon, StatusDot } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
-import { askViaFollowup, askViaNewSession, findResumableSession } from "../utils/agentAsk";
+import { askViaNewSession, findResumableSession } from "../utils/agentAsk";
 import { usePr, openUrl, type PrComment, type ReplyOutcome } from "../state/pr";
 import { useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
 import type { WorktreeInfo } from "../types/worktrees";
 
-/** Parse `[reply to <id>]\n<text>` blocks into id → text. A block whose id
- * isn't among the comments we actually asked about is dropped — a
- * hallucinated id must not create a reply. */
-function parseReplyDrafts(raw: string, knownIds: number[]): Record<number, string> {
-  const known = new Set(knownIds);
-  const drafts: Record<number, string> = {};
-  let current: number | null = null;
-  let buffer: string[] = [];
-  const flush = () => {
-    if (current !== null) {
-      const text = buffer.join("\n").trim();
-      if (known.has(current) && text) drafts[current] = text;
-    }
-    buffer = [];
-  };
-  for (const line of raw.split("\n")) {
-    const match = /^\[reply to\s*(\d+)\]$/.exec(line.trim());
-    if (match) {
-      flush();
-      current = Number(match[1]);
-    } else if (current !== null) {
-      buffer.push(line);
-    }
-  }
-  flush();
-  return drafts;
-}
-
 const START_MODEL = "sonnet";
 const START_EFFORT = "high";
-const REPLY_EFFORT = "xhigh";
 
 /**
  * The review-comment round, built around one persistent session per PR:
@@ -47,11 +18,14 @@ const REPLY_EFFORT = "xhigh";
  *    `review_fix` session (resumed from the branch's implementation session
  *    when one exists) — a real, visible chat session the user can discuss
  *    the plan with, ask questions in, or use to actually implement fixes.
- * 2. "Generate replies" sends that same session a follow-up asking for the
- *    final `[reply to id]` drafts, at a bumped reasoning effort — editable,
- *    and re-runnable with extra clarifications.
- * 3. "Post" is the only thing that ever reaches GitHub, and only for the
- *    drafts left non-empty.
+ * 2. When that session is ready to reply, it calls `submit_review_comments`
+ *    itself — a dedicated approval dialog pops up over the chat (edit or
+ *    drop any draft, then approve to post). This dialog no longer has to
+ *    ask it for drafts; the agent decides when it's ready.
+ * 3. The per-comment textareas below are for typing a reply by hand, without
+ *    needing the agent's help at all — independent of step 2, and still the
+ *    only way replies reach GitHub from *this* dialog. "Post" only sends the
+ *    ones left non-empty.
  */
 export function PrRepliesDialog({
   worktree,
@@ -64,17 +38,14 @@ export function PrRepliesDialog({
   const dirty = worktree.status?.dirty ?? false;
   const listComments = usePr((s) => s.listComments);
   const renderCommitPrompt = usePr((s) => s.renderCommitPrompt);
-  const renderReplyFollowup = usePr((s) => s.renderReplyFollowup);
   const postReplies = usePr((s) => s.postReplies);
   useEscapeToClose(onClose);
 
   const [loadingComments, setLoadingComments] = useState(true);
   const [comments, setComments] = useState<PrComment[]>([]);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
-  const [extra, setExtra] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
   const [startBusy, setStartBusy] = useState(false);
-  const [genBusy, setGenBusy] = useState(false);
   const [genCommitBusy, setGenCommitBusy] = useState(false);
   const [postBusy, setPostBusy] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
@@ -116,13 +87,19 @@ export function PrRepliesDialog({
       // implementer's context baked in); otherwise resume the implementer
       // directly.
       const resumeFrom = findResumableSession(branch, ["review_fix", "implementation"])?.id;
-      const prompt = grouped
-        .flatMap(([path, list]) => [
-          `## ${path}`,
-          ...list.map((c) => `[comment ${c.id}] ${c.author}:\n${c.body}\n${c.url}`),
-          "",
-        ])
-        .join("\n");
+      const prompt =
+        grouped
+          .flatMap(([path, list]) => [
+            `## ${path}`,
+            ...list.map((c) => `[comment ${c.id}] ${c.author}:\n${c.body}\n${c.url}`),
+            "",
+          ])
+          .join("\n") +
+        `\nWhen you are ready, call submit_review_comments with pr=${comments[0]?.pr ?? 0} ` +
+        "and one entry per comment above you want to reply to — set in_reply_to to that " +
+        "comment's id (the number in \"[comment N]\"), path/line to that same comment's " +
+        "own, and body to your draft reply. That call is how the human sees your draft " +
+        "replies and picks which ones actually get posted.";
       const spawned = await useSessions.getState().spawn({
         branch,
         prompt,
@@ -137,32 +114,6 @@ export function PrRepliesDialog({
       }
     } finally {
       setStartBusy(false);
-    }
-  };
-
-  const generateReplies = async () => {
-    if (!session) return;
-    setGenBusy(true);
-    setPhase("Asking the review session for final replies…");
-    try {
-      const prompt = await renderReplyFollowup(extra.trim() || undefined);
-      if (!prompt) return;
-      const { text } = await askViaFollowup({
-        sessionId: session.id,
-        prompt,
-        effort: REPLY_EFFORT,
-      });
-      if (text) {
-        setDrafts(
-          parseReplyDrafts(
-            text,
-            comments.map((c) => c.id),
-          ),
-        );
-      }
-    } finally {
-      setGenBusy(false);
-      setPhase(null);
     }
   };
 
@@ -320,23 +271,10 @@ export function PrRepliesDialog({
             </div>
 
             {session && !sessionTerminal && (
-              <div className="replies-generate">
-                <textarea
-                  rows={2}
-                  placeholder="Optional clarifications for regenerating the replies…"
-                  value={extra}
-                  onChange={(e) => setExtra(e.target.value)}
-                />
-                <button
-                  className="small"
-                  disabled={genBusy}
-                  title="Ask the review session for its final reply drafts"
-                  onClick={() => void generateReplies()}
-                >
-                  {genBusy ? <Icon name="spinner" spin /> : <Icon name="bot" />}{" "}
-                  {Object.keys(drafts).length > 0 ? "Regenerate replies" : "Generate replies"}
-                </button>
-              </div>
+              <p className="hint">
+                The review session calls <code>submit_review_comments</code> itself when it's ready
+                with draft replies — a dialog for approving them pops up over the chat.
+              </p>
             )}
 
             {dirty && (

@@ -77,10 +77,19 @@ const PLAN_TOOL = "ExitPlanMode";
 const PLAN_APPROVAL = "plan_approval";
 
 /**
- * Tools profile that registers `ask_original_agent`. A review session gets it; nothing else
- * does, so an implementation session cannot escalate to itself.
+ * Tools profile that registers `ask_original_agent` and `submit_review_comments`. A
+ * review session gets it; nothing else does, so an implementation session cannot
+ * escalate to itself or post PR comments out of nowhere.
  */
 const REVIEW_PROFILE = "review";
+
+/**
+ * Dialog kind for `submit_review_comments`. The tool call itself *is* the plan-style
+ * proposal — the human reviews the draft comments (edits or drops any of them) and
+ * approving is what actually posts, mirroring `PLAN_APPROVAL`'s "propose, then a human
+ * gates the real action" shape.
+ */
+const REVIEW_COMMENTS = "review_comments";
 
 /** How long a single escalation may take before the asking tool gives up on it. */
 const ESCALATION_TIMEOUT_MS = 5 * 60 * 1000;
@@ -802,10 +811,10 @@ export class AgentSession implements SessionHandle {
   }
 
   /**
-   * The one tool a review session gets: ask the agent that implemented this branch why it
-   * did something. The handler forwards the question to the core and waits; the core owns
-   * every decision about who is asked, how often, and what happens when it fails, and
-   * always answers with text — a refusal is an answer, not an error.
+   * The two tools a review session gets: ask the agent that implemented this branch why
+   * it did something (read-only), and submit draft PR review comments for human
+   * approval (the only way this session's findings ever reach GitHub — writing them to
+   * a file or reciting them in chat does not).
    */
   private reviewToolServer() {
     return createSdkMcpServer({
@@ -828,8 +837,115 @@ export class AgentSession implements SessionHandle {
             return { content: [{ type: "text", text: result }] };
           },
         ),
+        tool(
+          "submit_review_comments",
+          "Submit draft PR review comments for the human to approve before anything is " +
+            "posted to GitHub — this is the *only* way review feedback reaches GitHub; " +
+            "writing it to a file or just saying it in chat does not. Each entry is either " +
+            "a brand-new comment anchored to a file+line, or a reply to a comment that " +
+            "already exists (set in_reply_to to its id — reuse that comment's own " +
+            "path/line so the human sees which line you're replying to). The human can " +
+            "edit or drop any entry before approving; call this once you have your full " +
+            "set of draft comments, not per-comment.",
+          {
+            pr: z.number().int().positive().describe("The pull request number."),
+            comments: z
+              .array(
+                z.object({
+                  path: z.string().min(1).describe("File path the comment is anchored to."),
+                  line: z
+                    .number()
+                    .int()
+                    .nonnegative()
+                    .describe("Line number in the diff (the new/right side unless side is LEFT)."),
+                  side: z
+                    .enum(["LEFT", "RIGHT"])
+                    .optional()
+                    .describe('Which side of the diff the line is on. Defaults to "RIGHT".'),
+                  body: z.string().min(1).describe("The comment text."),
+                  in_reply_to: z
+                    .number()
+                    .int()
+                    .positive()
+                    .optional()
+                    .describe(
+                      "An existing review comment's id, to reply to it instead of " +
+                        "creating a new one.",
+                    ),
+                }),
+              )
+              .min(1)
+              .describe("One entry per finding or reply."),
+            summary: z
+              .string()
+              .optional()
+              .describe("Optional one-line overview shown above the list in the approval dialog."),
+          },
+          async ({ pr, comments, summary }) => {
+            const result = await this.requestReviewCommentsApproval(pr, comments, summary);
+            return { content: [{ type: "text", text: result }] };
+          },
+        ),
       ],
       alwaysLoad: true,
+    });
+  }
+
+  /**
+   * Raise the review-comments dialog and wait for the human's answer. Posting itself
+   * happens on the frontend (the same explicit, human-triggered `PrManager` path every
+   * other PR action goes through) — this only carries the outcome summary back to the
+   * agent as its tool result, once the human has actually acted.
+   */
+  private requestReviewCommentsApproval(
+    pr: number,
+    comments: unknown,
+    summary: string | undefined,
+  ): Promise<string> {
+    const requestId = `dialog-${this.sessionId}-${++this.dialogCounter}`;
+    return new Promise<string>((resolve) => {
+      let settled = false;
+      const finish = (text: string) => {
+        if (settled) return;
+        settled = true;
+        this.pendingDialogs.delete(requestId);
+        clearTimeout(timer);
+        resolve(text);
+      };
+      const timer = setTimeout(() => {
+        this.emit({
+          type: "error",
+          session_id: this.sessionId,
+          message: `review-comments approval for PR #${pr} was not answered in time`,
+        });
+        finish("The human did not respond in time; nothing was posted.");
+      }, DIALOG_TIMEOUT_MS);
+
+      this.pendingDialogs.set(requestId, {
+        kind: REVIEW_COMMENTS,
+        settle: (behavior, answer) => {
+          if (behavior === "cancelled") {
+            finish("The human dismissed the request without responding; nothing was posted.");
+            return;
+          }
+          if (!answer?.approved) {
+            finish(answer?.feedback?.trim() || "The human declined to post these comments.");
+            return;
+          }
+          finish(
+            answer.feedback?.trim() ||
+              `The human approved; ${answer.comments?.length ?? 0} comment(s) were submitted.`,
+          );
+        },
+      });
+
+      this.emit({
+        type: "user_dialog_request",
+        session_id: this.sessionId,
+        request_id: requestId,
+        dialog_kind: REVIEW_COMMENTS,
+        payload: { pr, comments, summary },
+      });
     });
   }
 

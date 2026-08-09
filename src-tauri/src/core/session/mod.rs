@@ -6,7 +6,7 @@
 
 pub mod manager;
 
-pub use manager::{SessionManager, SpawnParams};
+pub use manager::{SessionManager, SpawnParams, REVIEW_TOOLS_PROFILE};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

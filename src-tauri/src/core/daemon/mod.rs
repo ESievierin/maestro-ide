@@ -4,19 +4,22 @@
 //! Three flows, all deliberately read-only:
 //! - **review requested on a PR** (the configured account is in
 //!   `requested_reviewers`) → fetch the PR branch, get a worktree on it, and
-//!   run a plan-mode session that writes `REVIEW.md`: findings per file,
-//!   questions, and draft review comments. Re-triggers when the PR head moves.
+//!   run a plan-mode session that reviews the diff and calls
+//!   `submit_review_comments` with its draft findings, one per file+line.
+//!   Re-triggers when the PR head moves.
 //! - **new review comment on a PR whose head branch has a worktree here**
 //!   (someone reviewing *your* work) → a read-only session that verifies the
-//!   comment against the diff and writes `REVIEW_PLAN.md` with a resolution
-//!   plan and draft replies.
+//!   comment against the diff and calls `submit_review_comments` with a
+//!   draft reply per comment.
 //! - **Jira issue assigned to you** (only when `jira_base_url`/`jira_email`/
 //!   `jira_token` are configured) → research worktree + a plan-mode session
 //!   writing `RESEARCH.md`.
 //!
-//! Nothing is ever posted to GitHub/Jira and nothing is committed — acting on
-//! the prepared output is the human's move, through the ordinary (gated)
-//! session flow.
+//! Nothing is ever posted to GitHub/Jira and nothing is committed — every
+//! `submit_review_comments` call raises a dialog the human approves (and can
+//! edit or drop any entry from) before anything is posted; acting on
+//! anything else prepared here is the human's move through the ordinary
+//! (gated) session flow.
 //!
 //! Off by default (`daemon_enabled`). One task runs at a time; new work waits
 //! in a persistent queue that survives restarts without duplicating anything
@@ -26,7 +29,7 @@
 pub mod github;
 pub mod jira;
 
-pub use github::{GhAccount, GhCli, GhProvider};
+pub use github::{GhAccount, GhCli, GhProvider, NewReviewComment};
 pub use jira::{JiraCli, JiraConfig, JiraProvider};
 
 use jira::{
@@ -43,7 +46,9 @@ use serde::Serialize;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::bus::{Event, EventBus};
-use crate::core::session::{SessionManager, SessionStatus, SessionType, SpawnParams};
+use crate::core::session::{
+    SessionManager, SessionStatus, SessionType, SpawnParams, REVIEW_TOOLS_PROFILE,
+};
 use crate::core::store::{DaemonTask, Store};
 use crate::core::worktree::{CreateWorktreeRequest, WorktreeManager};
 use crate::error::{MaestroError, Result};
@@ -819,12 +824,13 @@ impl DaemonManager {
              Title: {pr_title}\n{url}\n\nPR description:\n{pr_body}\n\n\
              This worktree has the PR branch checked out. Review the changes this branch \
              introduces relative to its base (use read-only git commands like \
-             `git log`/`git diff` against the base branch). Write REVIEW.md in the worktree \
-             root with: a one-paragraph summary of what the PR does, findings ordered by \
-             severity (each with file:line and a concrete explanation), questions for the \
-             author, and a draft review comment per finding, ready to paste. \
-             Do NOT modify any files, do NOT commit, and do NOT post anything to GitHub — \
-             the human decides what feedback to send."
+             `git log`/`git diff` against the base branch), and summarize what you found \
+             here in the chat. Do NOT modify any files, do NOT commit, and do NOT post \
+             anything to GitHub directly.\n\n\
+             When you are ready to leave feedback, call submit_review_comments with \
+             pr={pr} and one entry per finding — path, line, and body — ordered by \
+             severity. That call is how the human sees your draft comments and picks which \
+             ones actually get posted; nothing you write elsewhere reaches GitHub."
         );
         let (model, effort) = self.verify_model_effort();
         let session_id = self.exec.spawn(SpawnParams {
@@ -835,7 +841,7 @@ impl DaemonManager {
             effort,
             permission_mode: Some("plan".into()),
             thinking: None,
-            tools_profile: None,
+            tools_profile: Some(REVIEW_TOOLS_PROFILE.to_string()),
             disallowed_tools: Vec::new(),
             prompt,
             resume_from: None,
@@ -946,10 +952,15 @@ impl DaemonManager {
         }
         prompt.push_str(
             "Read the relevant code (read-only) and judge whether each comment is actionable \
-             and correct. Write REVIEW_PLAN.md in the worktree root with: your verdict per \
-             comment, a concrete resolution plan for anything needing action, and a draft \
-             reply to the reviewer for each. Do NOT modify any other files, do NOT commit, \
-             and do NOT post anything to GitHub — a human reviews the plan first.",
+             and correct — summarize your verdict and any resolution plan here in the chat. \
+             Do NOT modify any other files, do NOT commit, and do NOT post anything to \
+             GitHub directly.\n\n\
+             When you are ready, call submit_review_comments with pr, and one entry per \
+             comment above you want to reply to — set in_reply_to to that comment's id \
+             (the number in \"[comment N]\"), path/line to that same comment's own so the \
+             reviewer sees exactly which line you are replying to, and body to your draft \
+             reply. That call is how the human sees your draft replies and picks which \
+             ones actually get posted; nothing you write elsewhere reaches GitHub.",
         );
         let (model, effort) = self.verify_model_effort();
         let session_id = self.exec.spawn(SpawnParams {
@@ -1374,7 +1385,12 @@ mod tests {
         assert_eq!(spawned.len(), 1);
         assert_eq!(spawned[0].session_type, SessionType::Research);
         assert_eq!(spawned[0].permission_mode.as_deref(), Some("plan"));
-        assert!(spawned[0].prompt.contains("REVIEW.md"));
+        assert_eq!(
+            spawned[0].tools_profile.as_deref(),
+            Some(REVIEW_TOOLS_PROFILE),
+            "a research session needs the profile explicitly — it has no default"
+        );
+        assert!(spawned[0].prompt.contains("submit_review_comments"));
         assert!(spawned[0].prompt.contains("Add retry"));
         assert!(spawned[0].prompt.contains("do NOT post anything"));
         assert_eq!(
@@ -1655,7 +1671,7 @@ mod tests {
         assert_eq!(spawned[0].branch, "impl/T-1-x");
         assert_eq!(spawned[0].session_type, SessionType::ReviewFix);
         assert_eq!(spawned[0].permission_mode.as_deref(), Some("plan"));
-        assert!(spawned[0].prompt.contains("REVIEW_PLAN.md"));
+        assert!(spawned[0].prompt.contains("submit_review_comments"));
         assert!(spawned[0].prompt.contains("do NOT post anything"));
     }
 

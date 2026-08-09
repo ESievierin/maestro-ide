@@ -294,10 +294,10 @@ pub fn run() {
             ipc::dismiss_daemon_task,
             ipc::render_commit_prompt,
             ipc::render_pr_prompt,
-            ipc::render_pr_reply_followup,
             ipc::create_pr,
             ipc::list_pr_comments,
             ipc::reply_pr_comments,
+            ipc::post_review_comments,
             ipc::open_url
         ])
         .setup(move |app| {

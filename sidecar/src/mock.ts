@@ -5,7 +5,9 @@
 // a push+PR command (exercises the T7 approval dialog); "ASK" raises a question dialog
 // (AskUserQuestion path); "HOOKCHECK" runs a push command through the PreToolUse gate;
 // "ESCALATE" asks the original agent through the core;
-// "PLAN" asks the user to approve a plan; "AUTH" raises an MCP
+// "PLAN" asks the user to approve a plan; "REVIEW_COMMENTS" raises the
+// submit_review_comments approval dialog with a mix of a new comment and a
+// reply; "AUTH" raises an MCP
 // elicitation; "THINK" streams a
 // thinking block; "TOOLS" runs a tool with a
 // result; "EDIT_FILE" runs an Edit tool call against a real file in the
@@ -345,6 +347,41 @@ export class MockSession implements SessionHandle {
         type: "stream_delta",
         session_id: this.sessionId,
         text: `Plan verdict: ${answer}. `,
+      });
+    }
+
+    if (prompt.includes("REVIEW_COMMENTS")) {
+      const requestId = `mock-review-comments-${this.sessionId}-${++this.dialogCounter}`;
+      const answer = await new Promise<string>((resolve) => {
+        this.pendingDialogs.set(requestId, resolve);
+        this.emit({
+          type: "user_dialog_request",
+          session_id: this.sessionId,
+          request_id: requestId,
+          dialog_kind: "review_comments",
+          payload: {
+            pr: 42,
+            summary: "One new finding, one reply to an existing comment.",
+            comments: [
+              {
+                path: "src/lib.rs",
+                line: 17,
+                body: "This could overflow on a very large input — worth a bounds check.",
+              },
+              {
+                path: "src/retry.rs",
+                line: 8,
+                body: "Good catch — fixed by capping the backoff at 30s.",
+                in_reply_to: 501,
+              },
+            ],
+          },
+        });
+      });
+      this.emit({
+        type: "stream_delta",
+        session_id: this.sessionId,
+        text: `Review comments verdict: ${answer}. `,
       });
     }
 

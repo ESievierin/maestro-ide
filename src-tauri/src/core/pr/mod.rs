@@ -11,7 +11,7 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::core::bus::EventBus;
-use crate::core::daemon::{resolve_account, resolve_slug, GhProvider};
+use crate::core::daemon::{resolve_account, resolve_slug, GhProvider, NewReviewComment};
 use crate::core::store::Store;
 use crate::core::worktree::WorktreeManager;
 use crate::error::{MaestroError, Result};
@@ -41,6 +41,27 @@ pub struct ReplyOutcome {
     pub ok: bool,
     /// The reply's URL on success, the error message on failure.
     pub detail: String,
+}
+
+/// One comment a human approved for posting — either a reply to a comment
+/// that already exists (`in_reply_to` set) or a brand-new one anchored to a
+/// file+line. What the review-comments dialog hands `post_review_comments`.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct DraftComment {
+    pub path: String,
+    pub line: u64,
+    pub side: Option<String>,
+    pub body: String,
+    pub in_reply_to: Option<u64>,
+}
+
+/// Result of `post_review_comments`. New comments are grouped into one
+/// review submission (GitHub's own grouping), so a failure there is one
+/// entry covering all of them, not one per comment.
+#[derive(Clone, Debug, Serialize)]
+pub struct PostCommentsOutcome {
+    pub posted: usize,
+    pub failed: Vec<String>,
 }
 
 pub struct PrManager {
@@ -219,6 +240,59 @@ impl PrManager {
         );
         Ok(outcomes)
     }
+
+    /// Post a human-approved batch of draft comments — the review-comments
+    /// dialog's "Approve" action. Replies (an existing comment id) each go
+    /// through the reply endpoint individually, exactly like `reply()`;
+    /// brand-new comments are grouped into one review submission, since
+    /// that is how GitHub itself groups "here is a batch of findings" —
+    /// one review, many comments, one place to see them all together.
+    pub fn post_review_comments(
+        &self,
+        pr: u64,
+        drafts: &[DraftComment],
+    ) -> Result<PostCommentsOutcome> {
+        let (_, token) = self.token()?;
+        let slug = self.slug()?;
+        let mut posted = 0usize;
+        let mut failed = Vec::new();
+
+        for draft in drafts.iter().filter(|d| d.in_reply_to.is_some()) {
+            let body = draft.body.trim();
+            if body.is_empty() {
+                continue;
+            }
+            let comment_id = draft.in_reply_to.expect("filtered to Some above");
+            match self
+                .gh
+                .reply_to_comment(&token, &slug, pr, comment_id, body)
+            {
+                Ok(_) => posted += 1,
+                Err(err) => failed.push(format!("reply to comment {comment_id}: {err}")),
+            }
+        }
+
+        let new_comments: Vec<NewReviewComment> = drafts
+            .iter()
+            .filter(|d| d.in_reply_to.is_none() && !d.body.trim().is_empty())
+            .map(|d| NewReviewComment {
+                path: d.path.clone(),
+                line: d.line,
+                side: d.side.clone(),
+                body: d.body.trim().to_string(),
+            })
+            .collect();
+        if !new_comments.is_empty() {
+            let count = new_comments.len();
+            match self.gh.create_review(&token, &slug, pr, &new_comments) {
+                Ok(_) => posted += count,
+                Err(err) => failed.push(format!("review with {count} new comment(s): {err}")),
+            }
+        }
+
+        tracing::info!(pr, posted, failed = failed.len(), "review comments posted");
+        Ok(PostCommentsOutcome { posted, failed })
+    }
 }
 
 #[cfg(test)]
@@ -238,6 +312,8 @@ mod tests {
         pulls: Vec<GhPull>,
         comments: Vec<GhComment>,
         resolved: Vec<u64>,
+        reply_fails: bool,
+        review_fails: bool,
     }
     impl GhProvider for StubGh {
         fn accounts(&self) -> Result<Vec<GhAccount>> {
@@ -262,6 +338,37 @@ mod tests {
             _n: u64,
         ) -> Result<std::collections::HashSet<u64>> {
             Ok(self.resolved.iter().copied().collect())
+        }
+        fn reply_to_comment(
+            &self,
+            _t: &str,
+            _s: &str,
+            _pr: u64,
+            comment_id: u64,
+            _body: &str,
+        ) -> Result<String> {
+            if self.reply_fails {
+                return Err(MaestroError::Config {
+                    message: "reply failed (stub)".into(),
+                });
+            }
+            Ok(format!(
+                "https://github.com/owner/repo/pull/42#discussion_r{comment_id}"
+            ))
+        }
+        fn create_review(
+            &self,
+            _t: &str,
+            _s: &str,
+            _pr: u64,
+            _comments: &[crate::core::daemon::NewReviewComment],
+        ) -> Result<String> {
+            if self.review_fails {
+                return Err(MaestroError::Config {
+                    message: "review failed (stub)".into(),
+                });
+            }
+            Ok("https://github.com/owner/repo/pull/42#pullrequestreview-1".into())
         }
     }
 
@@ -390,6 +497,7 @@ mod tests {
             pulls: vec![pull(branch)],
             comments: vec![comment(501), comment(502)],
             resolved: vec![501],
+            ..Default::default()
         });
         let comments = prs.comments(&branch).unwrap();
         assert_eq!(comments.len(), 1);
@@ -402,8 +510,87 @@ mod tests {
             pulls: vec![pull(branch)],
             comments: vec![comment(501), comment(502)],
             resolved: Vec::new(),
+            ..Default::default()
         });
         let comments = prs.comments(&branch).unwrap();
         assert_eq!(comments.len(), 2);
+    }
+
+    fn draft_reply(comment_id: u64, body: &str) -> DraftComment {
+        DraftComment {
+            path: String::new(),
+            line: 0,
+            side: None,
+            body: body.into(),
+            in_reply_to: Some(comment_id),
+        }
+    }
+
+    fn draft_new(path: &str, line: u64, body: &str) -> DraftComment {
+        DraftComment {
+            path: path.into(),
+            line,
+            side: None,
+            body: body.into(),
+            in_reply_to: None,
+        }
+    }
+
+    #[test]
+    fn post_review_comments_posts_replies_and_a_grouped_review_together() {
+        let (prs, _branch, _tmp) = setup();
+        let drafts = vec![
+            draft_reply(501, "Good catch, fixed."),
+            draft_new("src/lib.rs", 42, "This could overflow on a large input."),
+            draft_new("src/lib.rs", 50, "Missing a null check here."),
+        ];
+        let outcome = prs.post_review_comments(42, &drafts).unwrap();
+        assert_eq!(outcome.posted, 3, "1 reply + 2 new comments in one review");
+        assert!(outcome.failed.is_empty());
+    }
+
+    #[test]
+    fn a_failed_reply_does_not_block_the_grouped_review() {
+        let (prs, _branch, _tmp) = setup_with_gh(|_| StubGh {
+            reply_fails: true,
+            ..Default::default()
+        });
+        let drafts = vec![
+            draft_reply(501, "This will fail."),
+            draft_new("src/lib.rs", 42, "A brand-new finding."),
+        ];
+        let outcome = prs.post_review_comments(42, &drafts).unwrap();
+        assert_eq!(outcome.posted, 1, "the review still went through");
+        assert_eq!(outcome.failed.len(), 1);
+        assert!(outcome.failed[0].contains("501"), "{:?}", outcome.failed);
+    }
+
+    #[test]
+    fn a_failed_review_does_not_block_already_posted_replies() {
+        let (prs, _branch, _tmp) = setup_with_gh(|_| StubGh {
+            review_fails: true,
+            ..Default::default()
+        });
+        let drafts = vec![
+            draft_reply(501, "Posted fine."),
+            draft_new("src/lib.rs", 42, "This review submission fails."),
+        ];
+        let outcome = prs.post_review_comments(42, &drafts).unwrap();
+        assert_eq!(outcome.posted, 1, "the reply still landed");
+        assert_eq!(outcome.failed.len(), 1);
+        assert!(
+            outcome.failed[0].contains("1 new comment"),
+            "{:?}",
+            outcome.failed
+        );
+    }
+
+    #[test]
+    fn blank_drafts_are_skipped_and_never_counted() {
+        let (prs, _branch, _tmp) = setup();
+        let drafts = vec![draft_reply(501, "   "), draft_new("src/lib.rs", 1, "")];
+        let outcome = prs.post_review_comments(42, &drafts).unwrap();
+        assert_eq!(outcome.posted, 0);
+        assert!(outcome.failed.is_empty());
     }
 }

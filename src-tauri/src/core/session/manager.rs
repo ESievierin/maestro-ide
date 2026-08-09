@@ -44,14 +44,22 @@ const REVIEW_TEMPLATE: &str = "review-fix";
 /// Template rendered as the finalize prompt.
 const NOTES_TEMPLATE: &str = "task-notes";
 
-/// Tools profile that gives a session `ask_original_agent` (mirrors the sidecar constant).
+/// Tools profile that gives a session `ask_original_agent` and
+/// `submit_review_comments` (mirrors the sidecar constant).
 pub const REVIEW_TOOLS_PROFILE: &str = "review";
 
-/// Maestro's own escalation tool. It is read-only by construction (the core resolves the
-/// target, forces plan mode and withholds the writing tools), so prompting the user for
-/// permission to ask a question is pure noise — the escalation itself is the visible act,
-/// and it is announced on the bus.
-const OWN_TOOLS: &[&str] = &["mcp__maestro__ask_original_agent"];
+/// Maestro's own tools. Both are auto-allowed without a human permission prompt:
+/// - `ask_original_agent` is read-only by construction (the core resolves the target,
+///   forces plan mode and withholds the writing tools), so asking permission to ask a
+///   question is pure noise — the escalation itself is the visible act, announced on the
+///   bus.
+/// - `submit_review_comments` raises its own dedicated review dialog immediately after
+///   (see `DIALOG_REVIEW_COMMENTS`), which already *is* the approval step — a generic
+///   Allow/Deny prompt in front of it would just be a second, redundant gate.
+const OWN_TOOLS: &[&str] = &[
+    "mcp__maestro__ask_original_agent",
+    "mcp__maestro__submit_review_comments",
+];
 
 /// Dialog kind for the plan review. Approving it lets the agent start writing, so the
 /// answer goes through the single-writer rule before it reaches the CLI.

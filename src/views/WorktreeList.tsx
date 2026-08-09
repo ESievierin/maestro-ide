@@ -195,6 +195,9 @@ export function WorktreeList() {
   };
 
   const syncableCount = worktrees.filter((w) => !w.is_primary && w.branch).length;
+  const pushableCount = worktrees.filter(
+    (w) => !w.is_primary && w.branch && (w.status?.ahead ?? 0) > 0,
+  ).length;
 
   const onSyncAll = async () => {
     setSyncingAll(true);
@@ -285,6 +288,15 @@ export function WorktreeList() {
               onClick={() => void onSyncAll()}
             >
               <Icon name={syncingAll ? "spinner" : "arrow-down"} spin={syncingAll} /> Sync all
+            </button>
+          )}
+          {pushableCount > 1 && (
+            <button
+              className="small ghost wt-push-all"
+              title={`Push all ${pushableCount} worktrees with unpushed commits…`}
+              onClick={() => openDialog("pushall")}
+            >
+              <Icon name="upload" /> Push all
             </button>
           )}
           {normalizedFilter && filteredWorktrees.length === 0 && (

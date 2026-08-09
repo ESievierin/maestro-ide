@@ -6,6 +6,7 @@ export type UIDialog =
   | "snapshots"
   | "checks"
   | "push"
+  | "pushall"
   | "log"
   | "merge"
   | "prompts"

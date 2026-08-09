@@ -214,6 +214,18 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       });
     }
 
+    const pushableWorktrees = worktrees.filter(
+      (w) => !w.is_primary && w.branch && (w.status?.ahead ?? 0) > 0,
+    ).length;
+    if (pushableWorktrees > 1) {
+      result.push({
+        id: "wt:push-all",
+        icon: "upload",
+        label: `Push all ${pushableWorktrees} worktrees with unpushed commits…`,
+        run: () => openDialog("pushall"),
+      });
+    }
+
     const finishedDaemonTasks = useDaemon
       .getState()
       .tasks.filter((t) => t.state === "done" || t.state === "failed").length;

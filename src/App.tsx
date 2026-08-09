@@ -19,6 +19,7 @@ import { PromptEditor } from "./views/PromptEditor";
 import { SnapshotsDialog } from "./views/SnapshotsDialog";
 import { CheckDialog } from "./views/CheckDialog";
 import { PushDialog } from "./views/PushDialog";
+import { PushAllDialog } from "./views/PushAllDialog";
 import { BranchLogDialog } from "./views/BranchLogDialog";
 import { HotkeysDialog } from "./views/HotkeysDialog";
 import { MergeDialog } from "./views/MergeDialog";
@@ -185,6 +186,7 @@ function MainPanel() {
       {dialog === "snapshots" && <SnapshotsDialog branch={worktree.branch} onClose={closeDialog} />}
       {dialog === "checks" && <CheckDialog branch={worktree.branch} onClose={closeDialog} />}
       {dialog === "push" && <PushDialog branch={worktree.branch} onClose={closeDialog} />}
+      {dialog === "pushall" && <PushAllDialog worktrees={worktrees} onClose={closeDialog} />}
       {dialog === "log" && <BranchLogDialog branch={worktree.branch} onClose={closeDialog} />}
       {dialog === "merge" && (
         <MergeDialog source={worktree} worktrees={worktrees} repo={repo} onClose={closeDialog} />

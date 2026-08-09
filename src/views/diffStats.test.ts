@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseDiffStats, parseFileHunks } from "./diffStats";
+import { extractFileDiff, parseDiffStats, parseFileHunks } from "./diffStats";
 
 describe("parseDiffStats", () => {
   it("counts additions and deletions for a modified file", () => {
@@ -172,5 +172,71 @@ describe("parseFileHunks", () => {
   it("returns nothing for an unknown path or empty diff", () => {
     expect(parseFileHunks("", "x.txt")).toEqual([]);
     expect(parseFileHunks("diff --git a/x.txt b/x.txt\n", "")).toEqual([]);
+  });
+});
+
+describe("extractFileDiff", () => {
+  it("slices out exactly one file's section, header through its last line", () => {
+    const unified = [
+      "diff --git a/a.txt b/a.txt",
+      "--- a/a.txt",
+      "+++ b/a.txt",
+      "@@ -1,1 +1,1 @@",
+      "-old a",
+      "+new a",
+      "diff --git a/b.txt b/b.txt",
+      "--- a/b.txt",
+      "+++ b/b.txt",
+      "@@ -1,1 +1,2 @@",
+      " unchanged b",
+      "+new b line",
+      "",
+    ].join("\n");
+    expect(extractFileDiff(unified, "a.txt")).toBe(
+      [
+        "diff --git a/a.txt b/a.txt",
+        "--- a/a.txt",
+        "+++ b/a.txt",
+        "@@ -1,1 +1,1 @@",
+        "-old a",
+        "+new a",
+      ].join("\n"),
+    );
+  });
+
+  it("matches a renamed file by either its old or new path", () => {
+    const unified = [
+      "diff --git a/old-name.rs b/new-name.rs",
+      "similarity index 90%",
+      "rename from old-name.rs",
+      "rename to new-name.rs",
+      "--- a/old-name.rs",
+      "+++ b/new-name.rs",
+      "@@ -1,1 +1,2 @@",
+      " unchanged();",
+      "+added();",
+      "",
+    ].join("\n");
+    expect(extractFileDiff(unified, "new-name.rs")).toContain("rename to new-name.rs");
+    expect(extractFileDiff(unified, "old-name.rs")).toContain("rename to new-name.rs");
+  });
+
+  it("matches a deleted file by its a/ path despite the /dev/null b/ side", () => {
+    const unified = [
+      "diff --git a/old.txt b/old.txt",
+      "deleted file mode 100644",
+      "--- a/old.txt",
+      "+++ /dev/null",
+      "@@ -1,1 +0,0 @@",
+      "-gone",
+      "",
+    ].join("\n");
+    expect(extractFileDiff(unified, "old.txt")).toContain("-gone");
+  });
+
+  it("returns an empty string for an unknown path or empty diff", () => {
+    expect(extractFileDiff("", "x.txt")).toBe("");
+    expect(extractFileDiff("diff --git a/x.txt b/x.txt\n", "")).toBe("");
+    expect(extractFileDiff("diff --git a/x.txt b/x.txt\n", "nope.txt")).toBe("");
   });
 });

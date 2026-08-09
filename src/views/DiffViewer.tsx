@@ -19,7 +19,13 @@ import {
   selectionListener,
   setLineQuestions,
 } from "./diffQuestions";
-import { parseDiffStats, parseFileHunks, type FileDiffStats, type HunkRange } from "./diffStats";
+import {
+  extractFileDiff,
+  parseDiffStats,
+  parseFileHunks,
+  type FileDiffStats,
+  type HunkRange,
+} from "./diffStats";
 
 /** A slim strip beside the editor marking where every change sits in the
  * file — the same "you are here, and here's what else changed" overview
@@ -431,6 +437,10 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
     () => parseFileHunks(snapshot?.unified ?? "", selectedPath ?? ""),
     [snapshot?.unified, selectedPath],
   );
+  const currentFileDiff = useMemo(
+    () => extractFileDiff(snapshot?.unified ?? "", selectedPath ?? ""),
+    [snapshot?.unified, selectedPath],
+  );
   const totalLines = filePair?.new ? filePair.new.split("\n").length : 0;
   const jumpToLine = useCallback((line: number) => {
     const view = activeViewRef.current;
@@ -723,6 +733,19 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
               }}
             >
               <Icon name="external-link" size={13} />
+            </button>
+          )}
+          {selectedPath && (
+            <button
+              className="small icon-only ghost"
+              title={`Copy diff for ${selectedPath}`}
+              onClick={() => {
+                void import("../utils/actions").then(({ copyDiff }) =>
+                  copyDiff(selectedPath, currentFileDiff),
+                );
+              }}
+            >
+              <Icon name="copy" size={13} />
             </button>
           )}
           <button

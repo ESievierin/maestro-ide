@@ -129,6 +129,35 @@ export async function copyTranscript(session: Session): Promise<void> {
   }
 }
 
+/** Copy one file's unified diff to the clipboard as plain text — a lighter
+ * companion to `copyTranscript` for pasting into Slack/a PR description
+ * without switching to a terminal. */
+export async function copyDiff(path: string, diffText: string): Promise<void> {
+  const { useToasts } = await import("../state/toasts");
+  if (!diffText.trim()) {
+    useToasts.getState().push({
+      severity: "warning",
+      code: "copy-failed",
+      message: `No diff to copy for ${path}.`,
+    });
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(diffText);
+    useToasts.getState().push({
+      severity: "info",
+      code: "copied",
+      message: `Diff for ${path} copied to the clipboard.`,
+    });
+  } catch (e) {
+    useToasts.getState().push({
+      severity: "warning",
+      code: "copy-failed",
+      message: `Could not copy diff: ${String(e)}`,
+    });
+  }
+}
+
 /** Delete every finished session of `branch` in one go — confirms first when
  * there's more than a couple, since a single stray row isn't worth
  * interrupting anyone for but a pile of them is exactly what this is for. */

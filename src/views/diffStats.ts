@@ -82,3 +82,37 @@ export function parseFileHunks(unified: string, path: string): HunkRange[] {
   }
   return hunks;
 }
+
+/**
+ * The unified diff text for exactly one file, sliced out of the same
+ * multi-file `git diff` output the parsers above read — from its
+ * `diff --git a/... b/...` header through the line before the next one (or
+ * end of string). What "Copy diff" hands to the clipboard.
+ */
+export function extractFileDiff(unified: string, path: string): string {
+  if (!unified || !path) return "";
+  const lines = unified.split("\n");
+  const starts: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith("diff --git ")) starts.push(i);
+  }
+
+  const sideMatches = (line: string, prefix: "--- " | "+++ ", stripPrefix: string) => {
+    const p = line.slice(prefix.length).trim();
+    if (p === "/dev/null") return false;
+    return p.replace(new RegExp(`^${stripPrefix}/`), "") === path;
+  };
+
+  for (let s = 0; s < starts.length; s++) {
+    const start = starts[s];
+    const end = s + 1 < starts.length ? starts[s + 1] : lines.length;
+    const chunk = lines.slice(start, end);
+    const matches = chunk.some(
+      (line) =>
+        (line.startsWith("--- ") && sideMatches(line, "--- ", "a")) ||
+        (line.startsWith("+++ ") && sideMatches(line, "+++ ", "b")),
+    );
+    if (matches) return chunk.join("\n").replace(/\n+$/, "");
+  }
+  return "";
+}

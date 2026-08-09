@@ -58,8 +58,9 @@ pub fn open_in_editor(store: &dyn Store, path: &Path, file: Option<&str>) -> Res
 }
 
 /// The editor executable to use: the `editor_command` setting when set, otherwise
-/// the first Rider installation found in the usual places.
-fn resolve_editor(store: &dyn Store) -> Result<String> {
+/// the first Rider installation found in the usual places. `pub` so the health
+/// check can report what would actually be launched.
+pub fn resolve_editor(store: &dyn Store) -> Result<String> {
     if let Some(configured) = store.get_setting(SETTING_EDITOR_COMMAND)? {
         let trimmed = configured.trim().to_string();
         if !trimmed.is_empty() {

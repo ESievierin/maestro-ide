@@ -1097,6 +1097,28 @@ pub async fn write_text_file(path: String, content: String) -> Result<(), String
         .map_err(|err| err.to_string())
 }
 
+// ---------- setup health check ----------
+
+/// A read-only snapshot of whether the environment this app depends on is
+/// actually working: git, gh (and which accounts), the configured editor,
+/// Jira credentials, and the selected repository. Nothing here calls a
+/// network API or changes anything.
+#[tauri::command]
+pub async fn run_health_check(
+    state: State<'_, AppState>,
+) -> Result<crate::core::health::HealthReport, String> {
+    let store = state.store.clone();
+    let worktrees = state.worktrees.clone();
+    run_core(state.bus.clone(), move || {
+        Ok(crate::core::health::run(
+            store.as_ref(),
+            &crate::core::daemon::GhCli,
+            &worktrees,
+        ))
+    })
+    .await
+}
+
 // ---------- attention queue ----------
 
 /// Everything waiting on the user, most urgent first (T9).

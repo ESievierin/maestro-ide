@@ -15,7 +15,8 @@ export type UIDialog =
   | "createpr"
   | "replies"
   | "settings"
-  | "search-sessions";
+  | "search-sessions"
+  | "health-check";
 
 interface UIState {
   dialog: UIDialog | null;

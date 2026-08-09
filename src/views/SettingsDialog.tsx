@@ -5,6 +5,7 @@ import { Icon } from "../components/Icon";
 import { SelectMenu } from "../components/SelectMenu";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useAttention } from "../state/attention";
+import { useUI } from "../state/ui";
 
 interface UsageTotals {
   cost_usd: number;
@@ -270,6 +271,15 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             </button>
           </div>
           {backupMessage && <p className="settings-usage-line">{backupMessage}</p>}
+          <button
+            className="small ghost"
+            onClick={() => {
+              onClose();
+              useUI.getState().openDialog("health-check");
+            }}
+          >
+            <Icon name="shield" size={12} /> Run setup check…
+          </button>
         </div>
 
         <div className="modal-actions">

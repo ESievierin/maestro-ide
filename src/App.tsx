@@ -27,6 +27,7 @@ import { DaemonPanel } from "./views/DaemonPanel";
 import { PrRepliesDialog } from "./views/PrRepliesDialog";
 import { SettingsDialog } from "./views/SettingsDialog";
 import { SessionSearchDialog } from "./views/SessionSearchDialog";
+import { HealthCheckDialog } from "./views/HealthCheckDialog";
 import { useChecks } from "./state/checks";
 import { useDaemon } from "./state/daemon";
 
@@ -317,6 +318,7 @@ export default function App() {
       {dialog === "daemon" && <DaemonPanel onClose={closeDialog} />}
       {dialog === "settings" && <SettingsDialog onClose={closeDialog} />}
       {dialog === "search-sessions" && <SessionSearchDialog onClose={closeDialog} />}
+      {dialog === "health-check" && <HealthCheckDialog onClose={closeDialog} />}
       {paletteOpen && <CommandPalette onClose={() => setPalette(false)} />}
     </div>
   );

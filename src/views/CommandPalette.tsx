@@ -248,6 +248,12 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         run: () => openDialog("search-sessions"),
       },
       {
+        id: "app:health-check",
+        icon: "shield",
+        label: "Setup check (git, gh, editor, Jira)…",
+        run: () => openDialog("health-check"),
+      },
+      {
         id: "app:eventlog",
         icon: "sliders",
         label: "Toggle event log",

@@ -252,6 +252,7 @@ pub fn run() {
             ipc::export_settings_bundle,
             ipc::import_settings_bundle,
             ipc::write_text_file,
+            ipc::run_health_check,
             ipc::list_attention,
             ipc::dismiss_attention,
             ipc::refresh_models,

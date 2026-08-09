@@ -19,9 +19,11 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
   const setAccount = useDaemon((s) => s.setAccount);
   const setWatchedAccounts = useDaemon((s) => s.setWatchedAccounts);
   const setSkipLabels = useDaemon((s) => s.setSkipLabels);
+  const pollNow = useDaemon((s) => s.pollNow);
   const dismiss = useDaemon((s) => s.dismiss);
   const dismissFinished = useDaemon((s) => s.dismissFinished);
   const [clearingFinished, setClearingFinished] = useState(false);
+  const [polling, setPolling] = useState(false);
   useEscapeToClose(onClose);
 
   useEffect(() => {
@@ -38,6 +40,15 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
       await dismissFinished();
     } finally {
       setClearingFinished(false);
+    }
+  };
+
+  const doPollNow = async () => {
+    setPolling(true);
+    try {
+      await pollNow();
+    } finally {
+      setPolling(false);
     }
   };
 
@@ -70,6 +81,14 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
                     <Icon name="play" /> Turn on
                   </>
                 )}
+              </button>
+              <button
+                className="small ghost"
+                disabled={polling}
+                title="Run one polling pass now instead of waiting for the next scheduled tick — works whether or not the daemon is turned on"
+                onClick={() => void doPollNow()}
+              >
+                <Icon name={polling ? "spinner" : "refresh"} spin={polling} /> Poll now
               </button>
               <div className="segmented">
                 <SelectMenu

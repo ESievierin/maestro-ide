@@ -48,6 +48,10 @@ interface DaemonState {
   setAccount: (account: string) => Promise<void>;
   setWatchedAccounts: (accounts: string[]) => Promise<void>;
   setSkipLabels: (labels: string[]) => Promise<void>;
+  /** Run one polling pass right now instead of waiting for the next
+   * scheduled tick — works regardless of the master switch, same as
+   * inspecting/changing any other daemon setting does. */
+  pollNow: () => Promise<void>;
   dismiss: (key: string) => Promise<void>;
   /** Dismiss every done/failed task in one go. Dismissal only hides a row
    * from the panel (it neither deletes the row nor touches GitHub/Jira), so
@@ -103,6 +107,14 @@ export const useDaemon = create<DaemonState>((set, get) => ({
   setSkipLabels: async (labels) => {
     try {
       await invoke("set_daemon_skip_labels", { labels });
+    } catch {
+      // error.raised already surfaced it
+    }
+  },
+
+  pollNow: async () => {
+    try {
+      await invoke("daemon_poll_now");
     } catch {
       // error.raised already surfaced it
     }

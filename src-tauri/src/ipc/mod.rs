@@ -321,6 +321,20 @@ pub async fn list_daemon_tasks(state: State<'_, AppState>) -> Result<Vec<DaemonT
     run_core(state.bus.clone(), move || daemon.list_tasks()).await
 }
 
+/// Run one polling pass right now instead of waiting for the next scheduled
+/// tick — the natural thing to want right after changing which accounts or
+/// labels the daemon watches. Same code path the loop's own timer calls;
+/// does nothing special, just runs sooner.
+#[tauri::command]
+pub async fn daemon_poll_now(state: State<'_, AppState>) -> Result<(), String> {
+    let daemon = state.daemon.clone();
+    run_core(state.bus.clone(), move || {
+        daemon.poll_once();
+        Ok(())
+    })
+    .await
+}
+
 /// Master switch. Turning it on makes the next loop tick poll immediately.
 #[tauri::command]
 pub async fn set_daemon_enabled(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {

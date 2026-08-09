@@ -268,6 +268,7 @@ pub fn run() {
             ipc::respond_user_dialog,
             ipc::daemon_status,
             ipc::list_daemon_tasks,
+            ipc::daemon_poll_now,
             ipc::set_daemon_enabled,
             ipc::set_daemon_account,
             ipc::set_daemon_watched_accounts,

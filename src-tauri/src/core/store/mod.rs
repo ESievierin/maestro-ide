@@ -372,9 +372,15 @@ impl Store for SqliteStore {
 
     fn set_branch_pinned(&self, name: &str, pinned: bool) -> Result<()> {
         self.with_conn(|conn| {
+            // A worktree the app merely *discovered* (an existing git worktree
+            // it never created/attached through `upsert_branch`) has no row
+            // here yet — pinning it must still work, so this upserts rather
+            // than assuming one exists.
             conn.execute(
-                "UPDATE branches SET pinned = ?2 WHERE name = ?1",
-                params![name, pinned],
+                "INSERT INTO branches (name, pinned, created_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(name) DO UPDATE SET pinned = excluded.pinned",
+                params![name, pinned, Utc::now()],
             )?;
             Ok(())
         })
@@ -997,6 +1003,24 @@ mod tests {
 
         s.set_branch_pinned("impl/T-6-x", false).expect("unpin");
         assert!(!s.get_branch("impl/T-6-x").unwrap().unwrap().pinned);
+    }
+
+    #[test]
+    fn set_branch_pinned_works_for_a_worktree_the_app_only_discovered() {
+        // A worktree created outside the app (a plain `git worktree add`) has
+        // no `branches` row — `upsert_branch` is only ever called from the
+        // app's own create/attach flow. Pinning it must still take effect
+        // instead of silently updating zero rows.
+        let s = store();
+        assert!(s.get_branch("impl/discovered-x").unwrap().is_none());
+
+        s.set_branch_pinned("impl/discovered-x", true).expect("pin");
+        let branch = s
+            .get_branch("impl/discovered-x")
+            .unwrap()
+            .expect("a row now exists");
+        assert!(branch.pinned);
+        assert_eq!(branch.task_id, None, "no metadata invented for a bare pin");
     }
 
     #[test]

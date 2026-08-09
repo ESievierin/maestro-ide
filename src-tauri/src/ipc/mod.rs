@@ -37,7 +37,8 @@ use crate::core::store::{
 use crate::core::telemetry::SETTING_TELEMETRY_ENABLED;
 use crate::core::worktree::{
     BlameLine, CreateWorktreeRequest, LogEntry, MergeReport, RemoveOutcome, RepoInfo,
-    RestoreOutcome, Snapshot, WorktreeInfo, WorktreeManager,
+    RestoreOutcome, Snapshot, WorktreeInfo, WorktreeManager, DEFAULT_BRANCH_TEMPLATE,
+    SETTING_BRANCH_TEMPLATE,
 };
 use crate::error::MaestroError;
 
@@ -475,6 +476,29 @@ pub async fn set_single_writer_policy(
     let store = state.store.clone();
     run_core(state.bus.clone(), move || {
         store.set_setting(SETTING_SINGLE_WRITER_POLICY, &policy)
+    })
+    .await
+}
+
+/// Branch naming convention for new worktrees (`{type}`/`{task-id}`/`{slug}`
+/// placeholders) — previously config.toml-only, no way to see or change it
+/// from the app itself.
+#[tauri::command]
+pub async fn get_branch_naming(state: State<'_, AppState>) -> Result<String, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        Ok(store
+            .get_setting(SETTING_BRANCH_TEMPLATE)?
+            .unwrap_or_else(|| DEFAULT_BRANCH_TEMPLATE.to_string()))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_branch_naming(state: State<'_, AppState>, template: String) -> Result<(), String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        store.set_setting(SETTING_BRANCH_TEMPLATE, &template)
     })
     .await
 }

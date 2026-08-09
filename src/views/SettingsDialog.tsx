@@ -136,6 +136,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
   const [telemetryEnabled, setTelemetryEnabledState] = useState<boolean | null>(null);
   const [writerPolicy, setWriterPolicyState] = useState<string | null>(null);
+  const [branchNaming, setBranchNamingState] = useState<string | null>(null);
   const [finalizeTimeout, setFinalizeTimeoutState] = useState<number | null>(null);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [usageByBranch, setUsageByBranch] = useState<BranchUsage[] | null>(null);
@@ -146,6 +147,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const refetchToggles = () => {
     void invoke<boolean>("get_telemetry_enabled").then(setTelemetryEnabledState);
     void invoke<string>("get_single_writer_policy").then(setWriterPolicyState);
+    void invoke<string>("get_branch_naming").then(setBranchNamingState);
     void invoke<number>("get_notes_finalize_timeout").then(setFinalizeTimeoutState);
   };
 
@@ -171,6 +173,17 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     setWriterPolicyState(policy);
     try {
       await invoke("set_single_writer_policy", { policy });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const changeBranchNaming = async (raw: string) => {
+    const template = raw.trim();
+    if (!template) return; // an empty template would make every new branch fail to name itself
+    setBranchNamingState(template);
+    try {
+      await invoke("set_branch_naming", { template });
     } catch (e) {
       setError(String(e));
     }
@@ -332,6 +345,24 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               disabled={writerPolicy === null}
               onChange={(v) => void changeWriterPolicy(v)}
             />
+          </label>
+          <label className="settings-field">
+            Branch naming template
+            <input
+              key={branchNaming ?? "loading"}
+              type="text"
+              defaultValue={branchNaming ?? ""}
+              disabled={branchNaming === null}
+              onBlur={(e) => void changeBranchNaming(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+            <span className="hint">
+              Used when creating a worktree without attaching an existing branch. Placeholders:{" "}
+              <code>{"{type}"}</code> (impl/fix/…), <code>{"{task-id}"}</code>,{" "}
+              <code>{"{slug}"}</code>.
+            </span>
           </label>
           <label className="settings-field">
             Notes finalize timeout (seconds, 0 disables)

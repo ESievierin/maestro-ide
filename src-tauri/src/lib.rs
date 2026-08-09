@@ -279,6 +279,8 @@ pub fn run() {
             ipc::set_notification_digest_enabled,
             ipc::get_single_writer_policy,
             ipc::set_single_writer_policy,
+            ipc::get_branch_naming,
+            ipc::set_branch_naming,
             ipc::get_notes_finalize_timeout,
             ipc::set_notes_finalize_timeout,
             ipc::search_sessions,

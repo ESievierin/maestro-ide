@@ -24,6 +24,18 @@ const FETCH_TTL: Duration = Duration::from_secs(60);
 pub struct GitCli {
     /// Last successful-ish fetch per (repo, refspec) — see [`FETCH_TTL`].
     fetched: Mutex<HashMap<(PathBuf, String), Instant>>,
+    /// Serializes every git subprocess this runs, across every worktree.
+    /// git commands are not safe to run concurrently against the same
+    /// repository — even a nominally read-only `status` can rewrite
+    /// `.git/index` as a stat-cache refresh, so two commands landing at the
+    /// same instant (a user's merge/sync click racing the sidebar's
+    /// background status poll, say) can fail with "could not write index"
+    /// even though neither one is doing anything wrong on its own. A single
+    /// global lock is simpler and safer than reasoning about which git
+    /// subcommands are "read-only enough" to skip it, and every git call
+    /// this app makes is small and local — full serialization costs
+    /// nothing a human notices.
+    exec_lock: Mutex<()>,
 }
 
 impl GitCli {
@@ -60,6 +72,15 @@ impl GitCli {
     }
 
     fn output(&self, cwd: &Path, args: &[&str]) -> Result<std::process::Output> {
+        // Held across the whole spawn-to-exit lifecycle, on the same
+        // blocking-threadpool thread every Tauri command already runs on —
+        // blocking here is exactly what that pool is for. See `exec_lock`'s
+        // own doc comment for why this exists at all.
+        let _exec_guard = self
+            .exec_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         let mut cmd = Command::new("git");
         cmd.args(args)
             .current_dir(cwd)
@@ -1158,6 +1179,65 @@ mod tests {
                 !wt_diff.contains("service.cs"),
                 "worktree diff text must not mention it either: {wt_diff}"
             );
+        }
+
+        /// The regression this guards against: concurrent git invocations against
+        /// the same worktree used to race on `.git/index` — `git status` refreshes
+        /// the index as a side effect despite being nominally read-only, and could
+        /// collide with a genuinely mutating command (e.g. `stash push` during a
+        /// merge) running at the same moment, failing with "could not write index".
+        /// `GitCli::output` now serializes every invocation behind `exec_lock`; this
+        /// hammers one worktree from many threads at once — status polls racing a
+        /// park/restore cycle, exactly the shapes `WorktreeManager` fires
+        /// concurrently in practice — and asserts none of them ever fail.
+        #[test]
+        fn concurrent_git_invocations_never_race_on_the_index() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let repo = tmp.path().join("repo");
+            fs::create_dir(&repo).expect("mkdir");
+            init_repo(&repo);
+            fs::write(repo.join("scratch.txt"), "start\n").expect("write");
+            git(&repo, &["add", "."]);
+            git(&repo, &["commit", "-m", "add scratch.txt"]);
+
+            let cli = std::sync::Arc::new(GitCli::new());
+            let mut handles = Vec::new();
+
+            // Status-poll threads: what the frontend's periodic refresh does.
+            for _ in 0..6 {
+                let cli = cli.clone();
+                let repo = repo.clone();
+                handles.push(std::thread::spawn(move || {
+                    for _ in 0..20 {
+                        cli.branch_status(&repo).expect("concurrent branch_status");
+                    }
+                }));
+            }
+
+            // A park/restore thread: the merge_into "park dirty target" step,
+            // running at the same time as the status polls above.
+            {
+                let cli = cli.clone();
+                let repo = repo.clone();
+                handles.push(std::thread::spawn(move || {
+                    for i in 0..10 {
+                        fs::write(repo.join("scratch.txt"), format!("edit {i}\n")).expect("write");
+                        cli.snapshot_push(&repo, &format!("pre-merge {i}"))
+                            .expect("concurrent snapshot_push");
+                        cli.discard_changes(&repo)
+                            .expect("concurrent discard_changes");
+                        let listed = cli.snapshot_list(&repo).expect("concurrent snapshot_list");
+                        cli.snapshot_restore(&repo, &listed[0].id)
+                            .expect("concurrent snapshot_restore");
+                        cli.snapshot_drop(&repo, &listed[0].id)
+                            .expect("concurrent snapshot_drop");
+                    }
+                }));
+            }
+
+            for handle in handles {
+                handle.join().expect("thread panicked");
+            }
         }
     }
 }

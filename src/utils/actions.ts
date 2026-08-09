@@ -71,6 +71,29 @@ export async function exportTranscript(session: Session): Promise<void> {
   }
 }
 
+/** Copy a session's transcript to the clipboard as markdown — a lighter
+ * companion to `exportTranscript` for pasting into Slack/a PR description
+ * without needing to attach a file. */
+export async function copyTranscript(session: Session): Promise<void> {
+  const items = useSessions.getState().transcripts[session.id] ?? [];
+  const markdown = transcriptToMarkdown(session, items);
+  const { useToasts } = await import("../state/toasts");
+  try {
+    await navigator.clipboard.writeText(markdown);
+    useToasts.getState().push({
+      severity: "info",
+      code: "copied",
+      message: "Transcript copied to the clipboard as markdown.",
+    });
+  } catch (e) {
+    useToasts.getState().push({
+      severity: "warning",
+      code: "copy-failed",
+      message: `Could not copy transcript: ${String(e)}`,
+    });
+  }
+}
+
 /** Delete every finished session of `branch` in one go — confirms first when
  * there's more than a couple, since a single stray row isn't worth
  * interrupting anyone for but a pile of them is exactly what this is for. */

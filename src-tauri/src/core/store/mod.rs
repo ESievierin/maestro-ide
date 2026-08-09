@@ -61,6 +61,22 @@ pub struct SessionPreset {
     pub created_at: DateTime<Utc>,
 }
 
+/// Cost/turns/tokens summed across sessions, for one time window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct UsageTotals {
+    pub cost_usd: f64,
+    pub turns: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// Aggregate spend for the header/Settings usage view: today (UTC) and all time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct UsageSummary {
+    pub today: UsageTotals,
+    pub all_time: UsageTotals,
+}
+
 /// Storage boundary. Concrete impl: SQLite. Test doubles implement this trait.
 pub trait Store: Send + Sync {
     /// Insert the branch if new. On conflict, `task_id`/`base_branch` are only
@@ -109,6 +125,22 @@ pub trait Store: Send + Sync {
     fn list_session_presets(&self) -> Result<Vec<SessionPreset>>;
     fn insert_session_preset(&self, preset: &SessionPreset) -> Result<()>;
     fn delete_session_preset(&self, id: &str) -> Result<()>;
+
+    // ---------- usage ----------
+
+    /// Overwrite the latest known usage for a session — one row per session,
+    /// not a history; each turn's report simply replaces the last.
+    #[allow(clippy::too_many_arguments)]
+    fn upsert_session_usage(
+        &self,
+        session_id: &str,
+        branch: &str,
+        cost_usd: Option<f64>,
+        turns: Option<u32>,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+    ) -> Result<()>;
+    fn usage_summary(&self) -> Result<UsageSummary>;
 
     // ---------- daemon task queue ----------
 
@@ -472,6 +504,65 @@ impl Store for SqliteStore {
         })
     }
 
+    fn upsert_session_usage(
+        &self,
+        session_id: &str,
+        branch: &str,
+        cost_usd: Option<f64>,
+        turns: Option<u32>,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO session_usage (session_id, branch, cost_usd, turns, input_tokens, output_tokens, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                    branch = ?2, cost_usd = ?3, turns = ?4, input_tokens = ?5, output_tokens = ?6, updated_at = ?7",
+                params![
+                    session_id,
+                    branch,
+                    cost_usd,
+                    turns.map(|v| v as i64),
+                    input_tokens.map(|v| v as i64),
+                    output_tokens.map(|v| v as i64),
+                    Utc::now().to_rfc3339(),
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn usage_summary(&self) -> Result<UsageSummary> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT cost_usd, turns, input_tokens, output_tokens, date(updated_at) = date('now')
+                 FROM session_usage",
+            )?;
+            let mut rows = stmt.query([])?;
+            let mut summary = UsageSummary::default();
+            while let Some(row) = rows.next()? {
+                let cost: Option<f64> = row.get(0)?;
+                let turns: Option<i64> = row.get(1)?;
+                let input: Option<i64> = row.get(2)?;
+                let output: Option<i64> = row.get(3)?;
+                let is_today: bool = row.get(4)?;
+
+                summary.all_time.cost_usd += cost.unwrap_or(0.0);
+                summary.all_time.turns += turns.unwrap_or(0) as u64;
+                summary.all_time.input_tokens += input.unwrap_or(0) as u64;
+                summary.all_time.output_tokens += output.unwrap_or(0) as u64;
+                if is_today {
+                    summary.today.cost_usd += cost.unwrap_or(0.0);
+                    summary.today.turns += turns.unwrap_or(0) as u64;
+                    summary.today.input_tokens += input.unwrap_or(0) as u64;
+                    summary.today.output_tokens += output.unwrap_or(0) as u64;
+                }
+            }
+            Ok(summary)
+        })
+    }
+
     fn get_setting(&self, key: &str) -> Result<Option<String>> {
         self.with_conn(|conn| {
             let value = conn
@@ -763,6 +854,51 @@ mod tests {
         let presets = s.list_session_presets().expect("list");
         assert_eq!(presets.len(), 1);
         assert_eq!(presets[0].id, "p2");
+    }
+
+    #[test]
+    fn usage_summary_sums_across_sessions_and_a_later_report_replaces_not_adds() {
+        let s = store();
+        s.upsert_session_usage(
+            "sess-1",
+            "impl/T-1-x",
+            Some(1.5),
+            Some(2),
+            Some(100),
+            Some(50),
+        )
+        .expect("insert usage 1");
+        s.upsert_session_usage(
+            "sess-2",
+            "impl/T-2-x",
+            Some(0.5),
+            Some(1),
+            Some(20),
+            Some(10),
+        )
+        .expect("insert usage 2");
+
+        let summary = s.usage_summary().expect("summary");
+        assert!((summary.all_time.cost_usd - 2.0).abs() < 1e-9);
+        assert_eq!(summary.all_time.turns, 3);
+        assert_eq!(summary.all_time.input_tokens, 120);
+        assert_eq!(summary.all_time.output_tokens, 60);
+        // Freshly inserted rows carry today's date, so all_time and today agree here.
+        assert_eq!(summary.today, summary.all_time);
+
+        // A later report for the same session overwrites, it does not add.
+        s.upsert_session_usage(
+            "sess-1",
+            "impl/T-1-x",
+            Some(3.0),
+            Some(4),
+            Some(200),
+            Some(100),
+        )
+        .expect("update usage 1");
+        let summary = s.usage_summary().expect("summary again");
+        assert!((summary.all_time.cost_usd - 3.5).abs() < 1e-9);
+        assert_eq!(summary.all_time.turns, 5);
     }
 
     #[test]

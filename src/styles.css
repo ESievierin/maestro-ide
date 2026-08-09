@@ -1806,6 +1806,11 @@ input[type="checkbox"] {
   color: var(--text-tertiary);
 }
 
+.settings-usage-line {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
 /* ---------- Daemon panel ---------- */
 
 .daemon-modal {

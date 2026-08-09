@@ -29,7 +29,7 @@ use crate::core::session::manager::{
     SETTING_SINGLE_WRITER_POLICY,
 };
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
-use crate::core::store::{Branch, DaemonTask, SessionPreset, Store};
+use crate::core::store::{Branch, DaemonTask, SessionPreset, Store, UsageSummary};
 use crate::core::telemetry::SETTING_TELEMETRY_ENABLED;
 use crate::core::worktree::{
     BlameLine, CreateWorktreeRequest, LogEntry, MergeReport, RemoveOutcome, RepoInfo,
@@ -823,6 +823,16 @@ pub async fn save_session_preset(
 pub async fn delete_session_preset(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let store = state.store.clone();
     run_core(state.bus.clone(), move || store.delete_session_preset(&id)).await
+}
+
+// ---------- usage ----------
+
+/// Total spend (cost/turns/tokens) today (UTC) and all time, across every
+/// session that ever reported usage — including ones since deleted.
+#[tauri::command]
+pub async fn get_usage_summary(state: State<'_, AppState>) -> Result<UsageSummary, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || store.usage_summary()).await
 }
 
 // ---------- diffs ----------

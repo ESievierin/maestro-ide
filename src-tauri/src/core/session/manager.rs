@@ -1038,6 +1038,25 @@ impl SessionManager {
                 context_max_tokens,
                 context_percent,
             } => {
+                // Persisted independently of the live transcript: the aggregate
+                // usage view must still count this spend after the session itself
+                // is gone (a restart, or a "clear finished" cleanup).
+                let branch = self
+                    .lock_runtime()
+                    .ok()
+                    .and_then(|r| r.get(&session_id).map(|s| s.branch.clone()));
+                if let Some(branch) = branch {
+                    if let Err(err) = self.store.upsert_session_usage(
+                        &session_id,
+                        &branch,
+                        total_cost_usd,
+                        num_turns,
+                        input_tokens,
+                        output_tokens,
+                    ) {
+                        crate::error::report(&self.bus, &err);
+                    }
+                }
                 self.bus.publish(Event::SessionUsage {
                     session_id,
                     total_cost_usd,

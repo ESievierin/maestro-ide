@@ -5,6 +5,23 @@ import { SelectMenu } from "../components/SelectMenu";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useAttention } from "../state/attention";
 
+interface UsageTotals {
+  cost_usd: number;
+  turns: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+interface UsageSummary {
+  today: UsageTotals;
+  all_time: UsageTotals;
+}
+
+function formatUsage(t: UsageTotals): string {
+  return `$${t.cost_usd.toFixed(2)} · ${t.turns} turn${t.turns === 1 ? "" : "s"} · ${(
+    t.input_tokens + t.output_tokens
+  ).toLocaleString()} tokens`;
+}
+
 const WRITER_POLICY_OPTIONS = [
   {
     value: "read_only",
@@ -34,12 +51,14 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [telemetryEnabled, setTelemetryEnabledState] = useState<boolean | null>(null);
   const [writerPolicy, setWriterPolicyState] = useState<string | null>(null);
   const [finalizeTimeout, setFinalizeTimeoutState] = useState<number | null>(null);
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void invoke<boolean>("get_telemetry_enabled").then(setTelemetryEnabledState);
     void invoke<string>("get_single_writer_policy").then(setWriterPolicyState);
     void invoke<number>("get_notes_finalize_timeout").then(setFinalizeTimeoutState);
+    void invoke<UsageSummary>("get_usage_summary").then(setUsage);
   }, []);
 
   const toggleTelemetry = async () => {
@@ -85,6 +104,24 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             {error ?? notifyError}
           </p>
         )}
+
+        <div className="settings-section">
+          <h4>Usage</h4>
+          {usage ? (
+            <>
+              <p className="settings-usage-line">
+                <strong>Today:</strong> {formatUsage(usage.today)}
+              </p>
+              <p className="settings-usage-line">
+                <strong>All time:</strong> {formatUsage(usage.all_time)}
+              </p>
+            </>
+          ) : (
+            <p className="hint">
+              <Icon name="spinner" spin /> Loading…
+            </p>
+          )}
+        </div>
 
         <div className="settings-section">
           <h4>Notifications &amp; telemetry</h4>

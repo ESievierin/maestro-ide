@@ -104,5 +104,22 @@ pub fn runner() -> Migrations<'static> {
         );
         "#,
         ),
+        M::up(
+            // Latest known cost/tokens per session, for the aggregate usage view.
+            // Deliberately not tied to the `sessions` row by a foreign key and never
+            // cleaned up alongside it (see delete_session / clear-finished): once
+            // spent, spend stays counted even after the session row is gone.
+            r#"
+        CREATE TABLE session_usage (
+            session_id      TEXT PRIMARY KEY,
+            branch          TEXT NOT NULL,
+            cost_usd        REAL,
+            turns           INTEGER,
+            input_tokens    INTEGER,
+            output_tokens   INTEGER,
+            updated_at      TEXT NOT NULL
+        );
+        "#,
+        ),
     ])
 }

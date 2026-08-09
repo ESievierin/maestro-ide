@@ -40,7 +40,8 @@ export type IconName =
   | "pr"
   | "reply"
   | "settings"
-  | "search";
+  | "search"
+  | "star";
 
 /** Path data per icon, drawn on a 24×24 grid. */
 const PATHS: Record<IconName, ReactElement> = {
@@ -115,6 +116,9 @@ const PATHS: Record<IconName, ReactElement> = {
       <circle cx="10.5" cy="10.5" r="6" />
       <path d="M20 20l-4.5-4.5" />
     </>
+  ),
+  star: (
+    <path d="M12 2.5l3.09 6.26 6.91 1.01-5 4.87 1.18 6.88L12 18.27l-6.18 3.25L7 14.65l-5-4.87 6.91-1.01L12 2.5Z" />
   ),
 };
 

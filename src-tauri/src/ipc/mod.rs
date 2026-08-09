@@ -159,6 +159,18 @@ pub async fn remove_worktree(
     run_core(state.bus.clone(), move || mgr.remove(&branch, force)).await
 }
 
+/// Pin or unpin a branch — kept at the top of the worktree list regardless of
+/// sort order, for the ones a user is actively juggling among many.
+#[tauri::command]
+pub async fn set_worktree_pinned(
+    state: State<'_, AppState>,
+    branch: String,
+    pinned: bool,
+) -> Result<(), String> {
+    let mgr = state.worktrees.clone();
+    run_core(state.bus.clone(), move || mgr.set_pinned(&branch, pinned)).await
+}
+
 /// Open a worktree's directory in an external tool: `"explorer"` or `"editor"`
 /// (the configured/auto-detected editor — Rider by default). With `file` set,
 /// the editor opens that file inside the worktree's project.

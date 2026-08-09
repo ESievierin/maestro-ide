@@ -23,6 +23,8 @@ pub struct Branch {
     pub name: String,
     pub task_id: Option<String>,
     pub base_branch: Option<String>,
+    /// Kept at the top of the worktree list regardless of sort order.
+    pub pinned: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -105,6 +107,7 @@ pub trait Store: Send + Sync {
     ) -> Result<Branch>;
     fn get_branch(&self, name: &str) -> Result<Option<Branch>>;
     fn list_branches(&self) -> Result<Vec<Branch>>;
+    fn set_branch_pinned(&self, name: &str, pinned: bool) -> Result<()>;
 
     fn insert_session(&self, session: &Session) -> Result<()>;
     fn update_session_status(&self, id: &str, status: SessionStatus) -> Result<()>;
@@ -282,6 +285,7 @@ fn branch_from_row(row: &Row) -> rusqlite::Result<Branch> {
         name: row.get("name")?,
         task_id: row.get("task_id")?,
         base_branch: row.get("base_branch")?,
+        pinned: row.get("pinned")?,
         created_at: row.get("created_at")?,
     })
 }
@@ -323,15 +327,15 @@ impl Store for SqliteStore {
     ) -> Result<Branch> {
         self.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO branches (name, task_id, base_branch, created_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO branches (name, task_id, base_branch, pinned, created_at)
+                 VALUES (?1, ?2, ?3, 0, ?4)
                  ON CONFLICT(name) DO UPDATE SET
                     task_id = COALESCE(excluded.task_id, task_id),
                     base_branch = COALESCE(excluded.base_branch, base_branch)",
                 params![name, task_id, base_branch, Utc::now()],
             )?;
             let branch = conn.query_row(
-                "SELECT name, task_id, base_branch, created_at FROM branches WHERE name = ?1",
+                "SELECT name, task_id, base_branch, pinned, created_at FROM branches WHERE name = ?1",
                 params![name],
                 branch_from_row,
             )?;
@@ -343,7 +347,7 @@ impl Store for SqliteStore {
         self.with_conn(|conn| {
             let branch = conn
                 .query_row(
-                    "SELECT name, task_id, base_branch, created_at FROM branches WHERE name = ?1",
+                    "SELECT name, task_id, base_branch, pinned, created_at FROM branches WHERE name = ?1",
                     params![name],
                     branch_from_row,
                 )
@@ -355,7 +359,7 @@ impl Store for SqliteStore {
     fn list_branches(&self) -> Result<Vec<Branch>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT name, task_id, base_branch, created_at FROM branches ORDER BY created_at",
+                "SELECT name, task_id, base_branch, pinned, created_at FROM branches ORDER BY created_at",
             )?;
             let rows = stmt.query_map([], branch_from_row)?;
             let mut branches = Vec::new();
@@ -363,6 +367,16 @@ impl Store for SqliteStore {
                 branches.push(row?);
             }
             Ok(branches)
+        })
+    }
+
+    fn set_branch_pinned(&self, name: &str, pinned: bool) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "UPDATE branches SET pinned = ?2 WHERE name = ?1",
+                params![name, pinned],
+            )?;
+            Ok(())
         })
     }
 
@@ -962,6 +976,27 @@ mod tests {
         let reattached = s.upsert_branch("impl/T-5-x", None, None).expect("reattach");
         assert_eq!(reattached.task_id.as_deref(), Some("T-5"));
         assert_eq!(reattached.base_branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn set_branch_pinned_toggles_and_survives_reattach() {
+        let s = store();
+        s.upsert_branch("impl/T-6-x", None, None).expect("insert");
+        assert!(
+            !s.get_branch("impl/T-6-x").unwrap().unwrap().pinned,
+            "unpinned by default"
+        );
+
+        s.set_branch_pinned("impl/T-6-x", true).expect("pin");
+        assert!(s.get_branch("impl/T-6-x").unwrap().unwrap().pinned);
+
+        // Re-attaching (the worktree-removed-then-recreated case) must not
+        // silently unpin — pinning is branch state, same as task_id/base_branch.
+        s.upsert_branch("impl/T-6-x", None, None).expect("reattach");
+        assert!(s.get_branch("impl/T-6-x").unwrap().unwrap().pinned);
+
+        s.set_branch_pinned("impl/T-6-x", false).expect("unpin");
+        assert!(!s.get_branch("impl/T-6-x").unwrap().unwrap().pinned);
     }
 
     #[test]

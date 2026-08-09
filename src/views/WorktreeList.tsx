@@ -141,8 +141,18 @@ function RepoPicker({ current, onDone }: { current: string | null; onDone: () =>
 }
 
 export function WorktreeList() {
-  const { repo, worktrees, selected, loading, error, refresh, sync, select, clearError } =
-    useWorktrees();
+  const {
+    repo,
+    worktrees,
+    selected,
+    loading,
+    error,
+    refresh,
+    sync,
+    setPinned,
+    select,
+    clearError,
+  } = useWorktrees();
   const showCreate = useUI((s) => s.dialog === "create");
   const openDialog = useUI((s) => s.openDialog);
   const closeDialog = useUI((s) => s.closeDialog);
@@ -191,6 +201,11 @@ export function WorktreeList() {
           (wt.task_id ?? "").toLowerCase().includes(normalizedFilter),
       )
     : worktrees;
+  // Pinned worktrees float to the top as a group; a stable sort keeps every
+  // other relative ordering (creation order within each group) untouched.
+  const sortedWorktrees = [...filteredWorktrees].sort(
+    (a, b) => Number(b.pinned) - Number(a.pinned),
+  );
 
   return (
     <aside className="worktree-list">
@@ -257,7 +272,7 @@ export function WorktreeList() {
             <p className="hint">No worktree matches "{filter.trim()}".</p>
           )}
           <ul className="worktree-items">
-            {filteredWorktrees.map((wt) => (
+            {sortedWorktrees.map((wt) => (
               <li
                 key={wt.path}
                 className={wt.branch === selected ? "selected" : ""}
@@ -266,6 +281,7 @@ export function WorktreeList() {
                 <div className="wt-row">
                   <span className="wt-branch">
                     <Icon name="branch" size={12} /> {wt.branch ?? "(detached)"}
+                    {wt.pinned && <Icon name="star" size={11} className="wt-pin-indicator" />}
                   </span>
                   <StatusBadges wt={wt} />
                 </div>
@@ -273,6 +289,18 @@ export function WorktreeList() {
                   <div className="wt-meta">
                     {wt.task_id && <span className="wt-task">{wt.task_id}</span>}
                     <span className="wt-actions">
+                      {wt.branch && (
+                        <button
+                          className={`small icon-only ghost wt-pin${wt.pinned ? " wt-pin-active" : ""}`}
+                          title={wt.pinned ? "Unpin" : "Pin to the top of the list"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void setPinned(wt.branch as string, !wt.pinned);
+                          }}
+                        >
+                          <Icon name="star" />
+                        </button>
+                      )}
                       {!wt.is_primary && wt.branch && (
                         <button
                           className="small icon-only ghost wt-merge"

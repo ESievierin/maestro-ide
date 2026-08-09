@@ -29,6 +29,7 @@ interface WorktreesState {
   merge: (sourceBranch: string, targetBranch: string) => Promise<MergeOutcome | null>;
   /** Merge the branch's (freshly fetched) base into it. */
   sync: (branch: string) => Promise<MergeOutcome | null>;
+  setPinned: (branch: string, pinned: boolean) => Promise<void>;
   select: (branch: string | null) => void;
   setTab: (tab: MainTab) => void;
   clearError: () => void;
@@ -136,6 +137,15 @@ export const useWorktrees = create<WorktreesState>((set, get) => ({
     } catch (e) {
       set({ error: String(e) });
       return null;
+    }
+  },
+
+  setPinned: async (branch, pinned) => {
+    try {
+      await invoke("set_worktree_pinned", { branch, pinned });
+      await get().refresh();
+    } catch (e) {
+      set({ error: String(e) });
     }
   },
 

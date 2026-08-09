@@ -30,6 +30,7 @@ const worktree = {
   is_primary: false,
   task_id: "T-1",
   base_branch: "main",
+  pinned: false,
   status: null,
 };
 

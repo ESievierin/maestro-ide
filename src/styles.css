@@ -280,7 +280,8 @@ body {
 }
 
 .worktree-items li .wt-delete,
-.worktree-items li .wt-merge {
+.worktree-items li .wt-merge,
+.worktree-items li .wt-pin {
   opacity: 0;
   transition: opacity var(--fast) var(--ease);
 }
@@ -288,8 +289,26 @@ body {
 .worktree-items li:hover .wt-delete,
 .worktree-items li:focus-within .wt-delete,
 .worktree-items li:hover .wt-merge,
-.worktree-items li:focus-within .wt-merge {
+.worktree-items li:focus-within .wt-merge,
+.worktree-items li:hover .wt-pin,
+.worktree-items li:focus-within .wt-pin,
+.worktree-items li .wt-pin-active {
   opacity: 1;
+}
+
+.wt-pin-active {
+  color: var(--accent);
+}
+
+.wt-pin-active svg {
+  fill: currentColor;
+}
+
+.wt-pin-indicator {
+  color: var(--accent);
+  fill: currentColor;
+  margin-left: 0.3rem;
+  flex-shrink: 0;
 }
 
 .wt-row {

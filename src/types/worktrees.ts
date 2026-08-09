@@ -12,6 +12,8 @@ export interface WorktreeInfo {
   is_primary: boolean;
   task_id: string | null;
   base_branch: string | null;
+  /** Kept at the top of the list regardless of sort order. */
+  pinned: boolean;
   status: BranchStatus | null;
 }
 

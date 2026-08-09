@@ -216,6 +216,7 @@ pub fn run() {
             ipc::list_worktrees,
             ipc::create_worktree,
             ipc::remove_worktree,
+            ipc::set_worktree_pinned,
             ipc::merge_worktree,
             ipc::sync_worktree,
             ipc::commit_worktree,

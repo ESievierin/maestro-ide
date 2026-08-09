@@ -53,6 +53,8 @@ pub struct WorktreeInfo {
     pub is_primary: bool,
     pub task_id: Option<String>,
     pub base_branch: Option<String>,
+    /// Kept at the top of the list regardless of sort order.
+    pub pinned: bool,
     /// `None` when status could not be read (e.g. the directory vanished).
     pub status: Option<BranchStatus>,
 }
@@ -188,6 +190,7 @@ impl WorktreeManager {
                 is_primary: entry.is_primary,
                 task_id: stored.as_ref().and_then(|b| b.task_id.clone()),
                 base_branch: stored.as_ref().and_then(|b| b.base_branch.clone()),
+                pinned: stored.as_ref().is_some_and(|b| b.pinned),
                 status,
             });
         }
@@ -272,8 +275,15 @@ impl WorktreeManager {
             is_primary: false,
             task_id: stored.as_ref().and_then(|b| b.task_id.clone()),
             base_branch: stored.as_ref().and_then(|b| b.base_branch.clone()),
+            pinned: stored.as_ref().is_some_and(|b| b.pinned),
             status,
         })
+    }
+
+    /// Pin or unpin a branch — kept at the top of the worktree list regardless
+    /// of sort order, for the ones a user is actively juggling among many.
+    pub fn set_pinned(&self, branch: &str, pinned: bool) -> Result<()> {
+        self.store.set_branch_pinned(branch, pinned)
     }
 
     /// Remove the worktree checked out on `branch`. Without `force`, a dirty tree
@@ -1119,6 +1129,32 @@ mod tests {
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.name(), "worktree.created");
+    }
+
+    #[tokio::test]
+    async fn pinning_a_branch_surfaces_in_the_worktree_list() {
+        let (mgr, _bus) = manager();
+        let info = mgr
+            .create(CreateWorktreeRequest {
+                existing_branch: None,
+                kind: Some("impl".into()),
+                task_id: Some("T-8".into()),
+                slug: Some("pin flow".into()),
+                base: None,
+            })
+            .unwrap();
+        let branch = info.branch.unwrap();
+        assert!(!info.pinned, "unpinned by default");
+
+        mgr.set_pinned(&branch, true).unwrap();
+        let listed = mgr.list().unwrap();
+        let found = listed.iter().find(|w| w.branch.as_deref() == Some(&branch));
+        assert!(found.unwrap().pinned);
+
+        mgr.set_pinned(&branch, false).unwrap();
+        let listed = mgr.list().unwrap();
+        let found = listed.iter().find(|w| w.branch.as_deref() == Some(&branch));
+        assert!(!found.unwrap().pinned);
     }
 
     #[tokio::test]

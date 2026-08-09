@@ -127,5 +127,11 @@ pub fn runner() -> Migrations<'static> {
             // requeued instead of failing outright, up to a small bound.
             "ALTER TABLE daemon_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;",
         ),
+        M::up(
+            // A user-set flag to keep a branch pinned to the top of the worktree
+            // list — branch state, so it survives worktree removal/re-creation
+            // the same way task_id/base_branch already do.
+            "ALTER TABLE branches ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;",
+        ),
     ])
 }

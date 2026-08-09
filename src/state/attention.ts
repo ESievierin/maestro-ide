@@ -15,23 +15,34 @@ const EMPTY: readonly AttentionItem[] = Object.freeze([]);
  * setting below, then never read again. */
 const LEGACY_NOTIFICATIONS_KEY = "maestro.osNotifications";
 
+/** How long to wait for more notifications before flushing a digest — long
+ * enough to catch a burst of agents finishing near the same time, short
+ * enough that a single item still shows up promptly. */
+const DIGEST_WINDOW_MS = 4000;
+
 interface AttentionState {
   items: readonly AttentionItem[];
   /** Whether OS notifications are enabled — backed by the `os_notifications`
    * setting (config.toml-gated per the original brief), not just this window. */
   notificationsEnabled: boolean;
+  /** Whether notifications arriving close together are coalesced into one
+   * "N items need you" notification instead of firing one per item. */
+  digestEnabled: boolean;
   error: string | null;
 
   fetch: () => Promise<void>;
   fetchNotificationsEnabled: () => Promise<void>;
+  fetchDigestEnabled: () => Promise<void>;
   dismiss: (id: string) => Promise<void>;
   setNotificationsEnabled: (enabled: boolean) => Promise<void>;
+  setDigestEnabled: (enabled: boolean) => Promise<void>;
   clearError: () => void;
 }
 
 export const useAttention = create<AttentionState>((set) => ({
   items: EMPTY,
   notificationsEnabled: false, // hydrated from the backend below
+  digestEnabled: false, // hydrated from the backend below
   error: null,
 
   fetch: async () => {
@@ -47,6 +58,15 @@ export const useAttention = create<AttentionState>((set) => ({
     try {
       const enabled = await invoke<boolean>("get_os_notifications_enabled");
       set({ notificationsEnabled: enabled });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  fetchDigestEnabled: async () => {
+    try {
+      const enabled = await invoke<boolean>("get_notification_digest_enabled");
+      set({ digestEnabled: enabled });
     } catch (e) {
       set({ error: String(e) });
     }
@@ -83,6 +103,15 @@ export const useAttention = create<AttentionState>((set) => ({
     }
   },
 
+  setDigestEnabled: async (enabled) => {
+    try {
+      await invoke("set_notification_digest_enabled", { enabled });
+      set({ digestEnabled: enabled });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
   clearError: () => set({ error: null }),
 }));
 
@@ -99,10 +128,26 @@ onBusEvent((event) => {
   }
 });
 
+// Digest mode buffers bodies here instead of sending immediately; module-level
+// since it is purely a delivery-timing concern, not UI state anything renders.
+let pendingDigest: string[] = [];
+let digestTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flushDigest() {
+  digestTimer = null;
+  if (pendingDigest.length === 0) return;
+  const body =
+    pendingDigest.length === 1
+      ? pendingDigest[0]
+      : `${pendingDigest.length} items need your attention`;
+  pendingDigest = [];
+  sendNotification({ title: "MaestroIDE", body });
+}
+
 // Notify on the events that mean "an agent is blocked", not on every queue change:
 // re-notifying for the same situation would be noise.
 onBusEvent((event) => {
-  const { notificationsEnabled } = useAttention.getState();
+  const { notificationsEnabled, digestEnabled } = useAttention.getState();
   if (!notificationsEnabled) return;
 
   let body: string | null = null;
@@ -120,7 +165,15 @@ onBusEvent((event) => {
       body = event.data.message;
       break;
   }
-  if (body) sendNotification({ title: "MaestroIDE", body });
+  if (!body) return;
+
+  if (!digestEnabled) {
+    sendNotification({ title: "MaestroIDE", body });
+    return;
+  }
+  pendingDigest.push(body);
+  if (digestTimer) clearTimeout(digestTimer);
+  digestTimer = setTimeout(flushDigest, DIGEST_WINDOW_MS);
 });
 
 // Pick up anything already waiting when the UI (re)loads.
@@ -140,4 +193,5 @@ void (async () => {
   }
   if (legacy !== null) localStorage.removeItem(LEGACY_NOTIFICATIONS_KEY);
   await useAttention.getState().fetchNotificationsEnabled();
+  await useAttention.getState().fetchDigestEnabled();
 })();

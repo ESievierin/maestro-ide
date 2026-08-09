@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::core::attention::SETTING_OS_NOTIFICATIONS;
+use crate::core::attention::{SETTING_NOTIFICATION_DIGEST, SETTING_OS_NOTIFICATIONS};
 use crate::core::checks::{SETTING_CHECK_AUTO, SETTING_CHECK_COMMAND};
 use crate::core::daemon::{
     SETTING_DAEMON_ENABLED, SETTING_DAEMON_POLL_MINUTES, SETTING_DAEMON_RESEARCH_EFFORT,
@@ -37,6 +37,7 @@ pub const BUNDLE_VERSION: u32 = 1;
 pub const EXPORTABLE_SETTINGS: &[&str] = &[
     SETTING_TELEMETRY_ENABLED,
     SETTING_OS_NOTIFICATIONS,
+    SETTING_NOTIFICATION_DIGEST,
     SETTING_SINGLE_WRITER_POLICY,
     SETTING_NOTES_FINALIZE_TIMEOUT,
     SETTING_GATE_COMMIT,

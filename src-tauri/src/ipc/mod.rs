@@ -13,7 +13,9 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::agent::protocol::Attachment;
-use crate::core::attention::{AttentionItem, AttentionManager, SETTING_OS_NOTIFICATIONS};
+use crate::core::attention::{
+    AttentionItem, AttentionManager, SETTING_NOTIFICATION_DIGEST, SETTING_OS_NOTIFICATIONS,
+};
 use crate::core::bus::{Event, EventBus};
 use crate::core::checks::{CheckResult, ChecksManager};
 use crate::core::compose::ComposeManager;
@@ -374,6 +376,37 @@ pub async fn set_os_notifications_enabled(
     run_core(state.bus.clone(), move || {
         store.set_setting(
             SETTING_OS_NOTIFICATIONS,
+            if enabled { "true" } else { "false" },
+        )
+    })
+    .await
+}
+
+/// Whether notifications that arrive close together are coalesced into one
+/// "N items need you" notification instead of firing one per item. Off by
+/// default — one-per-item is the existing behavior and some users will
+/// prefer to keep it.
+#[tauri::command]
+pub async fn get_notification_digest_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        Ok(store
+            .get_setting(SETTING_NOTIFICATION_DIGEST)?
+            .map(|v| v == "true")
+            .unwrap_or(false))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_notification_digest_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        store.set_setting(
+            SETTING_NOTIFICATION_DIGEST,
             if enabled { "true" } else { "false" },
         )
     })

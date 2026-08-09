@@ -53,6 +53,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   useEscapeToClose(onClose);
   const notificationsEnabled = useAttention((s) => s.notificationsEnabled);
   const setNotificationsEnabled = useAttention((s) => s.setNotificationsEnabled);
+  const digestEnabled = useAttention((s) => s.digestEnabled);
+  const setDigestEnabled = useAttention((s) => s.setDigestEnabled);
   const notifyError = useAttention((s) => s.error);
 
   const [telemetryEnabled, setTelemetryEnabledState] = useState<boolean | null>(null);
@@ -197,6 +199,19 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             />
             OS notifications when an agent needs you
           </label>
+          {notificationsEnabled && (
+            <label
+              className="settings-toggle"
+              title="Instead of one OS notification per item, wait a few seconds and group anything that arrived in that window into a single 'N items need you' notification — useful when several agents finish near the same time."
+            >
+              <input
+                type="checkbox"
+                checked={digestEnabled}
+                onChange={(e) => void setDigestEnabled(e.target.checked)}
+              />
+              Group notifications that arrive close together
+            </label>
+          )}
           <label
             className="settings-toggle"
             title="Records every prompt and reply (and reasoning, when there is any) to ~/.maestro/telemetry for later analysis. Turning this off does not touch anything already written."

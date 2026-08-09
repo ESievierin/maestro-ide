@@ -91,6 +91,12 @@ pub struct AttentionItem {
 /// Setting gating OS notifications (`"true"` enables them).
 pub const SETTING_OS_NOTIFICATIONS: &str = "os_notifications";
 
+/// Setting for coalescing notifications that arrive close together into one
+/// "N items need you" notification instead of firing one per item (`"true"`
+/// enables digesting; the frontend owns the actual debounce/coalescing since
+/// that's where notifications are sent).
+pub const SETTING_NOTIFICATION_DIGEST: &str = "notification_digest";
+
 pub struct AttentionManager {
     bus: EventBus,
     items: Mutex<HashMap<String, AttentionItem>>,

@@ -270,6 +270,8 @@ pub fn run() {
             ipc::set_telemetry_enabled,
             ipc::get_os_notifications_enabled,
             ipc::set_os_notifications_enabled,
+            ipc::get_notification_digest_enabled,
+            ipc::set_notification_digest_enabled,
             ipc::get_single_writer_policy,
             ipc::set_single_writer_policy,
             ipc::get_notes_finalize_timeout,

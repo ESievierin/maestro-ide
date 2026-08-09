@@ -266,6 +266,7 @@ pub fn run() {
             ipc::list_daemon_tasks,
             ipc::set_daemon_enabled,
             ipc::set_daemon_account,
+            ipc::set_daemon_watched_accounts,
             ipc::get_telemetry_enabled,
             ipc::set_telemetry_enabled,
             ipc::get_os_notifications_enabled,

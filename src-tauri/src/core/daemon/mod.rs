@@ -66,6 +66,10 @@ pub const SETTING_DAEMON_VERIFY_MODEL: &str = "daemon_verify_model";
 pub const SETTING_DAEMON_VERIFY_EFFORT: &str = "daemon_verify_effort";
 /// `owner/name` to watch. Empty = derived from the open repository's origin.
 pub const SETTING_DAEMON_REPO: &str = "daemon_repo";
+/// JSON array of gh logins the daemon polls on behalf of, in addition to (or
+/// instead of listing) the single `daemon_account` posting identity. Empty =
+/// just that one account — today's single-account behavior, unchanged.
+pub const SETTING_DAEMON_WATCH_ACCOUNTS: &str = "daemon_watch_accounts";
 
 const DEFAULT_POLL_MINUTES: u64 = 5;
 const DEFAULT_USAGE_THRESHOLD: f64 = 50.0;
@@ -84,10 +88,15 @@ const MAX_DAEMON_TASK_ATTEMPTS: u32 = 3;
 #[derive(Clone, Debug, Serialize)]
 pub struct DaemonStatus {
     pub enabled: bool,
-    /// The account the daemon is configured to act as (resolved, may be empty).
+    /// The account the daemon is configured to act as (resolved, may be empty)
+    /// — used for posting/replying elsewhere in the app (unaffected by
+    /// `watched_accounts`, which is purely about detection).
     pub account: String,
     /// All gh logins on this machine, for the account picker.
     pub accounts: Vec<GhAccount>,
+    /// Every account the daemon polls on behalf of this cycle — always
+    /// includes at least `account` when resolvable.
+    pub watched_accounts: Vec<String>,
     /// Repository being watched (`owner/name`), once resolved.
     pub repo: Option<String>,
     /// Whether the Jira flow has credentials configured.
@@ -278,9 +287,47 @@ impl DaemonManager {
         resolve_account(self.store.as_ref(), accounts)
     }
 
+    /// Every account the daemon polls on behalf of, in order — the
+    /// `daemon_watch_accounts` setting, filtered to logins `gh` still knows
+    /// about (a since-logged-out account is dropped, not an error); falls
+    /// back to just the single posting identity when unset or empty, which
+    /// is the exact single-account behavior this setting did not used to
+    /// exist to change.
+    fn watched_accounts(&self, accounts: &[GhAccount]) -> Vec<String> {
+        let configured: Vec<String> = self
+            .setting(SETTING_DAEMON_WATCH_ACCOUNTS)
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|login| accounts.iter().any(|a| &a.login == login))
+            .collect();
+        if !configured.is_empty() {
+            return configured;
+        }
+        let primary = self.account(accounts);
+        if primary.is_empty() {
+            Vec::new()
+        } else {
+            vec![primary]
+        }
+    }
+
+    /// Replace the watch list. An empty list is valid — it just means "fall
+    /// back to the single posting identity" (see [`Self::watched_accounts`]).
+    pub fn set_watched_accounts(&self, accounts: &[String]) -> Result<()> {
+        let json = serde_json::to_string(accounts).map_err(|err| MaestroError::InvalidData {
+            message: format!("could not serialize watched accounts: {err}"),
+        })?;
+        self.store
+            .set_setting(SETTING_DAEMON_WATCH_ACCOUNTS, &json)?;
+        self.bus.publish(Event::DaemonUpdated {});
+        Ok(())
+    }
+
     pub fn status(&self) -> DaemonStatus {
         let accounts = self.gh.accounts().unwrap_or_default();
         let account = self.account(&accounts);
+        let watched_accounts = self.watched_accounts(&accounts);
         let tasks = self.store.list_daemon_tasks().unwrap_or_default();
         let queued = tasks.iter().filter(|t| t.state == "queued").count();
         let running = tasks.into_iter().find(|t| t.state == "running");
@@ -289,6 +336,7 @@ impl DaemonManager {
             enabled: self.enabled(),
             account,
             accounts,
+            watched_accounts,
             repo: runtime.as_ref().and_then(|r| r.repo.clone()),
             jira_configured: self.jira_config().is_some(),
             queued,
@@ -421,37 +469,69 @@ impl DaemonManager {
 
     fn poll_github(&self) -> Result<()> {
         let accounts = self.gh.accounts()?;
-        let account = self.account(&accounts);
-        if account.is_empty() {
+        let watch_list = self.watched_accounts(&accounts);
+        if watch_list.is_empty() {
             return Err(MaestroError::Config {
                 message: "no gh account available — log in with `gh auth login` and pick one in the daemon panel".into(),
             });
         }
-        let token = self.gh.token(&account)?;
         let slug = self.watched_repo()?;
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.repo = Some(slug.clone());
         }
 
+        // A PR's contents (open list, comments, resolved threads) are repo-scoped,
+        // not account-scoped — one working token is enough to see all of it. Only
+        // "am I a requested reviewer" / "is this comment mine" need to check every
+        // watched login, not just whichever one happened to authenticate.
+        let mut tokens: Vec<String> = Vec::new();
+        for account in &watch_list {
+            match self.gh.token(account) {
+                Ok(token) => tokens.push(token),
+                Err(err) => {
+                    tracing::warn!(account, error = %err, "no token for a watched account; skipping it this poll");
+                }
+            }
+        }
+        let Some(primary_token) = tokens.into_iter().next() else {
+            return Err(MaestroError::Config {
+                message: "no token available for any watched gh account".into(),
+            });
+        };
+
         let mut new_tasks = 0usize;
 
-        for pull in self.gh.open_pulls(&token, &slug)? {
-            // Someone wants this account's review → prepare one, re-keyed per
-            // head SHA so a new push produces a fresh review pass.
-            if pull.requested_reviewers.iter().any(|r| r == &account) {
-                let key = format!("pr-review:{slug}#{}:{}", pull.number, pull.head_sha);
-                let payload = serde_json::json!({
-                    "pr": pull.number,
-                    "pr_title": pull.title,
-                    "pr_body": pull.body,
-                    "author": pull.author,
-                    "head_ref": pull.head_ref,
-                    "head_sha": pull.head_sha,
-                    "url": pull.url,
-                });
-                let title = format!("PR #{} review requested: {}", pull.number, pull.title);
-                if self.enqueue(&key, "pr_review", &title, &payload)? {
-                    new_tasks += 1;
+        for pull in self.gh.open_pulls(&primary_token, &slug)? {
+            // Someone wants one of our watched accounts' review → prepare one per
+            // matching account, re-keyed per head SHA so a new push produces a
+            // fresh review pass. The key only carries the account when there is
+            // more than one watched — the common single-account case keeps the
+            // exact key format from before this setting existed, so an existing
+            // queued/done task for an open PR is never re-queued as a duplicate
+            // on upgrade.
+            for account in &watch_list {
+                if pull.requested_reviewers.iter().any(|r| r == account) {
+                    let key = if watch_list.len() > 1 {
+                        format!(
+                            "pr-review:{account}:{slug}#{}:{}",
+                            pull.number, pull.head_sha
+                        )
+                    } else {
+                        format!("pr-review:{slug}#{}:{}", pull.number, pull.head_sha)
+                    };
+                    let payload = serde_json::json!({
+                        "pr": pull.number,
+                        "pr_title": pull.title,
+                        "pr_body": pull.body,
+                        "author": pull.author,
+                        "head_ref": pull.head_ref,
+                        "head_sha": pull.head_sha,
+                        "url": pull.url,
+                    });
+                    let title = format!("PR #{} review requested: {}", pull.number, pull.title);
+                    if self.enqueue(&key, "pr_review", &title, &payload)? {
+                        new_tasks += 1;
+                    }
                 }
             }
 
@@ -461,7 +541,7 @@ impl DaemonManager {
             }
             let resolved = self
                 .gh
-                .resolved_comment_ids(&token, &slug, pull.number)
+                .resolved_comment_ids(&primary_token, &slug, pull.number)
                 .unwrap_or_else(|err| {
                     tracing::debug!(error = %err, pr = pull.number, "could not check resolved threads; treating all comments as unresolved");
                     Default::default()
@@ -475,12 +555,13 @@ impl DaemonManager {
             // later one just because a *different* comment landed in between.
             let mut new_comments: Vec<github::GhComment> = self
                 .gh
-                .pull_comments(&token, &slug, pull.number)?
+                .pull_comments(&primary_token, &slug, pull.number)?
                 .into_iter()
                 .filter(|c| !resolved.contains(&c.id))
-                // Our own replies come back through this same endpoint on the next
-                // poll — without this they would look like a fresh comment to react to.
-                .filter(|c| c.author != account)
+                // Our own replies (from *any* watched account) come back through
+                // this same endpoint on the next poll — without this they would
+                // look like a fresh comment to react to.
+                .filter(|c| !watch_list.iter().any(|a| a == &c.author))
                 .filter(|c| !already_queued.contains(&c.id))
                 .collect();
             if !new_comments.is_empty() {
@@ -1322,6 +1403,122 @@ mod tests {
         ));
         mgr2.poll_once();
         assert_eq!(mgr2.list_tasks().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn watching_a_second_account_catches_a_review_request_the_first_would_miss() {
+        // MockGh's accounts are "personal" (active/default) and "work". A PR that
+        // only asks "work" to review is invisible with just the default account watched.
+        let gh = MockGh {
+            pulls: vec![GhPull {
+                requested_reviewers: vec!["work".into()],
+                ..pull(12, "Add retry", "feature/retry")
+            }],
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager(gh, MockExec::default());
+        mgr.poll_once();
+        assert_eq!(
+            mgr.list_tasks().unwrap().len(),
+            0,
+            "only 'personal' is watched by default; 'work' being asked is not our concern yet"
+        );
+
+        mgr.set_watched_accounts(&["personal".to_string(), "work".to_string()])
+            .unwrap();
+        mgr.poll_once();
+        let tasks = mgr.list_tasks().unwrap();
+        assert_eq!(
+            tasks.len(),
+            1,
+            "now watching 'work' too, the request is caught"
+        );
+        assert!(tasks[0].key.contains("work"), "key: {}", tasks[0].key);
+    }
+
+    #[test]
+    fn two_watched_accounts_both_requested_produce_two_distinct_tasks() {
+        let gh = MockGh {
+            pulls: vec![GhPull {
+                requested_reviewers: vec!["personal".into(), "work".into()],
+                ..pull(12, "Add retry", "feature/retry")
+            }],
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager(gh, MockExec::default());
+        mgr.set_watched_accounts(&["personal".to_string(), "work".to_string()])
+            .unwrap();
+
+        mgr.poll_once();
+        let tasks = mgr.list_tasks().unwrap();
+        assert_eq!(
+            tasks.len(),
+            2,
+            "each watched account being asked to review is its own task"
+        );
+        let keys: std::collections::HashSet<&str> = tasks.iter().map(|t| t.key.as_str()).collect();
+        assert!(keys.iter().any(|k| k.contains("personal")));
+        assert!(keys.iter().any(|k| k.contains("work")));
+    }
+
+    #[test]
+    fn a_reply_from_any_watched_account_is_never_treated_as_new_feedback() {
+        // Comment 501 is a genuine incoming comment; 502 is "our" reply from the
+        // *second* watched account — must be filtered out same as if it were the
+        // default account's own reply (the bug T1 of this session's PR-workflow
+        // fixes addressed, now checked across every watched identity, not just one).
+        let gh = MockGh {
+            pulls: vec![pull(12, "Add retry", "impl/T-1-x")],
+            comments: vec![
+                comment(501, Some(900), 12, "src/retry.rs"),
+                github::GhComment {
+                    author: "work".into(),
+                    ..comment(502, Some(900), 12, "src/retry.rs")
+                },
+            ],
+            ..Default::default()
+        };
+        let exec = MockExec {
+            worktrees: vec!["impl/T-1-x".into()],
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager(gh, exec);
+        mgr.set_watched_accounts(&["personal".to_string(), "work".to_string()])
+            .unwrap();
+
+        mgr.poll_once();
+        let tasks = mgr.list_tasks().unwrap();
+        assert_eq!(tasks.len(), 1);
+        let payload: serde_json::Value = serde_json::from_str(&tasks[0].payload).unwrap();
+        let comment_ids: Vec<u64> = payload["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["comment_id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(comment_ids, vec![501], "502 is our own reply from 'work'");
+    }
+
+    #[test]
+    fn a_stale_watched_account_no_longer_authenticated_is_dropped_not_errored() {
+        let gh = MockGh {
+            pulls: vec![review_request(12, "Add retry", "feature/retry")],
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager(gh, MockExec::default());
+        // "ghost" was logged out of gh since this was configured; MockGh only
+        // knows "personal" and "work".
+        mgr.set_watched_accounts(&["ghost".to_string()]).unwrap();
+
+        mgr.poll_once();
+        let status = mgr.status();
+        assert!(
+            status.last_error.is_none(),
+            "a stale account falls back to the default, not an error: {:?}",
+            status.last_error
+        );
+        // Falls back to the single posting identity ("personal", the active account).
+        assert_eq!(mgr.list_tasks().unwrap().len(), 1);
     }
 
     #[test]

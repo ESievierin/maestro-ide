@@ -17,6 +17,7 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
   const fetchTasks = useDaemon((s) => s.fetchTasks);
   const setEnabled = useDaemon((s) => s.setEnabled);
   const setAccount = useDaemon((s) => s.setAccount);
+  const setWatchedAccounts = useDaemon((s) => s.setWatchedAccounts);
   const dismiss = useDaemon((s) => s.dismiss);
   useEscapeToClose(onClose);
 
@@ -72,6 +73,30 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
                 />
               </div>
             </div>
+
+            {status.accounts.length > 1 && (
+              <div className="daemon-watch-accounts">
+                <span className="hint">Also detect review requests / your own PR comments as:</span>
+                {status.accounts.map((a) => {
+                  const checked = status.watched_accounts.includes(a.login);
+                  return (
+                    <label key={a.login} className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          const next = e.target.checked
+                            ? [...status.watched_accounts, a.login]
+                            : status.watched_accounts.filter((login) => login !== a.login);
+                          void setWatchedAccounts(next);
+                        }}
+                      />
+                      {a.login}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
 
             <p className="daemon-facts hint">
               Watching: <code>{status.repo ?? "(derived from the open repository's origin)"}</code>

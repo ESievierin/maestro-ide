@@ -1885,6 +1885,14 @@ input[type="checkbox"] {
   margin: var(--space-2) 0;
 }
 
+.daemon-watch-accounts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-2);
+}
+
 .daemon-error {
   display: flex;
   align-items: center;

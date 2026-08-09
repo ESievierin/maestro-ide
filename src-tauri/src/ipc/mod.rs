@@ -323,6 +323,22 @@ pub async fn set_daemon_account(state: State<'_, AppState>, account: String) -> 
     run_core(state.bus.clone(), move || daemon.set_account(&account)).await
 }
 
+/// Every account the daemon polls for review requests / own-PR comments on,
+/// in addition to (or instead of just) the single posting identity —
+/// watching PRs across a work + personal identity, say. Empty clears back to
+/// "just the posting identity."
+#[tauri::command]
+pub async fn set_daemon_watched_accounts(
+    state: State<'_, AppState>,
+    accounts: Vec<String>,
+) -> Result<(), String> {
+    let daemon = state.daemon.clone();
+    run_core(state.bus.clone(), move || {
+        daemon.set_watched_accounts(&accounts)
+    })
+    .await
+}
+
 /// Whether conversation telemetry (prompts + replies, per `core::telemetry`) is
 /// being recorded. On by default.
 #[tauri::command]

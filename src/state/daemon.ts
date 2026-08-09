@@ -27,6 +27,7 @@ export interface DaemonStatus {
   enabled: boolean;
   account: string;
   accounts: GhAccount[];
+  watched_accounts: string[];
   repo: string | null;
   jira_configured: boolean;
   queued: number;
@@ -44,6 +45,7 @@ interface DaemonState {
   fetchTasks: () => Promise<void>;
   setEnabled: (enabled: boolean) => Promise<void>;
   setAccount: (account: string) => Promise<void>;
+  setWatchedAccounts: (accounts: string[]) => Promise<void>;
   dismiss: (key: string) => Promise<void>;
 }
 
@@ -78,6 +80,14 @@ export const useDaemon = create<DaemonState>((set) => ({
   setAccount: async (account) => {
     try {
       await invoke("set_daemon_account", { account });
+    } catch {
+      // error.raised already surfaced it
+    }
+  },
+
+  setWatchedAccounts: async (accounts) => {
+    try {
+      await invoke("set_daemon_watched_accounts", { accounts });
     } catch {
       // error.raised already surfaced it
     }

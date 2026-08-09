@@ -748,6 +748,20 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
               <Icon name="copy" size={13} />
             </button>
           )}
+          {(snapshot?.files.length ?? 0) > 1 && (
+            <button
+              className="small ghost"
+              title={`Copy diff for all ${snapshot?.files.length} files`}
+              onClick={() => {
+                const allFiles = snapshot?.files.length ?? 0;
+                void import("../utils/actions").then(({ copyDiff }) =>
+                  copyDiff(`all ${allFiles} files`, snapshot?.unified ?? ""),
+                );
+              }}
+            >
+              <Icon name="copy" size={13} /> Copy all
+            </button>
+          )}
           <button
             className="small ghost"
             onClick={() => void refresh(branch, scope)}

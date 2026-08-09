@@ -10,6 +10,7 @@ import "./styles.css";
 // Subscribe to backend events before the first render so no early event is missed.
 startEventBridge();
 
+// And away we go.
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <App />

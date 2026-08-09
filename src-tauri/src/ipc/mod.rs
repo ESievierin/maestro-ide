@@ -1084,6 +1084,19 @@ pub async fn import_settings_bundle(
     .await
 }
 
+// ---------- generic file export ----------
+
+/// Write `content` to `path` verbatim — the shared primitive behind every
+/// "export this as a file" action (a session transcript, say) that renders
+/// its own text client-side and just needs somewhere to put it.
+#[tauri::command]
+pub async fn write_text_file(path: String, content: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || std::fs::write(&path, content))
+        .await
+        .map_err(|join_err| format!("internal error: {join_err}"))?
+        .map_err(|err| err.to_string())
+}
+
 // ---------- attention queue ----------
 
 /// Everything waiting on the user, most urgent first (T9).

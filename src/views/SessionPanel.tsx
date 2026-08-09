@@ -31,7 +31,7 @@ import {
   TODO_STATUS_ORDER,
 } from "../types/sessions";
 import type { WorktreeInfo } from "../types/worktrees";
-import { clearFinishedSessions } from "../utils/actions";
+import { clearFinishedSessions, exportTranscript } from "../utils/actions";
 import { QuestionDialog } from "./QuestionDialog";
 
 const DEFAULT_OPTION: SelectMenuOption = { value: "", label: "Default" };
@@ -1515,6 +1515,13 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
               />
             )}
             <div className="actions">
+              <button
+                className="small icon-only ghost"
+                title="Export this transcript as a markdown file"
+                onClick={() => void exportTranscript(selected)}
+              >
+                <Icon name="download" size={13} />
+              </button>
               {isTerminalStatus(selected.status) ? (
                 <>
                   {selected.status === "failed" && firstPrompt(selected.id) && (

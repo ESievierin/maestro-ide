@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
+import type { Session } from "../types/sessions";
+import { defaultTranscriptFilename, transcriptToMarkdown } from "./exportTranscript";
 
 /** Open the worktree (or one of its files) in an external tool. Failures surface
  * as error toasts via the core's own error.raised path — no handling needed here. */
@@ -33,6 +35,39 @@ export async function removeWorktree(branch: string): Promise<void> {
       { title: "MaestroIDE", kind: "warning" },
     );
     if (forceIt) await remove(branch, true);
+  }
+}
+
+/** Save a session's transcript to a markdown file on disk — for sharing
+ * outside the app or archiving. Silent no-op if the user cancels the save
+ * dialog; a real write failure surfaces as a toast, not just a swallowed
+ * rejection, since there is no `error.raised` bus event backing this one
+ * (rendering happens client-side, `write_text_file` is a plain fs write). */
+export async function exportTranscript(session: Session): Promise<void> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const path = await save({
+    title: "Export session transcript",
+    defaultPath: defaultTranscriptFilename(session),
+    filters: [{ name: "Markdown", extensions: ["md"] }],
+  });
+  if (!path) return;
+
+  const items = useSessions.getState().transcripts[session.id] ?? [];
+  const markdown = transcriptToMarkdown(session, items);
+  const { useToasts } = await import("../state/toasts");
+  try {
+    await invoke("write_text_file", { path, content: markdown });
+    useToasts.getState().push({
+      severity: "info",
+      code: "exported",
+      message: `Transcript exported to ${path}`,
+    });
+  } catch (e) {
+    useToasts.getState().push({
+      severity: "warning",
+      code: "export-failed",
+      message: `Could not export transcript: ${String(e)}`,
+    });
   }
 }
 

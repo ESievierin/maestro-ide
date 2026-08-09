@@ -1,8 +1,45 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
+import type { Notes } from "../types/notes";
 import type { Session } from "../types/sessions";
 import { defaultTranscriptFilename, transcriptToMarkdown } from "./exportTranscript";
+
+/** A filesystem-safe default filename: no path separators or reserved
+ * Windows characters. */
+function defaultNotesFilename(branch: string): string {
+  const branchSlug = branch.replace(/[\\/:*?"<>|]+/g, "-");
+  return `TASK_NOTES-${branchSlug}.md`;
+}
+
+/** Save a worktree's TASK_NOTES.md to a file on disk — for pasting into a PR
+ * description or a team wiki page, the same reasoning as `exportTranscript`
+ * below. Silent no-op if the user cancels the save dialog. */
+export async function exportNotes(notes: Notes): Promise<void> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const path = await save({
+    title: "Export task notes",
+    defaultPath: defaultNotesFilename(notes.branch),
+    filters: [{ name: "Markdown", extensions: ["md"] }],
+  });
+  if (!path) return;
+
+  const { useToasts } = await import("../state/toasts");
+  try {
+    await invoke("write_text_file", { path, content: notes.raw });
+    useToasts.getState().push({
+      severity: "info",
+      code: "exported",
+      message: `Notes exported to ${path}`,
+    });
+  } catch (e) {
+    useToasts.getState().push({
+      severity: "warning",
+      code: "export-failed",
+      message: `Could not export notes: ${String(e)}`,
+    });
+  }
+}
 
 /** Open the worktree (or one of its files) in an external tool. Failures surface
  * as error toasts via the core's own error.raised path — no handling needed here. */

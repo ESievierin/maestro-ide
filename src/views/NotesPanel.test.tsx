@@ -78,6 +78,40 @@ describe("NotesPanel", () => {
     expect(screen.getByRole("listitem").textContent).toBe("kept it simple");
   });
 
+  it("shows the export button only once notes exist", () => {
+    useNotes.setState({
+      byBranch: {
+        "impl/T-1-demo": {
+          branch: "impl/T-1-demo",
+          path: "/tmp/impl/T-1-demo/TASK_NOTES.md",
+          exists: false,
+          unavailable: null,
+          sections: [],
+          raw: "",
+          updated_at: null,
+        },
+      },
+    });
+    const { rerender } = render(<NotesPanel worktree={worktree} />);
+    expect(screen.queryByTitle("Export these notes as a markdown file")).toBeNull();
+
+    useNotes.setState({
+      byBranch: {
+        "impl/T-1-demo": {
+          branch: "impl/T-1-demo",
+          path: "/tmp/impl/T-1-demo/TASK_NOTES.md",
+          exists: true,
+          unavailable: null,
+          sections: [{ title: "Decisions", body: "- kept it simple" }],
+          raw: "## Decisions\n\n- kept it simple\n",
+          updated_at: null,
+        },
+      },
+    });
+    rerender(<NotesPanel worktree={worktree} />);
+    expect(screen.getByTitle("Export these notes as a markdown file")).toBeTruthy();
+  });
+
   it("explains why notes are unavailable instead of showing an empty panel", () => {
     useNotes.setState({
       byBranch: {

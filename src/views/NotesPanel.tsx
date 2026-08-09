@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Icon } from "../components/Icon";
 import { useNotes } from "../state/notes";
+import { exportNotes } from "../utils/actions";
 import type { WorktreeInfo } from "../types/worktrees";
 
 /**
@@ -36,6 +37,15 @@ export function NotesPanel({ worktree }: { worktree: WorktreeInfo }) {
             <span className="count">{new Date(notes.updated_at).toLocaleString()}</span>
           )}
         </h2>
+        {notes?.exists && (
+          <button
+            className="small icon-only ghost"
+            title="Export these notes as a markdown file"
+            onClick={() => void exportNotes(notes)}
+          >
+            <Icon name="download" size={13} />
+          </button>
+        )}
         <button className="small ghost" disabled={!!loading} onClick={() => void refresh(branch)}>
           <Icon name="refresh" spin={!!loading} /> Refresh
         </button>

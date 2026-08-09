@@ -42,6 +42,9 @@ pub struct DaemonTask {
     pub branch: Option<String>,
     /// Session it spawned, once running.
     pub session_id: Option<String>,
+    /// How many times this task has been started. Bumped on a requeue-for-retry
+    /// after a transient start failure (see `requeue_daemon_task_for_retry`).
+    pub attempts: u32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -180,6 +183,10 @@ pub trait Store: Send + Sync {
     /// Put any `running` tasks back to `queued` — app restart: their sessions
     /// are already failed by `fail_stale_sessions`, the work is not lost.
     fn requeue_running_daemon_tasks(&self) -> Result<usize>;
+    /// Put a task that just failed to start back to `queued` and bump its
+    /// `attempts` count — a transient start failure gets another try instead
+    /// of failing outright (bounded by the caller's own attempt-count check).
+    fn requeue_daemon_task_for_retry(&self, key: &str) -> Result<()>;
 }
 
 /// SQLite-backed store. A single connection behind a mutex is sufficient for the
@@ -683,8 +690,8 @@ impl Store for SqliteStore {
         self.with_conn(|conn| {
             let inserted = conn.execute(
                 "INSERT OR IGNORE INTO daemon_tasks
-                     (key, kind, state, title, payload, branch, session_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                     (key, kind, state, title, payload, branch, session_id, attempts, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     task.key,
                     task.kind,
@@ -693,6 +700,7 @@ impl Store for SqliteStore {
                     task.payload,
                     task.branch,
                     task.session_id,
+                    task.attempts,
                     task.created_at,
                     task.updated_at,
                 ],
@@ -776,10 +784,25 @@ impl Store for SqliteStore {
             Ok(n)
         })
     }
+
+    fn requeue_daemon_task_for_retry(&self, key: &str) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "UPDATE daemon_tasks SET
+                     state = 'queued',
+                     attempts = attempts + 1,
+                     session_id = NULL,
+                     updated_at = ?2
+                 WHERE key = ?1",
+                params![key, Utc::now()],
+            )?;
+            Ok(())
+        })
+    }
 }
 
 const DAEMON_TASK_COLUMNS: &str =
-    "key, kind, state, title, payload, branch, session_id, created_at, updated_at";
+    "key, kind, state, title, payload, branch, session_id, attempts, created_at, updated_at";
 
 fn daemon_task_from_row(row: &Row) -> rusqlite::Result<DaemonTask> {
     Ok(DaemonTask {
@@ -790,6 +813,7 @@ fn daemon_task_from_row(row: &Row) -> rusqlite::Result<DaemonTask> {
         payload: row.get("payload")?,
         branch: row.get("branch")?,
         session_id: row.get("session_id")?,
+        attempts: row.get("attempts")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -815,6 +839,7 @@ mod tests {
             payload: r#"{"number":7}"#.into(),
             branch: None,
             session_id: None,
+            attempts: 0,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -854,6 +879,50 @@ mod tests {
         let all = s.list_daemon_tasks().expect("list");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].state, "done");
+    }
+
+    #[test]
+    fn requeue_daemon_task_for_retry_bumps_attempts_and_clears_session() {
+        let s = store();
+        let task = DaemonTask {
+            key: "pr-comment:owner/repo#9:1,2".into(),
+            kind: "pr_comment".into(),
+            state: "running".into(),
+            title: "Reply to review comments".into(),
+            payload: "{}".into(),
+            branch: Some("research/GH-9-x".into()),
+            session_id: Some("sess-9".into()),
+            attempts: 0,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        s.insert_daemon_task(&task).expect("insert");
+
+        s.requeue_daemon_task_for_retry(&task.key).expect("retry");
+        let retried = s
+            .list_daemon_tasks()
+            .expect("list")
+            .into_iter()
+            .find(|t| t.key == task.key)
+            .expect("task still present");
+        assert_eq!(retried.state, "queued");
+        assert_eq!(retried.attempts, 1);
+        assert!(retried.session_id.is_none());
+        assert_eq!(
+            retried.branch.as_deref(),
+            Some("research/GH-9-x"),
+            "the branch it already made should survive the retry"
+        );
+
+        s.requeue_daemon_task_for_retry(&task.key)
+            .expect("retry again");
+        let retried_again = s
+            .list_daemon_tasks()
+            .expect("list")
+            .into_iter()
+            .find(|t| t.key == task.key)
+            .expect("task still present");
+        assert_eq!(retried_again.attempts, 2);
     }
 
     #[test]

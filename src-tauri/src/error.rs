@@ -87,6 +87,20 @@ impl MaestroError {
         }
     }
 
+    /// Whether this failure looks like a transient blip (a git command failing —
+    /// commonly a network hiccup on fetch/push) worth a bounded retry, as opposed
+    /// to a permanent problem (bad config, corrupt data, git missing) that will
+    /// just fail the same way again.
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            MaestroError::Git {
+                kind: GitErrorKind::CommandFailed,
+                ..
+            }
+        )
+    }
+
     pub fn to_event(&self) -> Event {
         Event::ErrorRaised {
             severity: self.severity(),

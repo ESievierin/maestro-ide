@@ -17,6 +17,7 @@ export interface DaemonTask {
   payload: string;
   branch: string | null;
   session_id: string | null;
+  attempts: number;
   created_at: string;
   updated_at: string;
 }

@@ -76,6 +76,9 @@ const DEFAULT_RESEARCH_EFFORT: &str = "high";
 /// reply to a comment) — worth the extra reasoning.
 const DEFAULT_VERIFY_MODEL: &str = "sonnet";
 const DEFAULT_VERIFY_EFFORT: &str = "xhigh";
+/// Total start attempts allowed for a task before a transient failure gives up
+/// and falls back to `failed` — 30s poll-tick spacing is the backoff, no timer needed.
+const MAX_DAEMON_TASK_ATTEMPTS: u32 = 3;
 
 /// What the frontend chip/panel shows.
 #[derive(Clone, Debug, Serialize)]
@@ -588,6 +591,7 @@ impl DaemonManager {
             payload: payload.to_string(),
             branch: None,
             session_id: None,
+            attempts: 0,
             created_at: now,
             updated_at: now,
         })
@@ -619,11 +623,21 @@ impl DaemonManager {
             }
         };
         if let Err(err) = self.start(&task) {
-            let _ = self
-                .store
-                .update_daemon_task(&task.key, "failed", None, None);
-            crate::error::report(&self.bus, &err);
-            tracing::warn!(key = %task.key, error = %err, "daemon task failed to start");
+            if err.is_transient() && task.attempts + 1 < MAX_DAEMON_TASK_ATTEMPTS {
+                let _ = self.store.requeue_daemon_task_for_retry(&task.key);
+                tracing::warn!(
+                    key = %task.key,
+                    attempt = task.attempts + 1,
+                    error = %err,
+                    "daemon task failed to start, will retry"
+                );
+            } else {
+                let _ = self
+                    .store
+                    .update_daemon_task(&task.key, "failed", None, None);
+                crate::error::report(&self.bus, &err);
+                tracing::warn!(key = %task.key, error = %err, "daemon task failed to start");
+            }
         }
         self.bus.publish(Event::DaemonUpdated {});
     }
@@ -997,6 +1011,7 @@ mod tests {
     use super::jira::JiraIssue;
     use super::*;
     use crate::core::store::SqliteStore;
+    use crate::error::GitErrorKind;
     use std::sync::Mutex as StdMutex;
 
     #[derive(Default)]
@@ -1061,12 +1076,18 @@ mod tests {
         }
     }
 
+    enum SpawnFailure {
+        Transient,
+        Permanent,
+    }
+
     #[derive(Default)]
     struct MockExec {
         worktrees: Vec<String>,
         created: StdMutex<Vec<(String, String)>>,
         fetched: StdMutex<Vec<String>>,
         spawned: StdMutex<Vec<SpawnParams>>,
+        fail_spawn: Option<SpawnFailure>,
     }
 
     impl DaemonExec for MockExec {
@@ -1098,6 +1119,20 @@ mod tests {
             Ok((head_ref.to_string(), format!("/wt/{head_ref}")))
         }
         fn spawn(&self, params: SpawnParams) -> Result<String> {
+            match self.fail_spawn {
+                Some(SpawnFailure::Transient) => {
+                    return Err(MaestroError::Git {
+                        kind: GitErrorKind::CommandFailed,
+                        message: "simulated transient git failure".into(),
+                    })
+                }
+                Some(SpawnFailure::Permanent) => {
+                    return Err(MaestroError::Config {
+                        message: "simulated permanent failure".into(),
+                    })
+                }
+                None => {}
+            }
             let id = format!("sess-{}", self.spawned.lock().unwrap().len() + 1);
             self.spawned.lock().unwrap().push(params);
             Ok(id)
@@ -1457,6 +1492,7 @@ mod tests {
                 .to_string(),
                 branch: Some("impl/T-1-x".into()),
                 session_id: None,
+                attempts: 0,
                 created_at: now,
                 updated_at: now,
             })
@@ -1660,6 +1696,7 @@ mod tests {
                 payload: "{}".into(),
                 branch: None,
                 session_id: None,
+                attempts: 0,
                 created_at: now,
                 updated_at: now,
             })
@@ -1669,6 +1706,128 @@ mod tests {
         assert!(exec.spawned.lock().unwrap().is_empty());
         let tasks = mgr.list_tasks().unwrap();
         assert_eq!(tasks[0].state, "dismissed");
+    }
+
+    fn pr_comment_task(key: &str, head_ref: &str, attempts: u32) -> DaemonTask {
+        let now = Utc::now();
+        DaemonTask {
+            key: key.into(),
+            kind: "pr_comment".into(),
+            state: "queued".into(),
+            title: "PR #9 — 1 review comment (reviewer)".into(),
+            payload: serde_json::json!({
+                "pr": 9,
+                "head_ref": head_ref,
+                "comments": [{
+                    "comment_id": 501,
+                    "author": "reviewer",
+                    "body": "fix this",
+                    "path": "src/lib.rs",
+                    "url": "https://github.com/owner/repo/pull/9#discussion_r501",
+                }],
+            })
+            .to_string(),
+            branch: None,
+            session_id: None,
+            attempts,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn a_transient_start_failure_is_requeued_for_retry_not_failed() {
+        let exec = MockExec {
+            worktrees: vec!["feature/retry".into()],
+            fail_spawn: Some(SpawnFailure::Transient),
+            ..Default::default()
+        };
+        let (mgr, _exec, bus) = manager(MockGh::default(), exec);
+        let mut rx = bus.subscribe();
+        mgr.store
+            .insert_daemon_task(&pr_comment_task(
+                "pr-comment:owner/repo#9:501",
+                "feature/retry",
+                0,
+            ))
+            .unwrap();
+
+        mgr.drive_queue();
+
+        let tasks = mgr.list_tasks().unwrap();
+        assert_eq!(
+            tasks[0].state, "queued",
+            "a transient failure should be retried, not failed outright"
+        );
+        assert_eq!(tasks[0].attempts, 1);
+        while let Ok(event) = rx.try_recv() {
+            assert!(
+                !matches!(event, Event::ErrorRaised { .. }),
+                "no error should surface to the user while retries remain"
+            );
+        }
+    }
+
+    #[test]
+    fn a_transient_failure_gives_up_after_max_attempts() {
+        let exec = MockExec {
+            worktrees: vec!["feature/retry".into()],
+            fail_spawn: Some(SpawnFailure::Transient),
+            ..Default::default()
+        };
+        let (mgr, _exec, bus) = manager(MockGh::default(), exec);
+        let mut rx = bus.subscribe();
+        mgr.store
+            .insert_daemon_task(&pr_comment_task(
+                "pr-comment:owner/repo#9:501",
+                "feature/retry",
+                MAX_DAEMON_TASK_ATTEMPTS - 1,
+            ))
+            .unwrap();
+
+        mgr.drive_queue();
+
+        let tasks = mgr.list_tasks().unwrap();
+        assert_eq!(
+            tasks[0].state, "failed",
+            "once the attempt budget is spent, a still-transient failure must fail for real"
+        );
+        let mut saw_error = false;
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, Event::ErrorRaised { .. }) {
+                saw_error = true;
+            }
+        }
+        assert!(saw_error, "the final failure should surface to the user");
+    }
+
+    #[test]
+    fn a_permanent_start_failure_is_never_retried() {
+        let exec = MockExec {
+            worktrees: vec!["feature/retry".into()],
+            fail_spawn: Some(SpawnFailure::Permanent),
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager(MockGh::default(), exec);
+        mgr.store
+            .insert_daemon_task(&pr_comment_task(
+                "pr-comment:owner/repo#9:501",
+                "feature/retry",
+                0,
+            ))
+            .unwrap();
+
+        mgr.drive_queue();
+
+        let tasks = mgr.list_tasks().unwrap();
+        assert_eq!(
+            tasks[0].state, "failed",
+            "a permanent-looking error (bad config, etc.) must not be retried"
+        );
+        assert_eq!(
+            tasks[0].attempts, 0,
+            "attempts only bump on an actual retry"
+        );
     }
 
     #[tokio::test]

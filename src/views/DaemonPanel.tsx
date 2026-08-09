@@ -139,6 +139,9 @@ function TaskRow({ task, onDismiss }: { task: DaemonTask; onDismiss: (key: strin
                 ? "Jira"
                 : task.kind}{" "}
           · {task.state}
+          {task.state === "queued" && task.attempts > 0
+            ? ` (retrying, attempt ${task.attempts + 1})`
+            : ""}
           {task.branch ? ` · ${task.branch}` : ""}
         </span>
       </span>

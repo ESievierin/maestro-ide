@@ -121,5 +121,11 @@ pub fn runner() -> Migrations<'static> {
         );
         "#,
         ),
+        M::up(
+            // How many times a task has been started — a start failure that looks
+            // transient (a git command failing, e.g. a network blip on fetch) gets
+            // requeued instead of failing outright, up to a small bound.
+            "ALTER TABLE daemon_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;",
+        ),
     ])
 }

@@ -96,6 +96,9 @@ interface SessionsState {
   interrupt: (sessionId: string) => Promise<void>;
   close: (sessionId: string) => Promise<void>;
   remove: (sessionId: string, branch: string) => Promise<boolean>;
+  /** Delete every terminal (done/failed/cancelled) session of `branch` in one go.
+   * Returns how many were actually removed. */
+  removeAllFinished: (branch: string) => Promise<number>;
   respondPermission: (sessionId: string, requestId: string, allow: boolean) => Promise<void>;
   /** Answer (or dismiss, with `null`) the dialog the agent is waiting on. */
   respondDialog: (sessionId: string, answer: DialogAnswer | null) => Promise<void>;
@@ -317,6 +320,41 @@ export const useSessions = create<SessionsState>((set, get) => ({
       set({ error: String(e) });
       return false;
     }
+  },
+
+  removeAllFinished: async (branch) => {
+    const targets = (get().byBranch[branch] ?? []).filter((s) => isTerminalStatus(s.status));
+    if (targets.length === 0) return 0;
+    let removed = 0;
+    for (const session of targets) {
+      try {
+        await invoke("delete_session", { sessionId: session.id });
+        removed += 1;
+      } catch (e) {
+        set({ error: String(e) });
+        // Keep going — one stubborn row (e.g. a race with a fresh spawn)
+        // should not stop the rest of the cleanup.
+      }
+    }
+    set((s) => {
+      const transcripts = { ...s.transcripts };
+      const commands = { ...s.commands };
+      const todos = { ...s.todos };
+      const usage = { ...s.usage };
+      const agents = { ...s.agents };
+      const mcpServers = { ...s.mcpServers };
+      for (const session of targets) {
+        delete transcripts[session.id];
+        delete commands[session.id];
+        delete todos[session.id];
+        delete usage[session.id];
+        delete agents[session.id];
+        delete mcpServers[session.id];
+      }
+      return { transcripts, commands, todos, usage, agents, mcpServers };
+    });
+    await get().fetch(branch);
+    return removed;
   },
 
   respondPermission: async (sessionId, requestId, allow) => {

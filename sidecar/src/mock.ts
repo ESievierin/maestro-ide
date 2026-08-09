@@ -8,7 +8,9 @@
 // "PLAN" asks the user to approve a plan; "AUTH" raises an MCP
 // elicitation; "THINK" streams a
 // thinking block; "TOOLS" runs a tool with a
-// result; "SUBAGENT" nests subagent output under a Task call; "TODO" publishes a todo
+// result; "EDIT_FILE" runs an Edit tool call against a real file in the
+// session's own worktree (tests the diff-viewer "jump to this file" button);
+// "SUBAGENT" nests subagent output under a Task call; "TODO" publishes a todo
 // list; "DENY" reports an auto-denied tool call; "CRASH" kills the whole sidecar process
 // (supervisor recovery testing). Every turn also reports usage.
 
@@ -29,6 +31,7 @@ export class MockSession implements SessionHandle {
   private effort = "";
   private thinking = "";
   private permissionMode = "";
+  private cwd = "";
   private readonly pending = new Map<string, (allow: boolean) => void>();
   private readonly pendingDialogs = new Map<string, (answer: string) => void>();
   private readonly pendingEscalations = new Map<string, (result: string) => void>();
@@ -43,6 +46,7 @@ export class MockSession implements SessionHandle {
   ) {}
 
   async spawn(req: SpawnRequest): Promise<void> {
+    this.cwd = req.cwd;
     this.emit({
       type: "session_init",
       session_id: this.sessionId,
@@ -162,6 +166,33 @@ export class MockSession implements SessionHandle {
         tool_use_id: id,
         is_error: false,
         text: "1\timport { run } from './run.js';\n2\trun();",
+      });
+    }
+
+    if (prompt.includes("EDIT_FILE")) {
+      // Tests the diff-viewer "jump" button: a real Edit call reports an
+      // absolute path, same as this — built from the session's own cwd so it
+      // resolves to whatever worktree actually spawned this mock session.
+      const id = `mock-edit-${++this.toolCounter}`;
+      const filePath = `${this.cwd.replace(/[\\/]+$/, "")}/BusinessLogic/LinkedInActionService.cs`;
+      this.emit({
+        type: "tool_use",
+        session_id: this.sessionId,
+        tool_use_id: id,
+        name: "Edit",
+        summary: JSON.stringify({
+          file_path: filePath,
+          old_string: "old code",
+          new_string: "new code",
+        }),
+      });
+      await sleep(120);
+      this.emit({
+        type: "tool_result",
+        session_id: this.sessionId,
+        tool_use_id: id,
+        is_error: false,
+        text: "The file has been updated.",
       });
     }
 

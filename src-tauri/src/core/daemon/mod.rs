@@ -388,6 +388,34 @@ impl DaemonManager {
         }
     }
 
+    /// Comment ids already folded into some earlier `pr_comment` task for this PR —
+    /// the guard against re-bundling a comment a previous poll already queued just
+    /// because a newer, unrelated comment landed alongside it this time.
+    fn already_queued_comment_ids(&self, slug: &str, pr: u64) -> std::collections::HashSet<u64> {
+        let prefix = format!("pr-comment:{slug}#{pr}:");
+        let mut ids = std::collections::HashSet::new();
+        let Ok(tasks) = self.list_tasks() else {
+            return ids;
+        };
+        for task in tasks {
+            if task.kind != "pr_comment" || !task.key.starts_with(&prefix) {
+                continue;
+            }
+            let Ok(payload) = serde_json::from_str::<serde_json::Value>(&task.payload) else {
+                continue;
+            };
+            let Some(comments) = payload.get("comments").and_then(|c| c.as_array()) else {
+                continue;
+            };
+            for comment in comments {
+                if let Some(id) = comment.get("comment_id").and_then(|v| v.as_u64()) {
+                    ids.insert(id);
+                }
+            }
+        }
+        ids
+    }
+
     fn poll_github(&self) -> Result<()> {
         let accounts = self.gh.accounts()?;
         let account = self.account(&accounts);
@@ -435,49 +463,48 @@ impl DaemonManager {
                     tracing::debug!(error = %err, pr = pull.number, "could not check resolved threads; treating all comments as unresolved");
                     Default::default()
                 });
-            // One task per review, not per comment: a reviewer submitting three
-            // comments at once should get one plan covering all three, not three
-            // sessions each blind to the other two.
-            let mut by_review: Vec<(Option<u64>, Vec<github::GhComment>)> = Vec::new();
-            for comment in self.gh.pull_comments(&token, &slug, pull.number)? {
-                if resolved.contains(&comment.id) {
-                    continue;
-                }
-                match by_review
-                    .iter_mut()
-                    .find(|(rid, _)| *rid == comment.review_id)
-                {
-                    Some((_, list)) => list.push(comment),
-                    None => by_review.push((comment.review_id, vec![comment])),
-                }
-            }
-            for (review_id, mut comments) in by_review {
-                comments.sort_by_key(|c| c.id);
-                let key = match review_id {
-                    Some(rid) => format!("pr-comment:{slug}#{}:{rid}", pull.number),
-                    None => format!(
-                        "pr-comment:{slug}#{}:c{}",
-                        pull.number,
-                        comments
-                            .iter()
-                            .map(|c| c.id.to_string())
-                            .collect::<Vec<_>>()
-                            .join("-")
-                    ),
-                };
+            let already_queued = self.already_queued_comment_ids(&slug, pull.number);
+            // One task per poll, not per review: whatever is newly visible on this
+            // pass — regardless of which review submission it came from — gets
+            // bundled into one plan. A reviewer who leaves 4 comments across two
+            // separate review submissions still gets one task covering all 4, and
+            // a comment already folded into an earlier task never reappears in a
+            // later one just because a *different* comment landed in between.
+            let mut new_comments: Vec<github::GhComment> = self
+                .gh
+                .pull_comments(&token, &slug, pull.number)?
+                .into_iter()
+                .filter(|c| !resolved.contains(&c.id))
+                // Our own replies come back through this same endpoint on the next
+                // poll — without this they would look like a fresh comment to react to.
+                .filter(|c| c.author != account)
+                .filter(|c| !already_queued.contains(&c.id))
+                .collect();
+            if !new_comments.is_empty() {
+                new_comments.sort_by_key(|c| c.id);
+                let key = format!(
+                    "pr-comment:{slug}#{}:{}",
+                    pull.number,
+                    new_comments
+                        .iter()
+                        .map(|c| c.id.to_string())
+                        .collect::<Vec<_>>()
+                        .join("-")
+                );
                 let payload = serde_json::json!({
                     "pr": pull.number,
                     "pr_title": pull.title,
                     "head_ref": pull.head_ref,
-                    "comments": comments.iter().map(|c| serde_json::json!({
+                    "comments": new_comments.iter().map(|c| serde_json::json!({
                         "comment_id": c.id,
+                        "review_id": c.review_id,
                         "author": c.author,
                         "path": c.path,
                         "body": c.body,
                         "url": c.url,
                     })).collect::<Vec<_>>(),
                 });
-                let authors = comments
+                let authors = new_comments
                     .iter()
                     .map(|c| c.author.as_str())
                     .collect::<std::collections::BTreeSet<_>>()
@@ -487,8 +514,8 @@ impl DaemonManager {
                 let title = format!(
                     "PR #{} — {} review comment{} ({authors})",
                     pull.number,
-                    comments.len(),
-                    if comments.len() == 1 { "" } else { "s" },
+                    new_comments.len(),
+                    if new_comments.len() == 1 { "" } else { "s" },
                 );
                 if self.enqueue(&key, "pr_comment", &title, &payload)? {
                     new_tasks += 1;
@@ -1282,7 +1309,7 @@ mod tests {
         // Only PR 12's comment is queued: PR 13's head has no worktree here.
         let tasks = mgr.list_tasks().unwrap();
         assert_eq!(tasks.len(), 1);
-        assert!(tasks[0].key.contains("#12:900"));
+        assert!(tasks[0].key.contains("#12:501"));
 
         mgr.drive_queue();
         let spawned = exec.spawned.lock().unwrap();
@@ -1318,7 +1345,7 @@ mod tests {
             1,
             "one review, one task, regardless of comment count"
         );
-        assert!(tasks[0].key.contains("#12:900"));
+        assert!(tasks[0].key.contains("#12:501-502-503"));
 
         mgr.drive_queue();
         let spawned = exec.spawned.lock().unwrap();
@@ -1332,7 +1359,10 @@ mod tests {
     }
 
     #[test]
-    fn comments_from_different_reviews_become_separate_tasks() {
+    fn comments_from_different_reviews_detected_together_become_one_task() {
+        // The old design grouped strictly by review submission; the new one groups
+        // by detection pass instead — two comments from two different reviews,
+        // both new on the same poll, still land in one task.
         let gh = MockGh {
             pulls: vec![pull(12, "Add retry", "impl/T-1-x")],
             comments: vec![
@@ -1349,9 +1379,8 @@ mod tests {
 
         mgr.poll_once();
         let tasks = mgr.list_tasks().unwrap();
-        assert_eq!(tasks.len(), 2);
-        assert!(tasks.iter().any(|t| t.key.contains("#12:900")));
-        assert!(tasks.iter().any(|t| t.key.contains("#12:901")));
+        assert_eq!(tasks.len(), 1, "detected in the same pass, one task");
+        assert!(tasks[0].key.contains("#12:501-601"));
     }
 
     #[test]
@@ -1373,12 +1402,69 @@ mod tests {
 
         mgr.poll_once();
         let tasks = mgr.list_tasks().unwrap();
-        assert_eq!(
-            tasks.len(),
-            1,
-            "only the unresolved comment's review is queued"
-        );
-        assert!(tasks[0].key.contains("#12:901"));
+        assert_eq!(tasks.len(), 1, "only the unresolved comment is queued");
+        assert!(tasks[0].key.contains("#12:502"));
+    }
+
+    #[test]
+    fn our_own_replies_never_trigger_a_task() {
+        let gh = MockGh {
+            pulls: vec![pull(12, "Add retry", "impl/T-1-x")],
+            // MockGh::accounts() resolves the active account to "personal" —
+            // a comment authored by that same login is our own reply coming
+            // back through the same endpoint, not incoming feedback.
+            comments: vec![
+                GhComment {
+                    author: "personal".into(),
+                    ..comment(501, Some(900), 12, "src/retry.rs")
+                },
+                comment(502, Some(900), 12, "src/retry.rs"),
+            ],
+            ..Default::default()
+        };
+        let exec = MockExec {
+            worktrees: vec!["impl/T-1-x".into()],
+            ..Default::default()
+        };
+        let (mgr, _exec, _bus) = manager(gh, exec);
+
+        mgr.poll_once();
+        let tasks = mgr.list_tasks().unwrap();
+        assert_eq!(tasks.len(), 1, "only the reviewer's comment is queued");
+        assert!(tasks[0].key.contains("#12:502"));
+        assert!(!tasks[0].key.contains("501"));
+    }
+
+    #[test]
+    fn a_comment_already_covered_by_an_earlier_task_is_not_bundled_again() {
+        // 501 was already folded into a task from an earlier poll; 502 is new.
+        // A later poll (simulated directly: insert the earlier task, then ask
+        // what's already covered) must report only 501 as covered, not 502 —
+        // the guard that stops a later poll from re-bundling an old comment
+        // just because something new landed alongside it.
+        let (mgr, _exec, _bus) = manager(MockGh::default(), MockExec::default());
+        let now = Utc::now();
+        mgr.store
+            .insert_daemon_task(&DaemonTask {
+                key: "pr-comment:owner/repo#12:501".into(),
+                kind: "pr_comment".into(),
+                state: "done".into(),
+                title: "PR #12 — 1 review comment (reviewer)".into(),
+                payload: serde_json::json!({
+                    "pr": 12,
+                    "comments": [{"comment_id": 501, "author": "reviewer"}],
+                })
+                .to_string(),
+                branch: Some("impl/T-1-x".into()),
+                session_id: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+
+        let covered = mgr.already_queued_comment_ids("owner/repo", 12);
+        assert_eq!(covered, [501].into_iter().collect());
+        assert!(!covered.contains(&502));
     }
 
     #[test]

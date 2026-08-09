@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon, StatusDot } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
-import { askViaFollowup, findResumableSession } from "../utils/agentAsk";
+import { askViaFollowup, askViaNewSession, findResumableSession } from "../utils/agentAsk";
 import { usePr, openUrl, type PrComment, type ReplyOutcome } from "../state/pr";
 import { useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
@@ -63,6 +63,7 @@ export function PrRepliesDialog({
   const branch = worktree.branch as string;
   const dirty = worktree.status?.dirty ?? false;
   const listComments = usePr((s) => s.listComments);
+  const renderCommitPrompt = usePr((s) => s.renderCommitPrompt);
   const renderReplyFollowup = usePr((s) => s.renderReplyFollowup);
   const postReplies = usePr((s) => s.postReplies);
   useEscapeToClose(onClose);
@@ -74,6 +75,7 @@ export function PrRepliesDialog({
   const [commitMessage, setCommitMessage] = useState("");
   const [startBusy, setStartBusy] = useState(false);
   const [genBusy, setGenBusy] = useState(false);
+  const [genCommitBusy, setGenCommitBusy] = useState(false);
   const [postBusy, setPostBusy] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
   const [outcomes, setOutcomes] = useState<ReplyOutcome[] | null>(null);
@@ -161,6 +163,29 @@ export function PrRepliesDialog({
     } finally {
       setGenBusy(false);
       setPhase(null);
+    }
+  };
+
+  const genCommitMessage = async () => {
+    setGenCommitBusy(true);
+    try {
+      const prompt = await renderCommitPrompt(branch, null);
+      if (!prompt) return;
+      await useSessions.getState().fetch(branch);
+      // The review session (if the user already asked it to implement fixes)
+      // knows exactly what changed and why; the implementer is the fallback.
+      const target = findResumableSession(branch, ["review_fix", "implementation"]);
+      const result = await askViaNewSession({
+        branch,
+        prompt,
+        resumeFrom: target?.id,
+        model: START_MODEL,
+        effort: START_EFFORT,
+        permissionMode: "plan",
+      });
+      if (result?.text) setCommitMessage(result.text);
+    } finally {
+      setGenCommitBusy(false);
     }
   };
 
@@ -317,12 +342,22 @@ export function PrRepliesDialog({
             {dirty && (
               <label className="replies-commit">
                 Uncommitted changes in this worktree — commit them in the same go (optional)
-                <input
-                  type="text"
-                  placeholder="Commit message (empty = don't commit)"
-                  value={commitMessage}
-                  onChange={(e) => setCommitMessage(e.target.value)}
-                />
+                <div className="gen-row">
+                  <textarea
+                    rows={2}
+                    placeholder="Commit message (empty = don't commit) — or let it be generated"
+                    value={commitMessage}
+                    onChange={(e) => setCommitMessage(e.target.value)}
+                  />
+                  <button
+                    className="small ghost"
+                    disabled={genCommitBusy}
+                    title="Ask the review session to write it, with full context of what changed"
+                    onClick={() => void genCommitMessage()}
+                  >
+                    {genCommitBusy ? <Icon name="spinner" spin /> : <Icon name="bot" />} Generate
+                  </button>
+                </div>
               </label>
             )}
 

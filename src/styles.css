@@ -1918,7 +1918,7 @@ input[type="checkbox"] {
   font-size: var(--text-sm);
 }
 
-.replies-commit input {
+.replies-commit .gen-row {
   width: 100%;
   margin-top: var(--space-1);
 }

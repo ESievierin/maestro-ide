@@ -285,6 +285,7 @@ pub fn run() {
             ipc::save_session_preset,
             ipc::delete_session_preset,
             ipc::get_usage_summary,
+            ipc::get_usage_by_branch,
             ipc::dismiss_daemon_task,
             ipc::render_commit_prompt,
             ipc::render_pr_prompt,

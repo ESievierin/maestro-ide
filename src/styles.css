@@ -1929,6 +1929,46 @@ input[type="checkbox"] {
   font-size: var(--text-sm);
 }
 
+.settings-usage-by-branch {
+  margin-top: var(--space-1);
+}
+
+.settings-usage-by-branch summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.settings-usage-by-branch ul {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  max-height: 10rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.settings-usage-by-branch li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+}
+
+.settings-usage-branch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.settings-usage-branch-totals {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
 .settings-backup-actions {
   display: flex;
   gap: var(--space-2);

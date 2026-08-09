@@ -32,7 +32,7 @@ use crate::core::session::manager::{
 };
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
 use crate::core::store::{
-    Branch, DaemonTask, SessionPreset, SessionSearchResult, Store, UsageSummary,
+    Branch, BranchUsage, DaemonTask, SessionPreset, SessionSearchResult, Store, UsageSummary,
 };
 use crate::core::telemetry::SETTING_TELEMETRY_ENABLED;
 use crate::core::worktree::{
@@ -907,6 +907,13 @@ pub async fn delete_session_preset(state: State<'_, AppState>, id: String) -> Re
 pub async fn get_usage_summary(state: State<'_, AppState>) -> Result<UsageSummary, String> {
     let store = state.store.clone();
     run_core(state.bus.clone(), move || store.usage_summary()).await
+}
+
+/// All-time spend grouped by branch, most expensive first.
+#[tauri::command]
+pub async fn get_usage_by_branch(state: State<'_, AppState>) -> Result<Vec<BranchUsage>, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || store.usage_by_branch()).await
 }
 
 // ---------- diffs ----------

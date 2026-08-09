@@ -82,6 +82,14 @@ pub struct UsageSummary {
     pub all_time: UsageTotals,
 }
 
+/// All-time spend on one branch — same underlying rows as [`UsageSummary`],
+/// just grouped instead of collapsed into one grand total.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct BranchUsage {
+    pub branch: String,
+    pub totals: UsageTotals,
+}
+
 /// One transcript match — enough to show and jump to, without the caller
 /// needing to reparse the transcript itself.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -163,6 +171,9 @@ pub trait Store: Send + Sync {
         output_tokens: Option<u64>,
     ) -> Result<()>;
     fn usage_summary(&self) -> Result<UsageSummary>;
+    /// All-time spend grouped by branch, most expensive first — which
+    /// branch/task is actually burning the most, not just the grand total.
+    fn usage_by_branch(&self) -> Result<Vec<BranchUsage>>;
 
     // ---------- daemon task queue ----------
 
@@ -682,6 +693,38 @@ impl Store for SqliteStore {
         })
     }
 
+    fn usage_by_branch(&self) -> Result<Vec<BranchUsage>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT branch,
+                        COALESCE(SUM(cost_usd), 0.0),
+                        COALESCE(SUM(turns), 0),
+                        COALESCE(SUM(input_tokens), 0),
+                        COALESCE(SUM(output_tokens), 0)
+                 FROM session_usage
+                 GROUP BY branch
+                 ORDER BY SUM(cost_usd) DESC",
+            )?;
+            let mut rows = stmt.query([])?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                let turns: i64 = row.get(2)?;
+                let input_tokens: i64 = row.get(3)?;
+                let output_tokens: i64 = row.get(4)?;
+                out.push(BranchUsage {
+                    branch: row.get(0)?,
+                    totals: UsageTotals {
+                        cost_usd: row.get(1)?,
+                        turns: turns as u64,
+                        input_tokens: input_tokens as u64,
+                        output_tokens: output_tokens as u64,
+                    },
+                });
+            }
+            Ok(out)
+        })
+    }
+
     fn get_setting(&self, key: &str) -> Result<Option<String>> {
         self.with_conn(|conn| {
             let value = conn
@@ -1119,6 +1162,41 @@ mod tests {
         let summary = s.usage_summary().expect("summary again");
         assert!((summary.all_time.cost_usd - 3.5).abs() < 1e-9);
         assert_eq!(summary.all_time.turns, 5);
+    }
+
+    #[test]
+    fn usage_by_branch_groups_and_orders_by_cost_desc() {
+        let s = store();
+        s.upsert_session_usage(
+            "sess-1",
+            "impl/T-1-x",
+            Some(1.0),
+            Some(2),
+            Some(10),
+            Some(5),
+        )
+        .expect("insert usage 1");
+        // A second session on the SAME branch — its cost should fold into
+        // that branch's total, not appear as a separate row.
+        s.upsert_session_usage(
+            "sess-2",
+            "impl/T-1-x",
+            Some(4.0),
+            Some(3),
+            Some(20),
+            Some(10),
+        )
+        .expect("insert usage 2");
+        s.upsert_session_usage("sess-3", "impl/T-2-x", Some(2.0), Some(1), Some(5), Some(5))
+            .expect("insert usage 3");
+
+        let by_branch = s.usage_by_branch().expect("by branch");
+        assert_eq!(by_branch.len(), 2, "one row per branch, not per session");
+        assert_eq!(by_branch[0].branch, "impl/T-1-x", "most expensive first");
+        assert!((by_branch[0].totals.cost_usd - 5.0).abs() < 1e-9);
+        assert_eq!(by_branch[0].totals.turns, 5);
+        assert_eq!(by_branch[1].branch, "impl/T-2-x");
+        assert!((by_branch[1].totals.cost_usd - 2.0).abs() < 1e-9);
     }
 
     #[test]

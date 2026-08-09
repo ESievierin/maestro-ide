@@ -17,6 +17,10 @@ interface UsageSummary {
   today: UsageTotals;
   all_time: UsageTotals;
 }
+interface BranchUsage {
+  branch: string;
+  totals: UsageTotals;
+}
 
 interface ImportSummary {
   settings_applied: number;
@@ -62,6 +66,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [writerPolicy, setWriterPolicyState] = useState<string | null>(null);
   const [finalizeTimeout, setFinalizeTimeoutState] = useState<number | null>(null);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
+  const [usageByBranch, setUsageByBranch] = useState<BranchUsage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
@@ -75,6 +80,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     refetchToggles();
     void invoke<UsageSummary>("get_usage_summary").then(setUsage);
+    void invoke<BranchUsage[]>("get_usage_by_branch").then(setUsageByBranch);
   }, []);
 
   const toggleTelemetry = async () => {
@@ -179,6 +185,23 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               <p className="settings-usage-line">
                 <strong>All time:</strong> {formatUsage(usage.all_time)}
               </p>
+              {usageByBranch && usageByBranch.length > 0 && (
+                <details className="settings-usage-by-branch">
+                  <summary>By branch ({usageByBranch.length})</summary>
+                  <ul>
+                    {usageByBranch.map((b) => (
+                      <li key={b.branch}>
+                        <span className="settings-usage-branch-name" title={b.branch}>
+                          {b.branch}
+                        </span>
+                        <span className="settings-usage-branch-totals">
+                          {formatUsage(b.totals)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
             </>
           ) : (
             <p className="hint">

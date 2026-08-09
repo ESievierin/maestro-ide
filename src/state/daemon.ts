@@ -47,9 +47,14 @@ interface DaemonState {
   setAccount: (account: string) => Promise<void>;
   setWatchedAccounts: (accounts: string[]) => Promise<void>;
   dismiss: (key: string) => Promise<void>;
+  /** Dismiss every done/failed task in one go. Dismissal only hides a row
+   * from the panel (it neither deletes the row nor touches GitHub/Jira), so
+   * this needs no confirmation — same reasoning as the single-task dismiss
+   * button already not having one. Returns how many were dismissed. */
+  dismissFinished: () => Promise<number>;
 }
 
-export const useDaemon = create<DaemonState>((set) => ({
+export const useDaemon = create<DaemonState>((set, get) => ({
   status: null,
   tasks: [],
 
@@ -99,6 +104,20 @@ export const useDaemon = create<DaemonState>((set) => ({
     } catch {
       // error.raised already surfaced it
     }
+  },
+
+  dismissFinished: async () => {
+    const targets = get().tasks.filter((t) => t.state === "done" || t.state === "failed");
+    for (const task of targets) {
+      try {
+        await invoke("dismiss_daemon_task", { key: task.key });
+      } catch {
+        // error.raised already surfaced it — keep going, one stubborn row
+        // should not stop the rest of the cleanup.
+      }
+    }
+    await get().fetchTasks();
+    return targets.length;
   },
 }));
 

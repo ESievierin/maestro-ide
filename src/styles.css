@@ -1902,6 +1902,11 @@ input[type="checkbox"] {
   margin: var(--space-2) 0;
 }
 
+.daemon-tasks-header {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .daemon-task-list {
   list-style: none;
   margin: var(--space-2) 0 0;

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Icon, StatusDot } from "../components/Icon";
 import { SelectMenu } from "../components/SelectMenu";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
@@ -19,6 +19,8 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
   const setAccount = useDaemon((s) => s.setAccount);
   const setWatchedAccounts = useDaemon((s) => s.setWatchedAccounts);
   const dismiss = useDaemon((s) => s.dismiss);
+  const dismissFinished = useDaemon((s) => s.dismissFinished);
+  const [clearingFinished, setClearingFinished] = useState(false);
   useEscapeToClose(onClose);
 
   useEffect(() => {
@@ -27,6 +29,16 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
   }, [fetchStatus, fetchTasks]);
 
   const visible = tasks.filter((t) => t.state !== "dismissed");
+  const finishedCount = visible.filter((t) => t.state === "done" || t.state === "failed").length;
+
+  const clearFinished = async () => {
+    setClearingFinished(true);
+    try {
+      await dismissFinished();
+    } finally {
+      setClearingFinished(false);
+    }
+  };
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -118,6 +130,19 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
         )}
 
         <div className="daemon-tasks">
+          {finishedCount > 0 && (
+            <div className="daemon-tasks-header">
+              <button
+                className="small ghost"
+                disabled={clearingFinished}
+                title={`Dismiss all ${finishedCount} finished (done/failed) task${finishedCount === 1 ? "" : "s"}`}
+                onClick={() => void clearFinished()}
+              >
+                {clearingFinished ? <Icon name="spinner" spin /> : <Icon name="trash" size={12} />}{" "}
+                Clear finished
+              </button>
+            </div>
+          )}
           {visible.length === 0 ? (
             <p className="empty">No daemon tasks yet.</p>
           ) : (

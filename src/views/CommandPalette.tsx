@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon, type IconName } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useChecks } from "../state/checks";
+import { useDaemon } from "../state/daemon";
 import { useSessions } from "../state/sessions";
 import { useUI } from "../state/ui";
 import { useWorktrees } from "../state/worktrees";
@@ -194,6 +195,18 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           const interrupt = useSessions.getState().interrupt;
           for (const s of streaming) void interrupt(s.id);
         },
+      });
+    }
+
+    const finishedDaemonTasks = useDaemon
+      .getState()
+      .tasks.filter((t) => t.state === "done" || t.state === "failed").length;
+    if (finishedDaemonTasks > 0) {
+      result.push({
+        id: "daemon:clear-finished",
+        icon: "trash",
+        label: `Clear ${finishedDaemonTasks} finished daemon task${finishedDaemonTasks === 1 ? "" : "s"}`,
+        run: () => void useDaemon.getState().dismissFinished(),
       });
     }
 

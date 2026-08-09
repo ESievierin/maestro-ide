@@ -7,7 +7,13 @@ import { useSessions } from "../state/sessions";
 import { useUI } from "../state/ui";
 import { useWorktrees } from "../state/worktrees";
 import { isTerminalStatus } from "../types/sessions";
-import { clearFinishedSessions, copyPath, openWorktree, removeWorktree } from "../utils/actions";
+import {
+  clearFinishedSessions,
+  copyPath,
+  openWorktree,
+  removeWorktree,
+  syncAllWorktrees,
+} from "../utils/actions";
 
 interface PaletteItem {
   id: string;
@@ -195,6 +201,16 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           const interrupt = useSessions.getState().interrupt;
           for (const s of streaming) void interrupt(s.id);
         },
+      });
+    }
+
+    const syncableWorktrees = worktrees.filter((w) => !w.is_primary && w.branch).length;
+    if (syncableWorktrees > 1) {
+      result.push({
+        id: "wt:sync-all",
+        icon: "arrow-down",
+        label: `Sync all ${syncableWorktrees} worktrees with their base`,
+        run: () => void syncAllWorktrees(),
       });
     }
 

@@ -250,6 +250,12 @@ body {
   right: 0.15rem;
 }
 
+.wt-sync-all {
+  width: 100%;
+  justify-content: center;
+  margin-bottom: var(--space-2);
+}
+
 .worktree-items {
   list-style: none;
   margin: 0;

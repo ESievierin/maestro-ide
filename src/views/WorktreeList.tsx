@@ -7,7 +7,7 @@ import { useUI } from "../state/ui";
 import { activeSessionCount, useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
 import type { WorktreeInfo } from "../types/worktrees";
-import { removeWorktree } from "../utils/actions";
+import { removeWorktree, syncAllWorktrees } from "../utils/actions";
 import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { MergeDialog } from "./MergeDialog";
 
@@ -159,6 +159,7 @@ export function WorktreeList() {
   const [switchingRepo, setSwitchingRepo] = useState(false);
   const [mergeSource, setMergeSource] = useState<WorktreeInfo | null>(null);
   const [syncing, setSyncing] = useState<string | null>(null);
+  const [syncingAll, setSyncingAll] = useState(false);
   const [filter, setFilter] = useState("");
 
   useEffect(() => {
@@ -191,6 +192,14 @@ export function WorktreeList() {
         message: outcome.message || `Sync of '${branch}' failed.`,
       });
     }
+  };
+
+  const syncableCount = worktrees.filter((w) => !w.is_primary && w.branch).length;
+
+  const onSyncAll = async () => {
+    setSyncingAll(true);
+    await syncAllWorktrees();
+    setSyncingAll(false);
   };
 
   const normalizedFilter = filter.trim().toLowerCase();
@@ -267,6 +276,16 @@ export function WorktreeList() {
                 </button>
               )}
             </div>
+          )}
+          {syncableCount > 1 && (
+            <button
+              className="small ghost wt-sync-all"
+              disabled={syncingAll}
+              title={`Sync all ${syncableCount} worktrees with their base branch`}
+              onClick={() => void onSyncAll()}
+            >
+              <Icon name={syncingAll ? "spinner" : "arrow-down"} spin={syncingAll} /> Sync all
+            </button>
           )}
           {normalizedFilter && filteredWorktrees.length === 0 && (
             <p className="hint">No worktree matches "{filter.trim()}".</p>

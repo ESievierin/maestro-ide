@@ -38,6 +38,41 @@ export async function removeWorktree(branch: string): Promise<void> {
   }
 }
 
+/** Sync every non-primary worktree with its base, one at a time — a
+ * conflict on one branch must never stop the rest from being attempted —
+ * then report one summary toast instead of a flood of per-branch ones. */
+export async function syncAllWorktrees(): Promise<void> {
+  const { worktrees, sync } = useWorktrees.getState();
+  const targets = worktrees.filter((w) => !w.is_primary && w.branch);
+  if (targets.length === 0) return;
+
+  let upToDate = 0;
+  const conflicted: string[] = [];
+  const failed: string[] = [];
+  for (const wt of targets) {
+    const branch = wt.branch as string;
+    const outcome = await sync(branch);
+    if (!outcome) failed.push(branch);
+    else if (outcome.merged) upToDate++;
+    else if (outcome.conflicts.length > 0) conflicted.push(branch);
+    else failed.push(branch);
+  }
+
+  const { useToasts } = await import("../state/toasts");
+  const parts = [`${upToDate} up to date`];
+  if (conflicted.length > 0) {
+    parts.push(`${conflicted.length} conflicted (${conflicted.join(", ")})`);
+  }
+  if (failed.length > 0) {
+    parts.push(`${failed.length} failed (${failed.join(", ")})`);
+  }
+  useToasts.getState().push({
+    severity: conflicted.length > 0 || failed.length > 0 ? "warning" : "info",
+    code: "sync-all",
+    message: `Synced ${targets.length} worktree${targets.length === 1 ? "" : "s"}: ${parts.join(", ")}.`,
+  });
+}
+
 /** Save a session's transcript to a markdown file on disk — for sharing
  * outside the app or archiving. Silent no-op if the user cancels the save
  * dialog; a real write failure surfaces as a toast, not just a swallowed

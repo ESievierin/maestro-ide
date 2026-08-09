@@ -32,6 +32,9 @@ import {
 } from "../types/sessions";
 import type { WorktreeInfo } from "../types/worktrees";
 import { clearFinishedSessions, copyTranscript, exportTranscript } from "../utils/actions";
+import { editedFilePath, relativeToWorktree } from "../utils/toolFilePath";
+import { useDiffJump } from "../state/diffJump";
+import { useWorktrees } from "../state/worktrees";
 import { QuestionDialog } from "./QuestionDialog";
 
 const DEFAULT_OPTION: SelectMenuOption = { value: "", label: "Default" };
@@ -254,9 +257,20 @@ function SubagentChild({ child }: { child: ToolChild }) {
  * A tool call, its result, and — for `Task` — everything the subagent did inside it.
  * Folded by default: the answer is what the user reads, this is the evidence behind it.
  */
-function ToolUseEntry({ item }: { item: Extract<TranscriptItem, { kind: "tool_use" }> }) {
+function ToolUseEntry({
+  item,
+  branch,
+}: {
+  item: Extract<TranscriptItem, { kind: "tool_use" }>;
+  branch: string;
+}) {
   const { name, summary, result, children } = item;
   const state = result ? (result.isError ? "error" : "done") : "running";
+  const worktreePath = useWorktrees((s) => s.worktrees.find((w) => w.branch === branch)?.path);
+  const absolutePath = editedFilePath(item);
+  const relPath =
+    absolutePath && worktreePath ? relativeToWorktree(absolutePath, worktreePath) : null;
+
   return (
     <details className={`t-tool t-tool-${state}`}>
       <summary>
@@ -265,6 +279,21 @@ function ToolUseEntry({ item }: { item: Extract<TranscriptItem, { kind: "tool_us
         {state === "running" && <Icon name="spinner" spin />}
         {state === "error" && <Icon name="alert" />}
         {children.length > 0 && <span className="t-tool-badge">{children.length}</span>}
+        {relPath && (
+          <button
+            className="small icon-only ghost t-tool-diff-jump"
+            title={`View ${relPath} in the diff`}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              useDiffJump.getState().request(branch, relPath);
+              useWorktrees.getState().select(branch);
+              useWorktrees.getState().setTab("diff");
+            }}
+          >
+            <Icon name="diff" size={12} />
+          </button>
+        )}
       </summary>
       <code>{summary}</code>
       {result && (
@@ -553,9 +582,11 @@ function PermissionEntry({
 const TranscriptEntry = memo(function TranscriptEntry({
   item,
   sessionId,
+  branch,
 }: {
   item: TranscriptItem;
   sessionId: string;
+  branch: string;
 }) {
   switch (item.kind) {
     case "user":
@@ -567,7 +598,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
     case "text":
       return <StreamedMarkdown text={item.text} />;
     case "tool_use":
-      return <ToolUseEntry item={item} />;
+      return <ToolUseEntry item={item} branch={branch} />;
     case "thinking":
       return <ThinkingEntry text={item.text} />;
     case "denied":
@@ -598,7 +629,15 @@ const TranscriptEntry = memo(function TranscriptEntry({
   }
 });
 
-function TranscriptView({ sessionId, items }: { sessionId: string; items: TranscriptItem[] }) {
+function TranscriptView({
+  sessionId,
+  items,
+  branch,
+}: {
+  sessionId: string;
+  items: TranscriptItem[];
+  branch: string;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Auto-follow is a *state of the scrollbar*, not a mode: pinned to the bottom
   // means follow new output; scrolled up to read means stay put and offer a
@@ -649,7 +688,7 @@ function TranscriptView({ sessionId, items }: { sessionId: string; items: Transc
     <div className="transcript-wrap">
       <div className="transcript" ref={containerRef} onScroll={onScroll}>
         {items.map((item, i) => (
-          <TranscriptEntry key={i} item={item} sessionId={sessionId} />
+          <TranscriptEntry key={i} item={item} sessionId={sessionId} branch={branch} />
         ))}
       </div>
       {!following && (
@@ -1589,7 +1628,11 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
               )}
             </div>
           </div>
-          <TranscriptView sessionId={selected.id} items={transcripts[selected.id] ?? []} />
+          <TranscriptView
+            sessionId={selected.id}
+            items={transcripts[selected.id] ?? []}
+            branch={selected.branch}
+          />
           {(todos[selected.id]?.length ?? 0) > 0 && <TodoList items={todos[selected.id]} />}
           <ChatInput
             disabled={isTerminalStatus(selected.status)}

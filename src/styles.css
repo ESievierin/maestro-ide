@@ -3169,6 +3169,10 @@ button:active:not(:disabled) {
   padding: 0 0.3rem;
 }
 
+.t-tool-diff-jump {
+  margin-left: auto;
+}
+
 .t-tool-result {
   margin: 0.4rem 0 0;
   padding: 0.45rem 0.6rem;

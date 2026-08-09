@@ -7,6 +7,7 @@ import { languages } from "@codemirror/language-data";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { Icon } from "../components/Icon";
 import { SelectMenu } from "../components/SelectMenu";
+import { useDiffJump } from "../state/diffJump";
 import { selectSnapshot, useDiffs } from "../state/diffs";
 import { selectQuestions, useQuestions } from "../state/questions";
 import type { ChangedFile, DiffScope, LineEnding } from "../types/diffs";
@@ -598,6 +599,18 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
       setSelectedPath(paths[0]);
     }
   }, [snapshot, selectedPath]);
+
+  // A "view diff" jump from the transcript wins over the plain auto-select
+  // above (declared after it, in the same effect flush) — but only once the
+  // file it names is actually one of this snapshot's changed files.
+  const pendingJump = useDiffJump((s) => s.pending);
+  useEffect(() => {
+    if (!pendingJump || pendingJump.branch !== branch || !snapshot) return;
+    if (snapshot.files.some((f) => f.path === pendingJump.path)) {
+      setSelectedPath(pendingJump.path);
+      useDiffJump.getState().clear();
+    }
+  }, [pendingJump, branch, snapshot]);
 
   // Load old/new contents for the selected file.
   useEffect(() => {

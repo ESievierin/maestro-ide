@@ -5,6 +5,8 @@ import type { Notes } from "../types/notes";
 import type { Session } from "../types/sessions";
 import { defaultTranscriptFilename, transcriptToMarkdown } from "./exportTranscript";
 
+// TODO: this file has seen better days
+
 /** A filesystem-safe default filename: no path separators or reserved
  * Windows characters. */
 function defaultNotesFilename(branch: string): string {

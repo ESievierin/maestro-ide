@@ -29,7 +29,7 @@ use crate::core::session::manager::{
     SETTING_SINGLE_WRITER_POLICY,
 };
 use crate::core::session::{Session, SessionManager, SessionType, SpawnParams};
-use crate::core::store::{Branch, DaemonTask, Store};
+use crate::core::store::{Branch, DaemonTask, SessionPreset, Store};
 use crate::core::telemetry::SETTING_TELEMETRY_ENABLED;
 use crate::core::worktree::{
     BlameLine, CreateWorktreeRequest, LogEntry, MergeReport, RemoveOutcome, RepoInfo,
@@ -764,6 +764,65 @@ pub async fn get_session_transcript(
         Ok(Some(value))
     })
     .await
+}
+
+// ---------- session presets ----------
+
+#[tauri::command]
+pub async fn list_session_presets(
+    state: State<'_, AppState>,
+) -> Result<Vec<SessionPreset>, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || store.list_session_presets()).await
+}
+
+#[derive(Deserialize)]
+pub struct SavePresetArgs {
+    pub name: String,
+    pub session_type: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
+    pub tools_profile: Option<String>,
+}
+
+/// Save the current composer configuration as a new named preset. Presets are
+/// never edited in place — saving again under the same name just adds another
+/// one; delete the old one if that's not wanted.
+#[tauri::command]
+pub async fn save_session_preset(
+    state: State<'_, AppState>,
+    args: SavePresetArgs,
+) -> Result<SessionPreset, String> {
+    let name = args.name.trim().to_string();
+    if name.is_empty() {
+        return Err(MaestroError::InvalidData {
+            message: "a preset needs a name".into(),
+        }
+        .to_string());
+    }
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        let preset = SessionPreset {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            session_type: args.session_type,
+            model: args.model,
+            effort: args.effort,
+            permission_mode: args.permission_mode,
+            tools_profile: args.tools_profile,
+            created_at: chrono::Utc::now(),
+        };
+        store.insert_session_preset(&preset)?;
+        Ok(preset)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_session_preset(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || store.delete_session_preset(&id)).await
 }
 
 // ---------- diffs ----------

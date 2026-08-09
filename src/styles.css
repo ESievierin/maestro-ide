@@ -1167,6 +1167,14 @@ input[type="checkbox"] {
   font-size: var(--text-xs);
 }
 
+.preset-row {
+  align-items: center;
+}
+
+.preset-name-input {
+  width: 12rem;
+}
+
 .new-session textarea {
   resize: vertical;
   font-size: var(--text-sm);

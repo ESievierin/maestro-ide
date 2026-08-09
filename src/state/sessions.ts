@@ -9,6 +9,7 @@ import type {
   ModelOption,
   RateLimitInfo,
   Session,
+  SessionPreset,
   SessionUsage,
   TodoItem,
   ToolChild,
@@ -62,6 +63,18 @@ interface SessionsState {
   models: ModelOption[];
   /** Ask the CLI for the authoritative list; safe to call repeatedly. */
   refreshModels: () => Promise<void>;
+  /** Named composer presets — global, not per-branch. */
+  presets: SessionPreset[];
+  fetchPresets: () => Promise<void>;
+  savePreset: (input: {
+    name: string;
+    session_type: string | null;
+    model: string | null;
+    effort: string | null;
+    permission_mode: string | null;
+    tools_profile: string | null;
+  }) => Promise<SessionPreset | null>;
+  deletePreset: (id: string) => Promise<void>;
   /**
    * Dialogs the agent is blocked on, per session id. One at a time per session: the CLI
    * raises the next only after this one is answered.
@@ -189,6 +202,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
   usage: {},
   rateLimit: null,
   error: null,
+  presets: [],
 
   refreshModels: async () => {
     if (modelsRefreshed) return;
@@ -199,6 +213,35 @@ export const useSessions = create<SessionsState>((set, get) => ({
     } catch (e) {
       // A stale cached list is better than an empty selector — just report it.
       modelsRefreshed = false;
+      set({ error: String(e) });
+    }
+  },
+
+  fetchPresets: async () => {
+    try {
+      const presets = await invoke<SessionPreset[]>("list_session_presets");
+      set({ presets });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  savePreset: async (input) => {
+    try {
+      const preset = await invoke<SessionPreset>("save_session_preset", { args: input });
+      set((s) => ({ presets: [...s.presets, preset] }));
+      return preset;
+    } catch (e) {
+      set({ error: String(e) });
+      return null;
+    }
+  },
+
+  deletePreset: async (id) => {
+    try {
+      await invoke("delete_session_preset", { id });
+      set((s) => ({ presets: s.presets.filter((p) => p.id !== id) }));
+    } catch (e) {
       set({ error: String(e) });
     }
   },

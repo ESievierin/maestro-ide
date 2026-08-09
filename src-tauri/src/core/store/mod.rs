@@ -46,6 +46,21 @@ pub struct DaemonTask {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A named (model, effort, permission_mode, tools_profile, session_type) combo
+/// a user can reuse when starting a new session instead of reconfiguring the
+/// same setup for every repeat workflow.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SessionPreset {
+    pub id: String,
+    pub name: String,
+    pub session_type: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
+    pub tools_profile: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Storage boundary. Concrete impl: SQLite. Test doubles implement this trait.
 pub trait Store: Send + Sync {
     /// Insert the branch if new. On conflict, `task_id`/`base_branch` are only
@@ -88,6 +103,12 @@ pub trait Store: Send + Sync {
 
     fn get_setting(&self, key: &str) -> Result<Option<String>>;
     fn set_setting(&self, key: &str, value: &str) -> Result<()>;
+
+    // ---------- session presets ----------
+
+    fn list_session_presets(&self) -> Result<Vec<SessionPreset>>;
+    fn insert_session_preset(&self, preset: &SessionPreset) -> Result<()>;
+    fn delete_session_preset(&self, id: &str) -> Result<()>;
 
     // ---------- daemon task queue ----------
 
@@ -400,6 +421,57 @@ impl Store for SqliteStore {
         })
     }
 
+    fn list_session_presets(&self) -> Result<Vec<SessionPreset>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, session_type, model, effort, permission_mode, tools_profile, created_at
+                 FROM session_presets ORDER BY created_at",
+            )?;
+            let mut rows = stmt.query([])?;
+            let mut presets = Vec::new();
+            while let Some(row) = rows.next()? {
+                presets.push(SessionPreset {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    session_type: row.get(2)?,
+                    model: row.get(3)?,
+                    effort: row.get(4)?,
+                    permission_mode: row.get(5)?,
+                    tools_profile: row.get(6)?,
+                    created_at: row.get(7)?,
+                });
+            }
+            Ok(presets)
+        })
+    }
+
+    fn insert_session_preset(&self, preset: &SessionPreset) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO session_presets (id, name, session_type, model, effort, permission_mode, tools_profile, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    preset.id,
+                    preset.name,
+                    preset.session_type,
+                    preset.model,
+                    preset.effort,
+                    preset.permission_mode,
+                    preset.tools_profile,
+                    preset.created_at,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn delete_session_preset(&self, id: &str) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute("DELETE FROM session_presets WHERE id = ?1", params![id])?;
+            Ok(())
+        })
+    }
+
     fn get_setting(&self, key: &str) -> Result<Option<String>> {
         self.with_conn(|conn| {
             let value = conn
@@ -651,6 +723,46 @@ mod tests {
             s.get_setting("repo_path").expect("get").as_deref(),
             Some("C:/work/other")
         );
+    }
+
+    #[test]
+    fn session_presets_round_trip_and_list_oldest_first() {
+        let s = store();
+        assert_eq!(s.list_session_presets().expect("list"), Vec::new());
+
+        let first = SessionPreset {
+            id: "p1".into(),
+            name: "Quick research".into(),
+            session_type: Some("research".into()),
+            model: Some("sonnet".into()),
+            effort: Some("high".into()),
+            permission_mode: Some("plan".into()),
+            tools_profile: None,
+            created_at: Utc::now(),
+        };
+        s.insert_session_preset(&first).expect("insert first");
+        let second = SessionPreset {
+            id: "p2".into(),
+            name: "Full auto".into(),
+            session_type: Some("implementation".into()),
+            model: None,
+            effort: None,
+            permission_mode: Some("acceptEdits".into()),
+            tools_profile: None,
+            created_at: Utc::now(),
+        };
+        s.insert_session_preset(&second).expect("insert second");
+
+        let presets = s.list_session_presets().expect("list");
+        assert_eq!(presets.len(), 2);
+        assert_eq!(presets[0].id, "p1");
+        assert_eq!(presets[0].name, "Quick research");
+        assert_eq!(presets[1].id, "p2");
+
+        s.delete_session_preset("p1").expect("delete");
+        let presets = s.list_session_presets().expect("list");
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].id, "p2");
     }
 
     #[test]

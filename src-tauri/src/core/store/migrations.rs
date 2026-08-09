@@ -87,5 +87,22 @@ pub fn runner() -> Migrations<'static> {
         );
         "#,
         ),
+        M::up(
+            // Named (model, effort, permission_mode, tools_profile, session_type)
+            // combos a user can reuse instead of reconfiguring the same setup for
+            // every repeat workflow (e.g. "quick read-only research").
+            r#"
+        CREATE TABLE session_presets (
+            id              TEXT PRIMARY KEY,
+            name            TEXT NOT NULL,
+            session_type    TEXT,
+            model           TEXT,
+            effort          TEXT,
+            permission_mode TEXT,
+            tools_profile   TEXT,
+            created_at      TEXT NOT NULL
+        );
+        "#,
+        ),
     ])
 }

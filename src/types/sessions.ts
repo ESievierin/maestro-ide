@@ -270,3 +270,17 @@ export const TODO_STATUS_ORDER: Record<string, number> = {
 export function isTerminalStatus(status: SessionStatus): boolean {
   return status === "done" || status === "failed" || status === "cancelled";
 }
+
+/** Mirrors `SessionPreset` in src-tauri/src/core/store/. A named combo of
+ * composer settings, reusable with one click instead of reconfiguring the
+ * same repeat workflow every time. */
+export interface SessionPreset {
+  id: string;
+  name: string;
+  session_type: string | null;
+  model: string | null;
+  effort: string | null;
+  permission_mode: string | null;
+  tools_profile: string | null;
+  created_at: string;
+}

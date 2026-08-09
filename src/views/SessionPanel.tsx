@@ -949,6 +949,10 @@ function NewSessionForm({
   const spawn = useSessions((s) => s.spawn);
   const models = useSessions((s) => s.models);
   const refreshModels = useSessions((s) => s.refreshModels);
+  const presets = useSessions((s) => s.presets);
+  const fetchPresets = useSessions((s) => s.fetchPresets);
+  const savePreset = useSessions((s) => s.savePreset);
+  const deletePreset = useSessions((s) => s.deletePreset);
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<string>("");
@@ -956,11 +960,67 @@ function NewSessionForm({
   const [thinking, setThinking] = useState<string>("");
   const [sessionType, setSessionType] = useState<string>("manual");
   const [busy, setBusy] = useState(false);
+  const [presetName, setPresetName] = useState<string | null>(null);
+  const [presetBusy, setPresetBusy] = useState(false);
 
   // The cached list can be stale (e.g. left over from mock mode); ask the CLI once.
   useEffect(() => {
     void refreshModels();
-  }, [refreshModels]);
+    void fetchPresets();
+  }, [refreshModels, fetchPresets]);
+
+  const presetMenuOptions = useMemo<SelectMenuOption[]>(
+    () => [
+      { value: "", label: "No preset" },
+      ...presets.map((p) => ({
+        value: p.id,
+        label: p.name,
+        description: [p.session_type, p.model, p.effort, p.permission_mode]
+          .filter(Boolean)
+          .join(" · "),
+      })),
+    ],
+    [presets],
+  );
+
+  const applyPreset = (id: string) => {
+    const preset = presets.find((p) => p.id === id);
+    if (!preset) return;
+    setSessionType(preset.session_type ?? "manual");
+    setModel(preset.model ?? "");
+    setEffort(preset.effort ?? "");
+    setPermissionMode(preset.permission_mode ?? "");
+  };
+
+  const confirmSavePreset = async () => {
+    const name = presetName?.trim();
+    if (!name) return;
+    setPresetBusy(true);
+    try {
+      await savePreset({
+        name,
+        session_type: sessionType || null,
+        model: model || null,
+        effort: effort || null,
+        permission_mode: permissionMode || null,
+        tools_profile: null,
+      });
+      setPresetName(null);
+    } finally {
+      setPresetBusy(false);
+    }
+  };
+
+  const [presetPicker, setPresetPicker] = useState("");
+  const handlePresetChange = (id: string) => {
+    setPresetPicker(id);
+    if (id) applyPreset(id);
+  };
+  const deleteCurrentPreset = async () => {
+    if (!presetPicker) return;
+    await deletePreset(presetPicker);
+    setPresetPicker("");
+  };
 
   const modelMenuOptions = useMemo<SelectMenuOption[]>(
     () => [
@@ -992,6 +1052,54 @@ function NewSessionForm({
 
   return (
     <div className="new-session">
+      <div className="new-session-row preset-row">
+        <SelectMenu
+          icon="bot"
+          title="Apply a saved preset (model, effort, permission mode, type)"
+          value={presetPicker}
+          onChange={handlePresetChange}
+          options={presetMenuOptions}
+        />
+        {presetPicker && (
+          <button
+            className="small icon-only ghost"
+            title="Delete this preset"
+            onClick={() => void deleteCurrentPreset()}
+          >
+            <Icon name="trash" size={12} />
+          </button>
+        )}
+        {presetName === null ? (
+          <button className="small ghost" onClick={() => setPresetName("")}>
+            <Icon name="plus" size={12} /> Save as preset
+          </button>
+        ) : (
+          <>
+            <input
+              type="text"
+              className="preset-name-input"
+              placeholder="Preset name…"
+              autoFocus
+              value={presetName}
+              onChange={(e) => setPresetName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void confirmSavePreset();
+                if (e.key === "Escape") setPresetName(null);
+              }}
+            />
+            <button
+              className="small ghost"
+              disabled={presetBusy || !presetName.trim()}
+              onClick={() => void confirmSavePreset()}
+            >
+              {presetBusy ? <Icon name="spinner" spin /> : <Icon name="check" size={12} />}
+            </button>
+            <button className="small icon-only ghost" onClick={() => setPresetName(null)}>
+              <Icon name="close" size={12} />
+            </button>
+          </>
+        )}
+      </div>
       <div className="new-session-row">
         <SelectMenu
           title="What kind of work this session is — it decides notes and tools"

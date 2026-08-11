@@ -11,6 +11,18 @@ import { removeWorktree, syncAllWorktrees } from "../utils/actions";
 import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { MergeDialog } from "./MergeDialog";
 
+const STARTUP_TIPS = [
+  "Tip: each worktree runs its own agent, so you can work several tasks in parallel.",
+  "Tip: use the command palette to jump to any worktree without touching the mouse.",
+  "Tip: a failed check shows up as a red badge right on the worktree row.",
+  "Tip: you can merge a worktree's branch back the moment its diff looks good.",
+];
+
+function useStartupTip() {
+  const [tip] = useState(() => STARTUP_TIPS[Math.floor(Math.random() * STARTUP_TIPS.length)]);
+  return tip;
+}
+
 /**
  * At-a-glance state of one worktree, in the order that matters when four agents run:
  * who is blocked (failed / awaiting_input), who is busy (working), and whose diff is
@@ -160,6 +172,7 @@ export function WorktreeList() {
   const [mergeSource, setMergeSource] = useState<WorktreeInfo | null>(null);
   const [syncing, setSyncing] = useState<string | null>(null);
   const [syncingAll, setSyncingAll] = useState(false);
+  const startupTip = useStartupTip();
   const [filter, setFilter] = useState("");
 
   useEffect(() => {
@@ -250,9 +263,12 @@ export function WorktreeList() {
             <Icon name="chevron-down" size={12} />
           </button>
           {worktrees.length === 0 && !loading && (
-            <p className="hint">
-              No worktrees yet. Use <strong>+ New</strong> to create one per task.
-            </p>
+            <>
+              <p className="hint">
+                No worktrees yet. Use <strong>+ New</strong> to create one per task.
+              </p>
+              <p className="hint startup-tip">{startupTip}</p>
+            </>
           )}
           {worktrees.length > 1 && (
             <div className="wt-filter">

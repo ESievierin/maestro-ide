@@ -788,6 +788,11 @@ input[type="checkbox"] {
   margin: var(--space-1) 0;
 }
 
+.hint.startup-tip {
+  font-style: italic;
+  opacity: 0.8;
+}
+
 .hint.warn {
   color: var(--warning);
 }

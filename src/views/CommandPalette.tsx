@@ -9,6 +9,7 @@ import { useWorktrees } from "../state/worktrees";
 import { isTerminalStatus } from "../types/sessions";
 import {
   clearFinishedSessions,
+  copyBranchName,
   copyPath,
   openWorktree,
   removeWorktree,
@@ -104,6 +105,13 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           label: "Copy worktree path",
           hint: branch,
           run: () => void copyPath(current.path),
+        },
+        {
+          id: "wt:copy-branch",
+          icon: "branch",
+          label: "Copy branch name",
+          hint: branch,
+          run: () => void copyBranchName(branch),
         },
         {
           id: "wt:log",

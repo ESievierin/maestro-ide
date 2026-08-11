@@ -60,6 +60,17 @@ export async function copyPath(path: string) {
   });
 }
 
+/** Copy a worktree's branch name with a confirming toast. */
+export async function copyBranchName(branch: string) {
+  await navigator.clipboard.writeText(branch);
+  const { useToasts } = await import("../state/toasts");
+  useToasts.getState().push({
+    severity: "info",
+    code: "copied",
+    message: "Branch name copied to the clipboard.",
+  });
+}
+
 /** Remove a worktree, confirming (with the native dialog — window.confirm can
  * hang the webview, see the close-hang fix) when it has uncommitted changes. */
 export async function removeWorktree(branch: string): Promise<void> {

@@ -7,7 +7,7 @@ import { useHotkeys } from "./hooks/useHotkeys";
 import { eventMatchesCombo, useHotkeyBindings } from "./state/hotkeys";
 import { useUI } from "./state/ui";
 import { useWorktrees } from "./state/worktrees";
-import { openWorktree, copyPath } from "./utils/actions";
+import { openWorktree, copyPath, copyBranchName } from "./utils/actions";
 import { DiffViewer } from "./views/DiffViewer";
 import { NotesPanel } from "./views/NotesPanel";
 import { SessionPanel } from "./views/SessionPanel";
@@ -162,6 +162,13 @@ function MainPanel() {
               onClick={() => void copyPath(worktree.path)}
             >
               <Icon name="copy" size={13} />
+            </button>
+            <button
+              className="small icon-only ghost"
+              title="Copy branch name"
+              onClick={() => void copyBranchName(worktree.branch as string)}
+            >
+              <Icon name="branch" size={13} />
             </button>
             <button
               className="small icon-only ghost"

@@ -315,7 +315,10 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="modal-backdrop palette-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
+    <div
+      className="modal-backdrop palette-backdrop"
+      onMouseDown={closeOnBackdropMouseDown(onClose)}
+    >
       <div className="palette" onClick={(e) => e.stopPropagation()}>
         <input
           ref={inputRef}

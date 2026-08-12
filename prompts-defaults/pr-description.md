@@ -45,7 +45,7 @@ BODY — scale it to the change, don't pad:
   what happens with it off — that's the rollback story, worth stating even when it's "no
   change".
 - Mention tests only as a short trailing clause when it adds information ("covered by unit
-  + integration tests", "manually verified against X") — never a formal checklist.
+  - integration tests", "manually verified against X") — never a formal checklist.
 
 No filler, no "as requested", no restating the diff line by line, no invented sections
 that don't apply to this change.

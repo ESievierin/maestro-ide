@@ -225,9 +225,11 @@ impl SessionManager {
         // pinned agent, not just another session type. `ensure_main` is the normal
         // way to get one; this only guards against a second one sneaking in.
         if params.session_type == SessionType::Main
-            && self.store.list_sessions(&params.branch)?.iter().any(|s| {
-                s.session_type == SessionType::Main && !s.status.is_terminal()
-            })
+            && self
+                .store
+                .list_sessions(&params.branch)?
+                .iter()
+                .any(|s| s.session_type == SessionType::Main && !s.status.is_terminal())
         {
             return Err(MaestroError::InvalidData {
                 message: format!(
@@ -1762,7 +1764,10 @@ mod tests {
         });
 
         let second = manager.ensure_main("impl/T-21-x", ".", None, None).unwrap();
-        assert_ne!(second.id, first.id, "a fresh main session replaces the closed one");
+        assert_ne!(
+            second.id, first.id,
+            "a fresh main session replaces the closed one"
+        );
     }
 
     #[tokio::test]
@@ -2287,7 +2292,10 @@ mod tests {
         let (manager, _bus, _engine, _dir) = setup_with_notes("120");
         let style = manager.render_reply_style();
         assert!(style.contains("Match the language of the comment"));
-        assert!(!style.contains("{{"), "no unrendered placeholders should remain");
+        assert!(
+            !style.contains("{{"),
+            "no unrendered placeholders should remain"
+        );
     }
 
     #[tokio::test]
@@ -2302,7 +2310,10 @@ mod tests {
         let gate = manager.render_workflow_gate();
         assert!(gate.contains("Don't act yet"));
         assert!(gate.contains("submit_review_comments"));
-        assert!(!gate.contains("{{"), "no unrendered placeholders should remain");
+        assert!(
+            !gate.contains("{{"),
+            "no unrendered placeholders should remain"
+        );
     }
 
     #[tokio::test]

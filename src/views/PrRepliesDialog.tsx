@@ -252,8 +252,8 @@ export function PrRepliesDialog({
             {session && !isTerminalStatus(session.status) && (
               <p className="hint">
                 The main agent discusses first, in the chat — it calls{" "}
-                <code>submit_review_comments</code> only once you tell it to post, which raises
-                a dialog for approving the drafts.
+                <code>submit_review_comments</code> only once you tell it to post, which raises a
+                dialog for approving the drafts.
               </p>
             )}
 

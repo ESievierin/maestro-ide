@@ -46,9 +46,7 @@ use serde::Serialize;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::bus::{Event, EventBus};
-use crate::core::session::{
-    SessionManager, SessionStatus, SessionType, SpawnParams,
-};
+use crate::core::session::{SessionManager, SessionStatus, SessionType, SpawnParams};
 use crate::core::store::{DaemonTask, Store};
 use crate::core::worktree::{CreateWorktreeRequest, WorktreeManager};
 use crate::error::{MaestroError, Result};
@@ -896,7 +894,9 @@ impl DaemonManager {
         // session — persistent, so a re-review after the head moves continues the
         // same conversation instead of starting cold every time.
         let (model, effort) = self.verify_model_effort();
-        let session_id = self.exec.send_to_main(&branch, &cwd, &prompt, model, effort)?;
+        let session_id = self
+            .exec
+            .send_to_main(&branch, &cwd, &prompt, model, effort)?;
 
         self.store
             .update_daemon_task(&task.key, "running", Some(&branch), Some(&session_id))?;
@@ -1024,7 +1024,9 @@ impl DaemonManager {
         // session PrRepliesDialog itself resumes, so the human sees the same
         // ongoing conversation whichever side triggered it.
         let (model, effort) = self.verify_model_effort();
-        let session_id = self.exec.send_to_main(&branch, &cwd, &prompt, model, effort)?;
+        let session_id = self
+            .exec
+            .send_to_main(&branch, &cwd, &prompt, model, effort)?;
 
         self.store
             .update_daemon_task(&task.key, "running", Some(&branch), Some(&session_id))?;
@@ -1259,6 +1261,9 @@ mod tests {
         Permanent,
     }
 
+    /// `(branch, cwd, prompt, model, effort)` as recorded by `MockExec::send_to_main`.
+    type MainSentCall = (String, String, String, Option<String>, Option<String>);
+
     #[derive(Default)]
     struct MockExec {
         worktrees: Vec<String>,
@@ -1267,8 +1272,7 @@ mod tests {
         spawned: StdMutex<Vec<SpawnParams>>,
         /// (branch, cwd) recorded by `ensure_main_session`.
         main_ensured: StdMutex<Vec<(String, String)>>,
-        /// (branch, cwd, prompt, model, effort) recorded by `send_to_main`.
-        main_sent: StdMutex<Vec<(String, String, String, Option<String>, Option<String>)>>,
+        main_sent: StdMutex<Vec<MainSentCall>>,
         fail_spawn: Option<SpawnFailure>,
         reply_style: String,
         workflow_gate: String,
@@ -1347,10 +1351,13 @@ mod tests {
         ) -> Result<String> {
             self.maybe_fail()?;
             let id = format!("main-{}", self.main_sent.lock().unwrap().len() + 1);
-            self.main_sent
-                .lock()
-                .unwrap()
-                .push((branch.to_string(), cwd.to_string(), prompt.to_string(), model, effort));
+            self.main_sent.lock().unwrap().push((
+                branch.to_string(),
+                cwd.to_string(),
+                prompt.to_string(),
+                model,
+                effort,
+            ));
             Ok(id)
         }
         fn reply_style_guide(&self) -> String {
@@ -2320,7 +2327,11 @@ mod tests {
         let (mgr, exec, bus) = manager(gh, MockExec::default());
         mgr.poll_once();
         mgr.drive_queue();
-        assert_eq!(exec.main_sent.lock().unwrap().len(), 1, "first task started");
+        assert_eq!(
+            exec.main_sent.lock().unwrap().len(),
+            1,
+            "first task started"
+        );
 
         let loop_handle = tokio::spawn(mgr.clone().run_loop(bus.clone()));
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;

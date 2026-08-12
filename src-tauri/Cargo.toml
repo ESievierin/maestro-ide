@@ -3,6 +3,7 @@ name = "maestro"
 version = "0.1.0"
 description = "MaestroIDE - orchestrate parallel agentic development on git worktrees"
 edition = "2021"
+license = "MIT"
 
 [lib]
 name = "maestro_lib"

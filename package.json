@@ -3,6 +3,8 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "description": "Desktop app for orchestrating parallel agentic development on git worktrees with Claude Code.",
+  "license": "MIT",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

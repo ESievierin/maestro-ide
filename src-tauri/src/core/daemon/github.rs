@@ -598,8 +598,8 @@ mod tests {
     #[test]
     fn slugs_from_all_remote_url_shapes() {
         assert_eq!(
-            slug_from_remote_url("git@github.com:reply-team/replyapp.git").as_deref(),
-            Some("reply-team/replyapp")
+            slug_from_remote_url("git@github.com:acme/widgets.git").as_deref(),
+            Some("acme/widgets")
         );
         assert_eq!(
             slug_from_remote_url("github-maestro:ESievierin/maestro-ide.git").as_deref(),

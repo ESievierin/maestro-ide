@@ -19,13 +19,18 @@ Diff:
 {{diff}}
 ```
 
-Rules:
+Rules — match this author's actual style, observed from their own commit history:
 
-- First line: imperative summary under 72 characters, no trailing period. Prefix with the
-  task id when there is one (`{{task_id}}: …`).
-- Then a blank line, then a short body explaining **why** the change was made and any
-  decision a reviewer would otherwise have to reverse-engineer. Skip the body only when
-  the summary genuinely says everything.
-- Describe what the change does, not the process of writing it. No "as requested", no
-  file-by-file narration of things the diff already shows.
+- One line only. No body, no blank line, no "why" paragraph — say what the commit does and
+  stop. A body is the rare exception, not the default.
+- Lowercase start (unless the first word is a proper noun/identifier like `LinkedIn` or
+  `SQL`), imperative mood, no trailing period, under ~90 characters.
+- Prefix with the task id when there is one, using a dash: `{{task_id}} - <summary>`. Skip
+  the prefix on small follow-up commits within the same piece of work (fixes, test
+  updates, cleanups) — only the commit that introduces the actual change gets the id.
+- Name the concrete thing that changed (the method/class/field/table, or the exact
+  behavior), not a vague category. "fix test", "remove redundant check", "extract X
+  helper" are typical; "improve code" is not.
+- Several small changes in one commit can be comma-separated on the same line
+  ("dedupe test, drop FT try/catch, use shared entity ids") rather than split into bullets.
 - Output only the commit message — no code fences, no commentary.

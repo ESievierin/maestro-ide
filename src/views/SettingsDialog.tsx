@@ -12,6 +12,7 @@ import {
   useHotkeyBindings,
 } from "../state/hotkeys";
 import { useUI } from "../state/ui";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 
 /** One rebindable shortcut: its current combo, a capture-next-keypress
  * rebind control, and a per-row reset when it differs from the default. */
@@ -248,7 +249,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="settings" /> Settings

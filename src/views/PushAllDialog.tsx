@@ -4,6 +4,7 @@ import { Icon } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useWorktrees } from "../state/worktrees";
 import type { WorktreeInfo } from "../types/worktrees";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 
 interface PushOutcome {
   branch: string;
@@ -50,7 +51,7 @@ export function PushAllDialog({
   const failedCount = results?.filter((r) => !r.ok).length ?? 0;
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="upload" /> Push all

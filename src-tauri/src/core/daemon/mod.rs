@@ -47,7 +47,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::bus::{Event, EventBus};
 use crate::core::session::{
-    SessionManager, SessionStatus, SessionType, SpawnParams, REVIEW_TOOLS_PROFILE,
+    SessionManager, SessionStatus, SessionType, SpawnParams,
 };
 use crate::core::store::{DaemonTask, Store};
 use crate::core::worktree::{CreateWorktreeRequest, WorktreeManager};
@@ -140,6 +140,32 @@ pub trait DaemonExec: Send + Sync {
     fn ensure_review_worktree(&self, head_ref: &str) -> Result<(String, String)>;
     /// Spawn a session; returns its id.
     fn spawn(&self, params: SpawnParams) -> Result<String>;
+    /// Get-or-create the branch's persistent Main session, without sending it
+    /// anything yet — used right after a worktree is created so the agent is
+    /// there and ready before the first real task arrives. `model`/`effort` seed
+    /// a fresh spawn only; they're ignored when a live Main session already exists.
+    fn ensure_main_session(
+        &self,
+        branch: &str,
+        cwd: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<()>;
+    /// Get-or-create the branch's Main session and send it `prompt`. Returns the
+    /// Main session's id, for `daemon_task` bookkeeping.
+    fn send_to_main(
+        &self,
+        branch: &str,
+        cwd: &str,
+        prompt: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<String>;
+    /// The `review-reply-style` voice guide, or an empty string if none is configured.
+    fn reply_style_guide(&self) -> String;
+    /// The `review-workflow-gate` guide ("discuss first"), or an empty string if none is
+    /// configured.
+    fn workflow_gate_guide(&self) -> String;
 }
 
 /// Production executor over the real managers.
@@ -223,6 +249,38 @@ impl DaemonExec for RealDaemonExec {
 
     fn spawn(&self, params: SpawnParams) -> Result<String> {
         Ok(self.sessions.spawn(params)?.id)
+    }
+
+    fn ensure_main_session(
+        &self,
+        branch: &str,
+        cwd: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<()> {
+        self.sessions.ensure_main(branch, cwd, model, effort)?;
+        Ok(())
+    }
+
+    fn send_to_main(
+        &self,
+        branch: &str,
+        cwd: &str,
+        prompt: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<String> {
+        let session = self.sessions.ensure_main(branch, cwd, model, effort)?;
+        self.sessions.send(&session.id, prompt, &[])?;
+        Ok(session.id)
+    }
+
+    fn reply_style_guide(&self) -> String {
+        self.sessions.render_reply_style()
+    }
+
+    fn workflow_gate_guide(&self) -> String {
+        self.sessions.render_workflow_gate()
     }
 }
 
@@ -819,33 +877,26 @@ impl DaemonManager {
 
         let (branch, cwd) = self.exec.ensure_review_worktree(head_ref)?;
 
-        let prompt = format!(
+        let mut prompt = format!(
             "Your review was requested on PR #{pr} by {author}.\n\n\
              Title: {pr_title}\n{url}\n\nPR description:\n{pr_body}\n\n\
              This worktree has the PR branch checked out. Review the changes this branch \
              introduces relative to its base (use read-only git commands like \
-             `git log`/`git diff` against the base branch), and summarize what you found \
-             here in the chat. Do NOT modify any files, do NOT commit, and do NOT post \
-             anything to GitHub directly.\n\n\
-             When you are ready to leave feedback, call submit_review_comments with \
-             pr={pr} and one entry per finding — path, line, and body — ordered by \
-             severity. That call is how the human sees your draft comments and picks which \
-             ones actually get posted; nothing you write elsewhere reaches GitHub."
+             `git log`/`git diff` against the base branch). Do NOT modify any files, do \
+             NOT commit, and do NOT post anything to GitHub directly — submit_review_comments \
+             is the only way feedback reaches GitHub, one entry per finding (path, line, \
+             body), ordered by severity."
         );
+        let gate = self.exec.workflow_gate_guide();
+        if !gate.trim().is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&gate);
+        }
+        // Reviewing someone else's PR happens in that PR's own worktree's Main
+        // session — persistent, so a re-review after the head moves continues the
+        // same conversation instead of starting cold every time.
         let (model, effort) = self.verify_model_effort();
-        let session_id = self.exec.spawn(SpawnParams {
-            branch: branch.clone(),
-            cwd,
-            session_type: SessionType::Research,
-            model,
-            effort,
-            permission_mode: Some("plan".into()),
-            thinking: None,
-            tools_profile: Some(REVIEW_TOOLS_PROFILE.to_string()),
-            disallowed_tools: Vec::new(),
-            prompt,
-            resume_from: None,
-        })?;
+        let session_id = self.exec.send_to_main(&branch, &cwd, &prompt, model, effort)?;
 
         self.store
             .update_daemon_task(&task.key, "running", Some(&branch), Some(&session_id))?;
@@ -868,6 +919,7 @@ impl DaemonManager {
         let (branch, cwd) =
             self.exec
                 .ensure_research_worktree(issue_key, summary, task.branch.as_deref())?;
+        self.exec.ensure_main_session(&branch, &cwd, None, None)?;
 
         let prompt = format!(
             "You are doing preliminary research for a Jira issue that was just assigned.\n\n\
@@ -952,33 +1004,27 @@ impl DaemonManager {
         }
         prompt.push_str(
             "Read the relevant code (read-only) and judge whether each comment is actionable \
-             and correct — summarize your verdict and any resolution plan here in the chat. \
-             Do NOT modify any other files, do NOT commit, and do NOT post anything to \
-             GitHub directly.\n\n\
-             When you are ready, call submit_review_comments with pr, and one entry per \
-             comment above you want to reply to — set in_reply_to to that comment's id \
-             (the number in \"[comment N]\"), path/line to that same comment's own so the \
-             reviewer sees exactly which line you are replying to, and body to your draft \
-             reply. That call is how the human sees your draft replies and picks which \
-             ones actually get posted; nothing you write elsewhere reaches GitHub.",
+             and correct. Do NOT modify any other files, do NOT commit, and do NOT post \
+             anything to GitHub directly — submit_review_comments is the only way a reply \
+             reaches GitHub: one entry per comment you want to reply to, in_reply_to set to \
+             that comment's id (the number in \"[comment N]\"), path/line matching that same \
+             comment's own, body your draft reply.",
         );
+        let gate = self.exec.workflow_gate_guide();
+        if !gate.trim().is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&gate);
+        }
+        let style = self.exec.reply_style_guide();
+        if !style.trim().is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&style);
+        }
+        // Comments on your own PR go to that branch's Main session — the exact
+        // session PrRepliesDialog itself resumes, so the human sees the same
+        // ongoing conversation whichever side triggered it.
         let (model, effort) = self.verify_model_effort();
-        let session_id = self.exec.spawn(SpawnParams {
-            branch: branch.clone(),
-            cwd,
-            // review_fix, not research: this is the exact session type the manual
-            // reply dialog looks for on the branch, so its plan is already there
-            // (and resumable) instead of being invisible to it.
-            session_type: SessionType::ReviewFix,
-            model,
-            effort,
-            permission_mode: Some("plan".into()),
-            thinking: None,
-            tools_profile: None,
-            disallowed_tools: Vec::new(),
-            prompt,
-            resume_from: None,
-        })?;
+        let session_id = self.exec.send_to_main(&branch, &cwd, &prompt, model, effort)?;
 
         self.store
             .update_daemon_task(&task.key, "running", Some(&branch), Some(&session_id))?;
@@ -1219,7 +1265,28 @@ mod tests {
         created: StdMutex<Vec<(String, String)>>,
         fetched: StdMutex<Vec<String>>,
         spawned: StdMutex<Vec<SpawnParams>>,
+        /// (branch, cwd) recorded by `ensure_main_session`.
+        main_ensured: StdMutex<Vec<(String, String)>>,
+        /// (branch, cwd, prompt, model, effort) recorded by `send_to_main`.
+        main_sent: StdMutex<Vec<(String, String, String, Option<String>, Option<String>)>>,
         fail_spawn: Option<SpawnFailure>,
+        reply_style: String,
+        workflow_gate: String,
+    }
+
+    impl MockExec {
+        fn maybe_fail(&self) -> Result<()> {
+            match self.fail_spawn {
+                Some(SpawnFailure::Transient) => Err(MaestroError::Git {
+                    kind: GitErrorKind::CommandFailed,
+                    message: "simulated transient git failure".into(),
+                }),
+                Some(SpawnFailure::Permanent) => Err(MaestroError::Config {
+                    message: "simulated permanent failure".into(),
+                }),
+                None => Ok(()),
+            }
+        }
     }
 
     impl DaemonExec for MockExec {
@@ -1251,23 +1318,46 @@ mod tests {
             Ok((head_ref.to_string(), format!("/wt/{head_ref}")))
         }
         fn spawn(&self, params: SpawnParams) -> Result<String> {
-            match self.fail_spawn {
-                Some(SpawnFailure::Transient) => {
-                    return Err(MaestroError::Git {
-                        kind: GitErrorKind::CommandFailed,
-                        message: "simulated transient git failure".into(),
-                    })
-                }
-                Some(SpawnFailure::Permanent) => {
-                    return Err(MaestroError::Config {
-                        message: "simulated permanent failure".into(),
-                    })
-                }
-                None => {}
-            }
+            self.maybe_fail()?;
             let id = format!("sess-{}", self.spawned.lock().unwrap().len() + 1);
             self.spawned.lock().unwrap().push(params);
             Ok(id)
+        }
+        fn ensure_main_session(
+            &self,
+            branch: &str,
+            cwd: &str,
+            _model: Option<String>,
+            _effort: Option<String>,
+        ) -> Result<()> {
+            self.maybe_fail()?;
+            self.main_ensured
+                .lock()
+                .unwrap()
+                .push((branch.to_string(), cwd.to_string()));
+            Ok(())
+        }
+        fn send_to_main(
+            &self,
+            branch: &str,
+            cwd: &str,
+            prompt: &str,
+            model: Option<String>,
+            effort: Option<String>,
+        ) -> Result<String> {
+            self.maybe_fail()?;
+            let id = format!("main-{}", self.main_sent.lock().unwrap().len() + 1);
+            self.main_sent
+                .lock()
+                .unwrap()
+                .push((branch.to_string(), cwd.to_string(), prompt.to_string(), model, effort));
+            Ok(id)
+        }
+        fn reply_style_guide(&self) -> String {
+            self.reply_style.clone()
+        }
+        fn workflow_gate_guide(&self) -> String {
+            self.workflow_gate.clone()
         }
     }
 
@@ -1381,25 +1471,23 @@ mod tests {
             ["feature/retry"],
             "the PR head branch is materialized locally"
         );
-        let spawned = exec.spawned.lock().unwrap();
-        assert_eq!(spawned.len(), 1);
-        assert_eq!(spawned[0].session_type, SessionType::Research);
-        assert_eq!(spawned[0].permission_mode.as_deref(), Some("plan"));
+        // Reviewing someone else's PR now goes to that worktree's Main session
+        // instead of a fresh spawn — nothing new is spawned here at all.
+        assert!(exec.spawned.lock().unwrap().is_empty());
+        let sent = exec.main_sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let (branch, _cwd, prompt, model, effort) = &sent[0];
+        assert_eq!(branch, "feature/retry");
+        assert!(prompt.contains("submit_review_comments"));
+        assert!(prompt.contains("Add retry"));
+        assert!(prompt.contains("do NOT post anything"));
         assert_eq!(
-            spawned[0].tools_profile.as_deref(),
-            Some(REVIEW_TOOLS_PROFILE),
-            "a research session needs the profile explicitly — it has no default"
-        );
-        assert!(spawned[0].prompt.contains("submit_review_comments"));
-        assert!(spawned[0].prompt.contains("Add retry"));
-        assert!(spawned[0].prompt.contains("do NOT post anything"));
-        assert_eq!(
-            spawned[0].model.as_deref(),
+            model.as_deref(),
             Some("sonnet"),
             "the verify bucket defaults to sonnet"
         );
         assert_eq!(
-            spawned[0].effort.as_deref(),
+            effort.as_deref(),
             Some("xhigh"),
             "PR review is verify-bucket work — a human will read it"
         );
@@ -1425,9 +1513,9 @@ mod tests {
         mgr.poll_once();
         mgr.drive_queue();
 
-        let spawned = exec.spawned.lock().unwrap();
-        assert_eq!(spawned[0].model.as_deref(), Some("opus"));
-        assert_eq!(spawned[0].effort.as_deref(), Some("medium"));
+        let sent = exec.main_sent.lock().unwrap();
+        assert_eq!(sent[0].3.as_deref(), Some("opus"));
+        assert_eq!(sent[0].4.as_deref(), Some("medium"));
     }
 
     #[test]
@@ -1666,13 +1754,77 @@ mod tests {
         assert!(tasks[0].key.contains("#12:501"));
 
         mgr.drive_queue();
-        let spawned = exec.spawned.lock().unwrap();
-        assert_eq!(spawned.len(), 1);
-        assert_eq!(spawned[0].branch, "impl/T-1-x");
-        assert_eq!(spawned[0].session_type, SessionType::ReviewFix);
-        assert_eq!(spawned[0].permission_mode.as_deref(), Some("plan"));
-        assert!(spawned[0].prompt.contains("submit_review_comments"));
-        assert!(spawned[0].prompt.contains("do NOT post anything"));
+        // Comments on your own PR go to that branch's Main session, not a fresh spawn.
+        assert!(exec.spawned.lock().unwrap().is_empty());
+        let sent = exec.main_sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, "impl/T-1-x");
+        assert!(sent[0].2.contains("submit_review_comments"));
+        assert!(sent[0].2.contains("do NOT post anything"));
+    }
+
+    #[test]
+    fn a_configured_reply_style_guide_is_appended_to_the_comment_prompt() {
+        let gh = MockGh {
+            pulls: vec![pull(12, "Add retry", "impl/T-1-x")],
+            comments: vec![comment(501, Some(900), 12, "src/retry.rs")],
+            ..Default::default()
+        };
+        let exec = MockExec {
+            worktrees: vec!["impl/T-1-x".into()],
+            reply_style: "MARKER: match the reviewer's language".into(),
+            ..Default::default()
+        };
+        let (mgr, exec, _bus) = manager(gh, exec);
+
+        mgr.poll_once();
+        mgr.drive_queue();
+
+        let sent = exec.main_sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].2.contains("MARKER: match the reviewer's language"));
+    }
+
+    #[test]
+    fn a_configured_workflow_gate_is_appended_to_the_comment_prompt() {
+        let gh = MockGh {
+            pulls: vec![pull(12, "Add retry", "impl/T-1-x")],
+            comments: vec![comment(501, Some(900), 12, "src/retry.rs")],
+            ..Default::default()
+        };
+        let exec = MockExec {
+            worktrees: vec!["impl/T-1-x".into()],
+            workflow_gate: "MARKER: wait for an explicit go-ahead".into(),
+            ..Default::default()
+        };
+        let (mgr, exec, _bus) = manager(gh, exec);
+
+        mgr.poll_once();
+        mgr.drive_queue();
+
+        let sent = exec.main_sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].2.contains("MARKER: wait for an explicit go-ahead"));
+    }
+
+    #[test]
+    fn a_configured_workflow_gate_is_appended_to_the_review_prompt() {
+        let gh = MockGh {
+            pulls: vec![review_request(12, "Add retry", "feature/retry")],
+            ..Default::default()
+        };
+        let exec = MockExec {
+            workflow_gate: "MARKER: wait for an explicit go-ahead".into(),
+            ..Default::default()
+        };
+        let (mgr, exec, _bus) = manager(gh, exec);
+
+        mgr.poll_once();
+        mgr.drive_queue();
+
+        let sent = exec.main_sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].2.contains("MARKER: wait for an explicit go-ahead"));
     }
 
     #[test]
@@ -1702,14 +1854,14 @@ mod tests {
         assert!(tasks[0].key.contains("#12:501-502-503"));
 
         mgr.drive_queue();
-        let spawned = exec.spawned.lock().unwrap();
-        assert_eq!(spawned.len(), 1);
+        let sent = exec.main_sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
         // All three comments made it into the one prompt.
-        assert!(spawned[0].prompt.contains("[comment 501]"));
-        assert!(spawned[0].prompt.contains("[comment 502]"));
-        assert!(spawned[0].prompt.contains("[comment 503]"));
-        assert!(spawned[0].prompt.contains("## src/retry.rs"));
-        assert!(spawned[0].prompt.contains("## src/lib.rs"));
+        assert!(sent[0].2.contains("[comment 501]"));
+        assert!(sent[0].2.contains("[comment 502]"));
+        assert!(sent[0].2.contains("[comment 503]"));
+        assert!(sent[0].2.contains("## src/retry.rs"));
+        assert!(sent[0].2.contains("## src/lib.rs"));
     }
 
     #[test]
@@ -1837,6 +1989,13 @@ mod tests {
         assert_eq!(created.len(), 1);
         assert_eq!(created[0].0, "ABC-123", "the Jira key is the task id");
 
+        let ensured = exec.main_ensured.lock().unwrap();
+        assert_eq!(
+            ensured.len(),
+            1,
+            "the research worktree gets its own main agent eagerly, ready for later"
+        );
+
         let spawned = exec.spawned.lock().unwrap();
         assert_eq!(spawned.len(), 1);
         assert_eq!(spawned[0].permission_mode.as_deref(), Some("plan"));
@@ -1896,7 +2055,7 @@ mod tests {
         mgr.set_utilization_for_test(Some(80.0));
         mgr.drive_queue();
         assert!(
-            exec.spawned.lock().unwrap().is_empty(),
+            exec.main_sent.lock().unwrap().is_empty(),
             "80% utilization is over the 50% default threshold"
         );
         let task = mgr.store.next_queued_daemon_task().unwrap();
@@ -1904,7 +2063,7 @@ mod tests {
 
         mgr.set_utilization_for_test(Some(10.0));
         mgr.drive_queue();
-        assert_eq!(exec.spawned.lock().unwrap().len(), 1);
+        assert_eq!(exec.main_sent.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -1933,11 +2092,11 @@ mod tests {
         let (mgr, exec, _bus) = manager(gh, MockExec::default());
         mgr.poll_once();
         mgr.drive_queue();
-        assert_eq!(exec.spawned.lock().unwrap().len(), 1);
+        assert_eq!(exec.main_sent.lock().unwrap().len(), 1);
 
-        mgr.on_session_finished("sess-1", true);
+        mgr.on_session_finished("main-1", true);
         // Finishing the first task pulls the second one in.
-        assert_eq!(exec.spawned.lock().unwrap().len(), 2);
+        assert_eq!(exec.main_sent.lock().unwrap().len(), 2);
         let tasks = mgr.list_tasks().unwrap();
         assert_eq!(
             tasks.iter().filter(|t| t.state == "done").count(),
@@ -1961,9 +2120,9 @@ mod tests {
         let mut rx = bus.subscribe();
         mgr.poll_once();
         mgr.drive_queue();
-        assert_eq!(exec.spawned.lock().unwrap().len(), 1);
+        assert_eq!(exec.main_sent.lock().unwrap().len(), 1);
 
-        mgr.on_session_finished("sess-1", true);
+        mgr.on_session_finished("main-1", true);
 
         let mut saw_it = false;
         while let Ok(event) = rx.try_recv() {
@@ -1992,7 +2151,7 @@ mod tests {
         mgr.poll_once();
         mgr.drive_queue();
 
-        mgr.on_session_finished("sess-1", false);
+        mgr.on_session_finished("main-1", false);
 
         while let Ok(event) = rx.try_recv() {
             assert!(
@@ -2161,7 +2320,7 @@ mod tests {
         let (mgr, exec, bus) = manager(gh, MockExec::default());
         mgr.poll_once();
         mgr.drive_queue();
-        assert_eq!(exec.spawned.lock().unwrap().len(), 1, "first task started");
+        assert_eq!(exec.main_sent.lock().unwrap().len(), 1, "first task started");
 
         let loop_handle = tokio::spawn(mgr.clone().run_loop(bus.clone()));
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
@@ -2169,7 +2328,7 @@ mod tests {
         // The session's turn ends — conversational plan-mode sessions go
         // "awaiting_input", not "done", and nobody is going to close them.
         bus.publish(Event::SessionStatusChanged {
-            session_id: "sess-1".into(),
+            session_id: "main-1".into(),
             branch: "feature/retry".into(),
             status: SessionStatus::AwaitingInput,
         });
@@ -2183,7 +2342,7 @@ mod tests {
             "awaiting_input alone must finish the task"
         );
         assert_eq!(
-            exec.spawned.lock().unwrap().len(),
+            exec.main_sent.lock().unwrap().len(),
             2,
             "the second task starts without anyone closing the first session"
         );

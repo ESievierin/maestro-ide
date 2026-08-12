@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Icon } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { usePrompts } from "../state/prompts";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 
 /**
  * Prompt templates live as markdown files in `~/.maestro/prompts`; this is a plain
@@ -73,7 +74,7 @@ export function PromptEditor({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal prompt-modal" onClick={(e) => e.stopPropagation()}>
         <div className="panel-header">
           <h3>

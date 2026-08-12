@@ -41,12 +41,25 @@ pub const DEFAULT_FINALIZE_TIMEOUT_SECS: u64 = 120;
 /// Template a review session's first turn is rendered from.
 const REVIEW_TEMPLATE: &str = "review-fix";
 
+/// Voice guide spliced into review-reply prompts (PR comment replies).
+const REVIEW_REPLY_STYLE_TEMPLATE: &str = "review-reply-style";
+
+/// "Discuss first" guide spliced into both PR-review and comment-reply prompts.
+const REVIEW_WORKFLOW_GATE_TEMPLATE: &str = "review-workflow-gate";
+
 /// Template rendered as the finalize prompt.
 const NOTES_TEMPLATE: &str = "task-notes";
 
 /// Tools profile that gives a session `ask_original_agent` and
 /// `submit_review_comments` (mirrors the sidecar constant).
 pub const REVIEW_TOOLS_PROFILE: &str = "review";
+
+/// First turn of a worktree's Main session — spawned eagerly, before there is
+/// anything real to do yet.
+const MAIN_AGENT_ORIENTATION_PROMPT: &str = "You are Maestro's persistent main agent for \
+    this worktree. From time to time you'll be asked to review PR comments, draft replies, \
+    or write a commit message or PR description — always with the context you build up here. \
+    For now, just acknowledge and wait.";
 
 /// Maestro's own tools. Both are auto-allowed without a human permission prompt:
 /// - `ask_original_agent` is read-only by construction (the core resolves the target,
@@ -208,6 +221,22 @@ impl SessionManager {
     pub fn spawn(&self, mut params: SpawnParams) -> Result<Session> {
         self.store.upsert_branch(&params.branch, None, None)?;
 
+        // Exactly one live Main session per branch — it is the worktree's single
+        // pinned agent, not just another session type. `ensure_main` is the normal
+        // way to get one; this only guards against a second one sneaking in.
+        if params.session_type == SessionType::Main
+            && self.store.list_sessions(&params.branch)?.iter().any(|s| {
+                s.session_type == SessionType::Main && !s.status.is_terminal()
+            })
+        {
+            return Err(MaestroError::InvalidData {
+                message: format!(
+                    "a main agent session already exists for {} — use it instead of spawning another",
+                    params.branch
+                ),
+            });
+        }
+
         // Resolve resume before anything else: inherit context from the old session.
         let resume_id = match &params.resume_from {
             Some(source_id) => {
@@ -344,6 +373,41 @@ impl SessionManager {
         Ok(session)
     }
 
+    /// Get the branch's live Main session, spawning one if it does not have one yet
+    /// (a worktree created before this feature existed, or one whose Main session
+    /// crashed). Idempotent — safe to call before every Main-targeted action.
+    /// `model`/`effort` only matter for a fresh spawn; reusing an existing session
+    /// leaves its settings as they are.
+    pub fn ensure_main(
+        &self,
+        branch: &str,
+        cwd: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<Session> {
+        if let Some(existing) = self
+            .store
+            .list_sessions(branch)?
+            .into_iter()
+            .find(|s| s.session_type == SessionType::Main && !s.status.is_terminal())
+        {
+            return Ok(existing);
+        }
+        self.spawn(SpawnParams {
+            branch: branch.to_string(),
+            cwd: cwd.to_string(),
+            session_type: SessionType::Main,
+            model,
+            effort,
+            permission_mode: Some(READ_ONLY_MODE.to_string()),
+            thinking: None,
+            tools_profile: Some(REVIEW_TOOLS_PROFILE.to_string()),
+            disallowed_tools: Vec::new(),
+            prompt: MAIN_AGENT_ORIENTATION_PROMPT.to_string(),
+            resume_from: None,
+        })
+    }
+
     /// Is a live writer session currently bound to `branch`?
     fn branch_has_writer(&self, branch: &str) -> Result<bool> {
         let runtime = self.lock_runtime()?;
@@ -377,7 +441,30 @@ impl SessionManager {
     /// Close the session. If it is idle this is a graceful completion (`done`);
     /// mid-work it is a cancellation (`cancelled`). Closing an already-finished
     /// session is a no-op.
+    ///
+    /// Refuses on a Main session: it is pinned to its worktree for as long as the
+    /// worktree exists. The only legitimate way to end one is [`Self::force_close`],
+    /// called when the worktree itself is removed.
     pub fn close(&self, session_id: &str) -> Result<()> {
+        if let Ok(Some(session)) = self.store.get_session(session_id) {
+            if session.session_type == SessionType::Main {
+                return Err(MaestroError::InvalidData {
+                    message: "the main agent session can't be closed directly — remove its worktree instead"
+                        .into(),
+                });
+            }
+        }
+        self.close_unchecked(session_id)
+    }
+
+    /// Close a session bypassing the "Main sessions can't be closed" rule. Used only
+    /// by worktree removal, so a Main session never outlives the worktree it is
+    /// pinned to.
+    pub fn force_close(&self, session_id: &str) -> Result<()> {
+        self.close_unchecked(session_id)
+    }
+
+    fn close_unchecked(&self, session_id: &str) -> Result<()> {
         {
             let mut runtime = self.lock_runtime()?;
             match runtime.get_mut(session_id) {
@@ -445,6 +532,35 @@ impl SessionManager {
             Err(err) => {
                 tracing::warn!(error = %err, "review-fix template unavailable; sending the comments as-is");
                 comments.to_string()
+            }
+        }
+    }
+
+    /// The `review-reply-style` voice guide, rendered (it takes no variables) — best-effort:
+    /// an empty string when prompts aren't configured or the template is missing, so a reply
+    /// flow never blocks on this.
+    pub fn render_reply_style(&self) -> String {
+        self.render_fragment(REVIEW_REPLY_STYLE_TEMPLATE)
+    }
+
+    /// The `review-workflow-gate` guide — discuss first, act only once the human says so —
+    /// rendered the same best-effort way as [`Self::render_reply_style`].
+    pub fn render_workflow_gate(&self) -> String {
+        self.render_fragment(REVIEW_WORKFLOW_GATE_TEMPLATE)
+    }
+
+    /// Render a static (variable-free) prompt fragment by template name. Best-effort: an
+    /// empty string when prompts aren't configured or the template is missing, so a caller
+    /// never blocks on decoration text.
+    fn render_fragment(&self, name: &str) -> String {
+        let Some(prompts) = &self.prompts else {
+            return String::new();
+        };
+        match prompts.render(name, &HashMap::new()) {
+            Ok(text) => text,
+            Err(err) => {
+                tracing::warn!(name, error = %err, "prompt fragment unavailable");
+                String::new()
             }
         }
     }
@@ -1616,6 +1732,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ensure_main_spawns_once_and_then_reuses_it() {
+        let (manager, _bus, engine) = setup();
+
+        let first = manager.ensure_main("impl/T-20-x", ".", None, None).unwrap();
+        assert_eq!(first.session_type, SessionType::Main);
+        assert_eq!(first.permission_mode.as_deref(), Some(READ_ONLY_MODE));
+
+        let second = manager.ensure_main("impl/T-20-x", ".", None, None).unwrap();
+        assert_eq!(second.id, first.id, "must reuse the live main session");
+
+        // Only one spawn actually reached the engine.
+        assert_eq!(engine.spawns.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn ensure_main_respawns_after_the_old_one_ends() {
+        let (manager, _bus, _engine) = setup();
+
+        let first = manager.ensure_main("impl/T-21-x", ".", None, None).unwrap();
+        manager.handle_event(SidecarEvent::Status {
+            session_id: first.id.clone(),
+            status: "awaiting_input".into(),
+        });
+        manager.force_close(&first.id).unwrap();
+        manager.handle_event(SidecarEvent::SessionClosed {
+            session_id: first.id.clone(),
+            reason: "closed".into(),
+        });
+
+        let second = manager.ensure_main("impl/T-21-x", ".", None, None).unwrap();
+        assert_ne!(second.id, first.id, "a fresh main session replaces the closed one");
+    }
+
+    #[tokio::test]
+    async fn spawning_a_second_main_session_directly_is_rejected() {
+        let (manager, _bus, _engine) = setup();
+
+        manager.ensure_main("impl/T-22-x", ".", None, None).unwrap();
+        let mut params = spawn_params("impl/T-22-x");
+        params.session_type = SessionType::Main;
+        let err = manager
+            .spawn(params)
+            .expect_err("a second live main session must be rejected");
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn main_session_cannot_be_closed_through_the_normal_path() {
+        let (manager, _bus, _engine) = setup();
+
+        let main = manager.ensure_main("impl/T-23-x", ".", None, None).unwrap();
+        let err = manager
+            .close(&main.id)
+            .expect_err("close() must refuse a main session");
+        assert!(err.to_string().contains("can't be closed"));
+
+        // force_close is the only way out — used by worktree removal.
+        assert!(manager.force_close(&main.id).is_ok());
+    }
+
+    #[tokio::test]
     async fn single_writer_downgrades_second_session() {
         let (manager, _bus, engine) = setup();
 
@@ -2103,6 +2280,29 @@ mod tests {
             spawn.prompt.contains("No TASK_NOTES.md on this branch"),
             "with no notes the prompt must say so, not render an empty block"
         );
+    }
+
+    #[tokio::test]
+    async fn render_reply_style_returns_the_real_default_template() {
+        let (manager, _bus, _engine, _dir) = setup_with_notes("120");
+        let style = manager.render_reply_style();
+        assert!(style.contains("Match the language of the comment"));
+        assert!(!style.contains("{{"), "no unrendered placeholders should remain");
+    }
+
+    #[tokio::test]
+    async fn render_reply_style_is_empty_without_a_prompt_manager() {
+        let (manager, _bus, _engine) = setup();
+        assert_eq!(manager.render_reply_style(), "");
+    }
+
+    #[tokio::test]
+    async fn render_workflow_gate_returns_the_real_default_template() {
+        let (manager, _bus, _engine, _dir) = setup_with_notes("120");
+        let gate = manager.render_workflow_gate();
+        assert!(gate.contains("Don't act yet"));
+        assert!(gate.contains("submit_review_comments"));
+        assert!(!gate.contains("{{"), "no unrendered placeholders should remain");
     }
 
     #[tokio::test]

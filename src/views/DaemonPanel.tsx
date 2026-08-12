@@ -3,6 +3,7 @@ import { Icon, StatusDot } from "../components/Icon";
 import { SelectMenu } from "../components/SelectMenu";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useDaemon, type DaemonTask } from "../state/daemon";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 
 /**
  * The background daemon: review requests on PRs (→ REVIEW.md), review comments
@@ -53,7 +54,7 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal daemon-modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="bot" /> GitHub daemon

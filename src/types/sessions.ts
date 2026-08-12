@@ -269,7 +269,8 @@ export type TranscriptItem =
 
 /**
  * Session types the user can start. `escalation` is absent on purpose: those are spawned by
- * the core to answer `ask_original_agent`, never by hand.
+ * the core to answer `ask_original_agent`, never by hand. `main` is absent too: exactly one
+ * is created per worktree automatically, and it can't be closed, let alone spawned again.
  */
 export const SESSION_TYPES = ["manual", "research", "implementation", "review_fix"] as const;
 

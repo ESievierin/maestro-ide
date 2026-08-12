@@ -149,7 +149,18 @@ pub async fn create_worktree(
     request: CreateWorktreeRequest,
 ) -> Result<WorktreeInfo, String> {
     let mgr = state.worktrees.clone();
-    run_core(state.bus.clone(), move || mgr.create(request)).await
+    let sessions = state.sessions.clone();
+    run_core(state.bus.clone(), move || {
+        let info = mgr.create(request)?;
+        // Every worktree gets its own persistent main agent, ready from the start —
+        // PR review, reply drafting, and commit/PR-description generation all
+        // resume it instead of spawning something throwaway later.
+        if let Some(branch) = &info.branch {
+            sessions.ensure_main(branch, &info.path.to_string_lossy(), None, None)?;
+        }
+        Ok(info)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -159,7 +170,49 @@ pub async fn remove_worktree(
     force: bool,
 ) -> Result<RemoveOutcome, String> {
     let mgr = state.worktrees.clone();
-    run_core(state.bus.clone(), move || mgr.remove(&branch, force)).await
+    let sessions = state.sessions.clone();
+    run_core(state.bus.clone(), move || {
+        let outcome = mgr.remove(&branch, force)?;
+        if outcome == RemoveOutcome::Removed {
+            // The main agent is pinned to this worktree — it does not outlive it.
+            for session in sessions.list_for_branch(&branch)? {
+                if session.session_type == SessionType::Main {
+                    if let Err(err) = sessions.force_close(&session.id) {
+                        tracing::warn!(
+                            session_id = session.id,
+                            error = %err,
+                            "failed to close the main session of a removed worktree"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(outcome)
+    })
+    .await
+}
+
+/// Get-or-create `branch`'s persistent main agent session — used before every
+/// flow that targets it (PR review/replies, commit/PR-description generation),
+/// so it exists even for a worktree created before this feature shipped.
+#[tauri::command]
+pub async fn ensure_main_session(
+    state: State<'_, AppState>,
+    branch: String,
+) -> Result<Session, String> {
+    let worktrees = state.worktrees.clone();
+    let sessions = state.sessions.clone();
+    run_core(state.bus.clone(), move || {
+        let worktree = worktrees
+            .list()?
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some(branch.as_str()))
+            .ok_or_else(|| MaestroError::InvalidData {
+                message: format!("no worktree for branch: {branch}"),
+            })?;
+        sessions.ensure_main(&branch, &worktree.path.to_string_lossy(), None, None)
+    })
+    .await
 }
 
 /// Pin or unpin a branch — kept at the top of the worktree list regardless of
@@ -559,6 +612,28 @@ pub async fn dismiss_daemon_task(state: State<'_, AppState>, key: String) -> Res
 // session — with `resume_from` the branch's own implementation session when
 // one exists — so the answer reflects that agent's actual context, not a
 // stateless read of the diff. See `src/utils/agentAsk.ts`.
+
+/// The `review-reply-style` voice guide (takes no variables) — spliced into review-reply
+/// prompts on the frontend the same way the daemon splices it into its own.
+#[tauri::command]
+pub async fn render_review_reply_style(state: State<'_, AppState>) -> Result<String, String> {
+    let prompts = state.prompts.clone();
+    run_core(state.bus.clone(), move || {
+        prompts.render("review-reply-style", &std::collections::HashMap::new())
+    })
+    .await
+}
+
+/// The `review-workflow-gate` guide ("discuss first") — spliced into review-reply prompts
+/// on the frontend the same way the daemon splices it into its own.
+#[tauri::command]
+pub async fn render_review_workflow_gate(state: State<'_, AppState>) -> Result<String, String> {
+    let prompts = state.prompts.clone();
+    run_core(state.bus.clone(), move || {
+        prompts.render("review-workflow-gate", &std::collections::HashMap::new())
+    })
+    .await
+}
 
 /// Render the "commit-message" prompt for the branch's uncommitted changes.
 #[tauri::command]

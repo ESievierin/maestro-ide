@@ -23,6 +23,11 @@ pub enum SessionType {
     /// question by resuming the original implementation context. Never a writer, never in
     /// the attention queue: nobody waits on it but the asking agent.
     Escalation,
+    /// The one persistent, unclosable session pinned to a worktree — created eagerly
+    /// alongside it. PR review, reply drafting, and commit/PR-description generation
+    /// all resume this session instead of spawning a throwaway one, so the answer
+    /// reflects a continuous conversation rather than a cold read every time.
+    Main,
 }
 
 impl SessionType {
@@ -33,6 +38,7 @@ impl SessionType {
             SessionType::Implementation => "implementation",
             SessionType::ReviewFix => "review_fix",
             SessionType::Manual => "manual",
+            SessionType::Main => "main",
         }
     }
 
@@ -43,6 +49,7 @@ impl SessionType {
             "review_fix" => Some(SessionType::ReviewFix),
             "escalation" => Some(SessionType::Escalation),
             "manual" => Some(SessionType::Manual),
+            "main" => Some(SessionType::Main),
             _ => None,
         }
     }
@@ -220,6 +227,7 @@ mod tests {
             SessionType::Implementation,
             SessionType::ReviewFix,
             SessionType::Manual,
+            SessionType::Main,
         ] {
             assert_eq!(SessionType::parse(ty.as_str()), Some(ty));
         }

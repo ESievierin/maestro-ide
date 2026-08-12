@@ -5,6 +5,7 @@ import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useToasts } from "../state/toasts";
 import { useWorktrees } from "../state/worktrees";
 import type { RestoreOutcome, Snapshot } from "../types/worktrees";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 
 /**
  * Checkpoints of a worktree's uncommitted state, stash-backed. Take one before
@@ -100,7 +101,7 @@ export function SnapshotsDialog({ branch, onClose }: { branch: string; onClose: 
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="history" /> Snapshots · {branch}

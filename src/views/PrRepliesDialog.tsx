@@ -2,26 +2,28 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon, StatusDot } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
-import { askViaNewSession, findResumableSession } from "../utils/agentAsk";
+import { askMainAgent } from "../utils/agentAsk";
 import { usePr, openUrl, type PrComment, type ReplyOutcome } from "../state/pr";
 import { useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
+import { isTerminalStatus } from "../types/sessions";
 import type { WorktreeInfo } from "../types/worktrees";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 
 const START_MODEL = "sonnet";
 const START_EFFORT = "high";
 
 /**
- * The review-comment round, built around one persistent session per PR:
+ * The review-comment round, built around the branch's persistent main agent:
  *
- * 1. Comments are fetched once, grouped by file, and handed to a
- *    `review_fix` session (resumed from the branch's implementation session
- *    when one exists) — a real, visible chat session the user can discuss
- *    the plan with, ask questions in, or use to actually implement fixes.
- * 2. When that session is ready to reply, it calls `submit_review_comments`
- *    itself — a dedicated approval dialog pops up over the chat (edit or
- *    drop any draft, then approve to post). This dialog no longer has to
- *    ask it for drafts; the agent decides when it's ready.
+ * 1. Comments are fetched once, grouped by file, and sent to the branch's
+ *    main agent — a real, visible chat session the user can discuss the
+ *    plan with, ask questions in, or use to actually implement fixes.
+ * 2. It discusses first: a plain-text summary of what it'd say and where,
+ *    and whether a code change/commit is warranted — no tool call yet. Only
+ *    once the human replies with something like "post the replies" does it
+ *    call `submit_review_comments` itself, which raises a dedicated approval
+ *    dialog over the chat (edit or drop any draft, then approve to post).
  * 3. The per-comment textareas below are for typing a reply by hand, without
  *    needing the agent's help at all — independent of step 2, and still the
  *    only way replies reach GitHub from *this* dialog. "Post" only sends the
@@ -53,11 +55,9 @@ export function PrRepliesDialog({
 
   // Reactive: the status line updates live even while the user is on the
   // Chat tab actually talking to this session.
-  const session = useSessions((s) => {
-    const reviews = (s.byBranch[branch] ?? []).filter((sess) => sess.session_type === "review_fix");
-    return reviews.length > 0 ? reviews[reviews.length - 1] : undefined;
-  });
-  const sessionTerminal = session && ["done", "failed", "cancelled"].includes(session.status);
+  const session = useSessions((s) =>
+    (s.byBranch[branch] ?? []).find((sess) => sess.session_type === "main"),
+  );
 
   useEffect(() => {
     void (async () => {
@@ -82,12 +82,7 @@ export function PrRepliesDialog({
   const startReview = async () => {
     setStartBusy(true);
     try {
-      await useSessions.getState().fetch(branch);
-      // Prefer continuing a prior review conversation (it already has the
-      // implementer's context baked in); otherwise resume the implementer
-      // directly.
-      const resumeFrom = findResumableSession(branch, ["review_fix", "implementation"])?.id;
-      const prompt =
+      let prompt =
         grouped
           .flatMap(([path, list]) => [
             `## ${path}`,
@@ -95,23 +90,21 @@ export function PrRepliesDialog({
             "",
           ])
           .join("\n") +
-        `\nWhen you are ready, call submit_review_comments with pr=${comments[0]?.pr ?? 0} ` +
-        "and one entry per comment above you want to reply to — set in_reply_to to that " +
-        "comment's id (the number in \"[comment N]\"), path/line to that same comment's " +
-        "own, and body to your draft reply. That call is how the human sees your draft " +
-        "replies and picks which ones actually get posted.";
-      const spawned = await useSessions.getState().spawn({
-        branch,
-        prompt,
-        session_type: "review_fix",
-        model: START_MODEL,
-        effort: START_EFFORT,
-        resume_from: resumeFrom,
-      });
-      if (spawned) {
-        useWorktrees.getState().setTab("chat");
-        onClose();
-      }
+        `\nJudge whether each comment is actionable and correct. submit_review_comments ` +
+        `is the only way a reply reaches GitHub: one entry per comment you want to reply ` +
+        `to, in_reply_to set to that comment's id (the number in "[comment N]"), path/line ` +
+        `matching that same comment's own, body your draft reply.`;
+      const [gate, style] = await Promise.all([
+        invoke<string>("render_review_workflow_gate").catch(() => ""),
+        invoke<string>("render_review_reply_style").catch(() => ""),
+      ]);
+      if (gate.trim()) prompt += `\n\n${gate}`;
+      if (style.trim()) prompt += `\n\n${style}`;
+      const main = await useSessions.getState().ensureMain(branch);
+      if (!main) return;
+      await useSessions.getState().send(main.id, prompt);
+      useWorktrees.getState().setTab("chat");
+      onClose();
     } finally {
       setStartBusy(false);
     }
@@ -122,17 +115,11 @@ export function PrRepliesDialog({
     try {
       const prompt = await renderCommitPrompt(branch, null);
       if (!prompt) return;
-      await useSessions.getState().fetch(branch);
-      // The review session (if the user already asked it to implement fixes)
-      // knows exactly what changed and why; the implementer is the fallback.
-      const target = findResumableSession(branch, ["review_fix", "implementation"]);
-      const result = await askViaNewSession({
+      const result = await askMainAgent({
         branch,
         prompt,
-        resumeFrom: target?.id,
         model: START_MODEL,
         effort: START_EFFORT,
-        permissionMode: "plan",
       });
       if (result?.text) setCommitMessage(result.text);
     } finally {
@@ -169,7 +156,7 @@ export function PrRepliesDialog({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal replies-modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="reply" /> Review comments · {branch}
@@ -206,15 +193,18 @@ export function PrRepliesDialog({
         ) : (
           <>
             <div className="replies-session-bar">
-              {!session ? (
-                <button className="small" disabled={startBusy} onClick={() => void startReview()}>
-                  {startBusy ? <Icon name="spinner" spin /> : <Icon name="bot" />} Start review
-                  session
-                </button>
-              ) : (
+              <button
+                className="small"
+                disabled={startBusy}
+                title="Send these comments to the branch's main agent"
+                onClick={() => void startReview()}
+              >
+                {startBusy ? <Icon name="spinner" spin /> : <Icon name="bot" />} Ask main agent
+              </button>
+              {session && (
                 <>
                   <StatusDot tone={session.status} pulse={session.status === "streaming"} />
-                  <span className="ac-desc">Review session: {session.status}</span>
+                  <span className="ac-desc">Main agent: {session.status}</span>
                   <button
                     className="small ghost"
                     onClick={() => {
@@ -224,17 +214,6 @@ export function PrRepliesDialog({
                   >
                     <Icon name="chat" size={12} /> Open chat
                   </button>
-                  {sessionTerminal && (
-                    <button
-                      className="small ghost"
-                      disabled={startBusy}
-                      title="Continue this conversation in a new session"
-                      onClick={() => void startReview()}
-                    >
-                      {startBusy ? <Icon name="spinner" spin /> : <Icon name="refresh" size={12} />}{" "}
-                      Start a new one
-                    </button>
-                  )}
                 </>
               )}
             </div>
@@ -270,10 +249,11 @@ export function PrRepliesDialog({
               ))}
             </div>
 
-            {session && !sessionTerminal && (
+            {session && !isTerminalStatus(session.status) && (
               <p className="hint">
-                The review session calls <code>submit_review_comments</code> itself when it's ready
-                with draft replies — a dialog for approving them pops up over the chat.
+                The main agent discusses first, in the chat — it calls{" "}
+                <code>submit_review_comments</code> only once you tell it to post, which raises
+                a dialog for approving the drafts.
               </p>
             )}
 
@@ -290,7 +270,7 @@ export function PrRepliesDialog({
                   <button
                     className="small ghost"
                     disabled={genCommitBusy}
-                    title="Ask the review session to write it, with full context of what changed"
+                    title="Ask the main agent to write it, with full context of what changed"
                     onClick={() => void genCommitMessage()}
                   >
                     {genCommitBusy ? <Icon name="spinner" spin /> : <Icon name="bot" />} Generate

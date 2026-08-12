@@ -5,6 +5,7 @@ import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import type { SessionSearchResult } from "../types/sessions";
 import { useUI } from "../state/ui";
 import { useWorktrees } from "../state/worktrees";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 
 const MIN_QUERY_LENGTH = 2;
 const DEBOUNCE_MS = 250;
@@ -50,7 +51,7 @@ export function SessionSearchDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal session-search-modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="search" /> Search session history

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useWorktrees } from "../state/worktrees";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 
 /**
  * Explicit, confirmed push of one branch. The dialog states the exact command
@@ -29,7 +30,7 @@ export function PushDialog({ branch, onClose }: { branch: string; onClose: () =>
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="upload" /> Push · {branch}

@@ -6,7 +6,13 @@ export type Severity = "info" | "warning" | "error" | "critical";
 export type SessionStatus =
   "spawning" | "streaming" | "awaiting_input" | "done" | "failed" | "cancelled";
 
-export type SessionType = "research" | "implementation" | "review_fix" | "manual" | "escalation";
+export type SessionType =
+  | "research"
+  | "implementation"
+  | "review_fix"
+  | "manual"
+  | "escalation"
+  | "main";
 
 export type BusEvent =
   | { type: "worktree.created"; data: { branch: string; path: string } }

@@ -36,6 +36,14 @@ const DEFAULT_TEMPLATES: &[(&str, &str)] = &[
         "review-fix",
         include_str!("../../../../prompts-defaults/review-fix.md"),
     ),
+    (
+        "review-reply-style",
+        include_str!("../../../../prompts-defaults/review-reply-style.md"),
+    ),
+    (
+        "review-workflow-gate",
+        include_str!("../../../../prompts-defaults/review-workflow-gate.md"),
+    ),
 ];
 
 /// One parsed template: informational frontmatter + a `{{var}}` body.
@@ -369,7 +377,7 @@ Just {{branch}}
 
         let reset = manager.reset("commit-message").expect("reset");
         assert!(!reset.modified, "reset returns to the built-in default");
-        assert!(reset.content.contains("imperative summary"));
+        assert!(reset.content.contains("imperative mood"));
     }
 
     #[test]

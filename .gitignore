@@ -5,3 +5,6 @@ src-tauri/gen/schemas/
 sidecar/dist/
 *.log
 .DS_Store
+# Raw source material for style-adapting generated text — pulled from private repos,
+# never meant to be tracked or pushed.
+docs/style-samples/

@@ -2,6 +2,7 @@ import { Icon } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useHotkeyBindings } from "../state/hotkeys";
 import { useUI } from "../state/ui";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 
 const STATIC_GROUPS: { title: string; keys: [string, string][] }[] = [
   {
@@ -45,7 +46,7 @@ export function HotkeysDialog({ onClose }: { onClose: () => void }) {
   ];
   const groups = [{ title: "Navigate", keys: navigateKeys }, ...STATIC_GROUPS];
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="sliders" /> Keyboard shortcuts

@@ -4,6 +4,7 @@ import { SelectMenu, type SelectMenuOption } from "../components/SelectMenu";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useWorktrees } from "../state/worktrees";
 import { openWorktree } from "../utils/actions";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 import type { MergeOutcome, RepoInfo, WorktreeInfo } from "../types/worktrees";
 
 /**
@@ -129,7 +130,7 @@ export function MergeDialog({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="arrow-up" /> Merge into…

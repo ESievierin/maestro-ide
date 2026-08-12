@@ -105,6 +105,10 @@ interface SessionsState {
    */
   seedTranscript: (sessionId: string, items: TranscriptItem[]) => void;
   spawn: (input: SpawnSessionInput) => Promise<Session | null>;
+  /** Get-or-create `branch`'s persistent main-agent session — the one PR
+   * review/replies and commit/PR-description generation resume. Safe to call
+   * every time; a live one is reused. */
+  ensureMain: (branch: string) => Promise<Session | null>;
   send: (sessionId: string, prompt: string, attachments?: Attachment[]) => Promise<void>;
   interrupt: (sessionId: string) => Promise<void>;
   close: (sessionId: string) => Promise<void>;
@@ -297,6 +301,23 @@ export const useSessions = create<SessionsState>((set, get) => ({
         }));
       }
       await get().fetch(input.branch);
+      return session;
+    } catch (e) {
+      set({ error: String(e) });
+      return null;
+    }
+  },
+
+  ensureMain: async (branch) => {
+    try {
+      const session = await invoke<Session>("ensure_main_session", { branch });
+      set((s) => {
+        const list = s.byBranch[branch] ?? [];
+        const next = list.some((sess) => sess.id === session.id)
+          ? list.map((sess) => (sess.id === session.id ? session : sess))
+          : [...list, session];
+        return { byBranch: { ...s.byBranch, [branch]: next } };
+      });
       return session;
     } catch (e) {
       set({ error: String(e) });

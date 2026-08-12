@@ -33,6 +33,7 @@ import {
 import type { WorktreeInfo } from "../types/worktrees";
 import { clearFinishedSessions, copyTranscript, exportTranscript } from "../utils/actions";
 import { editedFilePath, relativeToWorktree } from "../utils/toolFilePath";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 import { useDiffJump } from "../state/diffJump";
 import { useWorktrees } from "../state/worktrees";
 import { QuestionDialog } from "./QuestionDialog";
@@ -44,12 +45,14 @@ const SESSION_TYPE_SHORT_LABELS: Record<string, string> = {
   research: "Research",
   implementation: "Implementation",
   review_fix: "Review fix",
+  main: "Main agent",
 };
 const SESSION_TYPE_DESCRIPTIONS: Record<string, string> = {
   manual: "No extra behaviour",
   research: "Read-only work",
   implementation: "Writes TASK_NOTES.md on close",
   review_fix: "Can ask the original agent",
+  main: "Persistent — can't be closed while this worktree exists",
 };
 const SESSION_TYPE_MENU_OPTIONS: SelectMenuOption[] = SESSION_TYPES.map((t) => ({
   value: t,
@@ -1238,7 +1241,7 @@ function ResumePicker({
   const resumable = sessions.filter((s) => isTerminalStatus(s.status) && s.sdk_session_id);
   useEscapeToClose(onClose);
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="play" /> Resume a session
@@ -1621,9 +1624,19 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
                   >
                     <Icon name="stop" /> Interrupt
                   </button>
-                  <button className="small danger" onClick={() => void close(selected.id)}>
-                    <Icon name="close" /> Close
-                  </button>
+                  {selected.session_type === "main" ? (
+                    <button
+                      className="small"
+                      disabled
+                      title="The main agent can't be closed while this worktree exists"
+                    >
+                      <Icon name="close" /> Close
+                    </button>
+                  ) : (
+                    <button className="small danger" onClick={() => void close(selected.id)}>
+                      <Icon name="close" /> Close
+                    </button>
+                  )}
                 </>
               )}
             </div>

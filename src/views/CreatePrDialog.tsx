@@ -3,8 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../components/Icon";
 import { SelectMenu, type SelectMenuOption } from "../components/SelectMenu";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
-import { askViaNewSession, findResumableSession } from "../utils/agentAsk";
-import { useSessions } from "../state/sessions";
+import { askMainAgent } from "../utils/agentAsk";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 import { usePr, openUrl, type CreatedPr } from "../state/pr";
 import { useWorktrees } from "../state/worktrees";
 import type { RepoInfo, WorktreeInfo } from "../types/worktrees";
@@ -27,11 +27,10 @@ const GEN_EFFORT = "high";
  * message on top (typed or generated), PR title seeded from it, description
  * generated from the branch, then commit → push → `gh pr create`.
  *
- * Generation asks a real agent, not a stateless CLI call: it resumes the
- * branch's own implementation session when one exists, so the answer
- * reflects what that agent actually did and why — not just a diff read
- * cold. The prompts themselves stay the editable `commit-message` /
- * `pr-description` templates.
+ * Generation asks a real agent, not a stateless CLI call: it asks the
+ * branch's persistent main agent, so the answer reflects what happened on
+ * this branch and why — not just a diff read cold. The prompts themselves
+ * stay the editable `commit-message` / `pr-description` templates.
  */
 export function CreatePrDialog({
   worktree,
@@ -94,26 +93,16 @@ export function CreatePrDialog({
     title.trim().length > 0 &&
     (!needCommit || commitMessage.trim().length > 0);
 
-  /** The branch's own implementation session, if one is resumable — the
-   * generated text is only as good as the context it can see. */
-  const contextSession = async () => {
-    await useSessions.getState().fetch(branch);
-    return findResumableSession(branch, ["implementation"]);
-  };
-
   const genCommit = async () => {
     setGenCommitBusy(true);
     try {
       const prompt = await renderCommitPrompt(branch, base || null);
       if (!prompt) return;
-      const target = await contextSession();
-      const result = await askViaNewSession({
+      const result = await askMainAgent({
         branch,
         prompt,
-        resumeFrom: target?.id,
         model: GEN_MODEL,
         effort: GEN_EFFORT,
-        permissionMode: "plan",
       });
       if (result?.text) {
         setCommitMessage(result.text);
@@ -130,14 +119,11 @@ export function CreatePrDialog({
       const rendered = await renderPrPrompt(branch, base || null);
       if (!rendered) return;
       setBase(rendered.base);
-      const target = await contextSession();
-      const result = await askViaNewSession({
+      const result = await askMainAgent({
         branch,
         prompt: rendered.prompt,
-        resumeFrom: target?.id,
         model: GEN_MODEL,
         effort: GEN_EFFORT,
-        permissionMode: "plan",
       });
       if (result?.text) {
         const draft = parsePrDraft(result.text);
@@ -173,7 +159,7 @@ export function CreatePrDialog({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal createpr-modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="pr" /> Create PR · {branch}

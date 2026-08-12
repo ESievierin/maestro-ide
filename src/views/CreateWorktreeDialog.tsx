@@ -3,6 +3,7 @@ import { Icon } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useWorktrees } from "../state/worktrees";
 import type { RepoInfo } from "../types/worktrees";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 
 interface Props {
   repo: RepoInfo;
@@ -46,7 +47,7 @@ export function CreateWorktreeDialog({ repo, onClose }: Props) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="plus" /> New worktree

@@ -845,8 +845,10 @@ export class AgentSession implements SessionHandle {
             "a brand-new comment anchored to a file+line, or a reply to a comment that " +
             "already exists (set in_reply_to to its id — reuse that comment's own " +
             "path/line so the human sees which line you're replying to). The human can " +
-            "edit or drop any entry before approving; call this once you have your full " +
-            "set of draft comments, not per-comment.",
+            "edit or drop any entry before approving. Call this once you have your full " +
+            "set of draft comments, not per-comment — and only once the human has " +
+            "actually asked you to post, not the moment you feel ready. Describe your " +
+            "plan in chat first and wait; this tool is for after that.",
           {
             pr: z.number().int().positive().describe("The pull request number."),
             comments: z

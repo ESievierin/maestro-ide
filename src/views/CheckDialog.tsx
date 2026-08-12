@@ -3,6 +3,7 @@ import { Icon } from "../components/Icon";
 import { StatusDot } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useChecks } from "../state/checks";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 
 /**
  * The check run for one worktree: what command, the verdict, and the output
@@ -23,7 +24,7 @@ export function CheckDialog({ branch, onClose }: { branch: string; onClose: () =
   const running = result?.status === "running";
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal check-modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="check" /> Checks · {branch}

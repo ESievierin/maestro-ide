@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 
 interface HealthCheck {
   name: string;
@@ -46,7 +47,7 @@ export function HealthCheckDialog({ onClose }: { onClose: () => void }) {
   useEffect(run, []);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="modal health-check-modal" onClick={(e) => e.stopPropagation()}>
         <h3>
           <Icon name="check" /> Setup check

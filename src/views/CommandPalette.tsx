@@ -7,6 +7,7 @@ import { useSessions } from "../state/sessions";
 import { useUI } from "../state/ui";
 import { useWorktrees } from "../state/worktrees";
 import { isTerminalStatus } from "../types/sessions";
+import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 import {
   clearFinishedSessions,
   copyPath,
@@ -314,7 +315,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="modal-backdrop palette-backdrop" onClick={onClose}>
+    <div className="modal-backdrop palette-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <div className="palette" onClick={(e) => e.stopPropagation()}>
         <input
           ref={inputRef}

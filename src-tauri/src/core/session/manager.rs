@@ -61,6 +61,11 @@ const MAIN_AGENT_ORIENTATION_PROMPT: &str = "You are Maestro's persistent main a
     or write a commit message or PR description — always with the context you build up here. \
     For now, just acknowledge and wait.";
 
+/// First turn when a Main session is revived from its predecessor's SDK context
+/// (the app restarted; the conversation continues rather than starting over).
+const MAIN_AGENT_RESUME_PROMPT: &str = "The app restarted; you are the same main agent, \
+    context carried over. Acknowledge briefly and wait.";
+
 /// Maestro's own tools. Both are auto-allowed without a human permission prompt:
 /// - `ask_original_agent` is read-only by construction (the core resolves the target,
 ///   forces plan mode and withholds the writing tools), so asking permission to ask a
@@ -387,14 +392,31 @@ impl SessionManager {
         model: Option<String>,
         effort: Option<String>,
     ) -> Result<Session> {
-        if let Some(existing) = self
-            .store
-            .list_sessions(branch)?
-            .into_iter()
+        let sessions = self.store.list_sessions(branch)?;
+        if let Some(existing) = sessions
+            .iter()
             .find(|s| s.session_type == SessionType::Main && !s.status.is_terminal())
         {
-            return Ok(existing);
+            return Ok(existing.clone());
         }
+        // Persistence across restarts is the main agent's whole point: an app
+        // restart fails the live session, so a cold replacement would forget
+        // every PR discussion it ever had. Resume the newest finished main
+        // session's SDK context instead.
+        let resume_from = sessions
+            .iter()
+            .filter(|s| {
+                s.session_type == SessionType::Main
+                    && s.status.is_terminal()
+                    && s.sdk_session_id.is_some()
+            })
+            .max_by(|a, b| a.created_at.cmp(&b.created_at))
+            .map(|s| s.id.clone());
+        let prompt = if resume_from.is_some() {
+            MAIN_AGENT_RESUME_PROMPT
+        } else {
+            MAIN_AGENT_ORIENTATION_PROMPT
+        };
         self.spawn(SpawnParams {
             branch: branch.to_string(),
             cwd: cwd.to_string(),
@@ -405,8 +427,8 @@ impl SessionManager {
             thinking: None,
             tools_profile: Some(REVIEW_TOOLS_PROFILE.to_string()),
             disallowed_tools: Vec::new(),
-            prompt: MAIN_AGENT_ORIENTATION_PROMPT.to_string(),
-            resume_from: None,
+            prompt: prompt.to_string(),
+            resume_from,
         })
     }
 
@@ -1768,6 +1790,56 @@ mod tests {
             second.id, first.id,
             "a fresh main session replaces the closed one"
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_main_resumes_the_predecessors_context_after_a_restart() {
+        let (manager, _bus, engine) = setup();
+
+        // A main session lives, gets its SDK id, then dies (app restart sweep).
+        let first = manager.ensure_main("impl/T-24-x", ".", None, None).unwrap();
+        manager.handle_event(SidecarEvent::SessionInit {
+            session_id: first.id.clone(),
+            sdk_session_id: "sdk-main-ctx".into(),
+            model: None,
+        });
+        manager.handle_event(SidecarEvent::Status {
+            session_id: first.id.clone(),
+            status: "awaiting_input".into(),
+        });
+        manager.force_close(&first.id).unwrap();
+        manager.handle_event(SidecarEvent::SessionClosed {
+            session_id: first.id.clone(),
+            reason: "closed".into(),
+        });
+
+        let revived = manager.ensure_main("impl/T-24-x", ".", None, None).unwrap();
+        assert_ne!(revived.id, first.id);
+
+        let spawns = engine.spawns.lock().unwrap();
+        let last = spawns.last().unwrap();
+        assert_eq!(
+            last.resume_id.as_deref(),
+            Some("sdk-main-ctx"),
+            "the new main session continues the old one's SDK context"
+        );
+        assert!(
+            last.prompt.contains("context carried over"),
+            "a revival announces itself instead of re-running orientation"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_main_without_a_predecessor_still_starts_cold() {
+        let (manager, _bus, engine) = setup();
+        manager.ensure_main("impl/T-25-x", ".", None, None).unwrap();
+        let spawns = engine.spawns.lock().unwrap();
+        assert_eq!(spawns.last().unwrap().resume_id, None);
+        assert!(spawns
+            .last()
+            .unwrap()
+            .prompt
+            .contains("persistent main agent"));
     }
 
     #[tokio::test]

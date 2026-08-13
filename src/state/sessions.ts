@@ -310,6 +310,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
 
   ensureMain: async (branch) => {
     try {
+      const before = get().byBranch[branch] ?? [];
       const session = await invoke<Session>("ensure_main_session", { branch });
       set((s) => {
         const list = s.byBranch[branch] ?? [];
@@ -318,6 +319,29 @@ export const useSessions = create<SessionsState>((set, get) => ({
           : [...list, session];
         return { byBranch: { ...s.byBranch, [branch]: next } };
       });
+      // A brand-new main session right after a predecessor died is a revival
+      // (the backend resumed its SDK context) — carry the old transcript
+      // forward so the chat reads as one continuous conversation.
+      const isNew = !before.some((sess) => sess.id === session.id);
+      if (isNew && get().transcripts[session.id] === undefined) {
+        const predecessor = before
+          .filter(
+            (sess) =>
+              sess.session_type === "main" && isTerminalStatus(sess.status) && sess.sdk_session_id,
+          )
+          .sort((a, b) => a.created_at.localeCompare(b.created_at))
+          .pop();
+        if (predecessor) {
+          await get().loadTranscript(predecessor.id);
+          const prior = get().transcripts[predecessor.id] ?? [];
+          if (prior.length > 0) {
+            get().seedTranscript(session.id, [
+              ...prior,
+              { kind: "settings", text: "Restored after a restart — same context" },
+            ]);
+          }
+        }
+      }
       return session;
     } catch (e) {
       set({ error: String(e) });

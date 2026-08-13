@@ -28,6 +28,10 @@ pub enum SessionType {
     /// all resume this session instead of spawning a throwaway one, so the answer
     /// reflects a continuous conversation rather than a cold read every time.
     Main,
+    /// Adversarial QA in a child worktree branched off the branch under attack:
+    /// hunts edge cases and race conditions, proves each with a failing test,
+    /// writes REDTEAM.md. Never touches production code.
+    RedTeam,
 }
 
 impl SessionType {
@@ -39,6 +43,7 @@ impl SessionType {
             SessionType::ReviewFix => "review_fix",
             SessionType::Manual => "manual",
             SessionType::Main => "main",
+            SessionType::RedTeam => "red_team",
         }
     }
 
@@ -50,6 +55,7 @@ impl SessionType {
             "escalation" => Some(SessionType::Escalation),
             "manual" => Some(SessionType::Manual),
             "main" => Some(SessionType::Main),
+            "red_team" => Some(SessionType::RedTeam),
             _ => None,
         }
     }
@@ -228,6 +234,7 @@ mod tests {
             SessionType::ReviewFix,
             SessionType::Manual,
             SessionType::Main,
+            SessionType::RedTeam,
         ] {
             assert_eq!(SessionType::parse(ty.as_str()), Some(ty));
         }

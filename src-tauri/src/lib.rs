@@ -236,6 +236,8 @@ pub fn run() {
             ipc::branch_log,
             ipc::spawn_session,
             ipc::ensure_main_session,
+            ipc::start_red_team,
+            ipc::send_red_team_findings,
             ipc::send_prompt,
             ipc::interrupt_session,
             ipc::close_session,

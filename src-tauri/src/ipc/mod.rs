@@ -217,6 +217,155 @@ pub async fn ensure_main_session(
     .await
 }
 
+/// Branch-name prefix identifying red-team worktrees; the rest of the name is
+/// the parent branch with `/` flattened, so the operation is idempotent.
+const RED_TEAM_PREFIX: &str = "redteam/";
+
+/// Where a red-team session writes its findings, in its worktree root.
+const RED_TEAM_REPORT: &str = "REDTEAM.md";
+
+/// Spawn (or re-arm) the QA antagonist for `branch`: a child worktree branched
+/// off it, plus a writer session whose only goal is to break the committed
+/// changes — edge cases, race conditions, failing tests as proof, findings in
+/// REDTEAM.md. Production code stays untouched; the findings come back to the
+/// parent's main agent through `send_red_team_findings`, human in the middle.
+#[tauri::command]
+pub async fn start_red_team(state: State<'_, AppState>, branch: String) -> Result<Session, String> {
+    let worktrees = state.worktrees.clone();
+    let sessions = state.sessions.clone();
+    let diffs = state.diffs.clone();
+    let notes = state.notes.clone();
+    let prompts = state.prompts.clone();
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        if branch.starts_with(RED_TEAM_PREFIX) {
+            return Err(MaestroError::InvalidData {
+                message: "this already is a red-team worktree — red-team its parent instead".into(),
+            });
+        }
+        // The child branches off the parent's *committed* state, so the file
+        // list under attack is the committed diff, not the working tree.
+        let snapshot = diffs.get(&branch, DiffScope::Branch)?;
+        let files: String = snapshot
+            .files
+            .iter()
+            .map(|f| format!("{} {}", f.status, f.path))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if files.is_empty() {
+            return Err(MaestroError::InvalidData {
+                message: format!(
+                    "no committed changes on {branch} vs {} — commit first; the red team attacks committed code",
+                    snapshot.base
+                ),
+            });
+        }
+
+        let child_name = format!("{RED_TEAM_PREFIX}{}", branch.replace('/', "-"));
+        let child = worktrees.ensure_named(&child_name, &branch)?;
+        let cwd = child.path.to_string_lossy().into_owned();
+        // Every worktree gets its main agent, this one included.
+        sessions.ensure_main(&child_name, &cwd, None, None)?;
+
+        let branch_row = store.get_branch(&branch).ok().flatten();
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("parent_branch".to_string(), branch.clone());
+        vars.insert("base".to_string(), snapshot.base.clone());
+        vars.insert(
+            "task_id".to_string(),
+            branch_row
+                .and_then(|b| b.task_id)
+                .unwrap_or_else(|| "(none)".to_string()),
+        );
+        vars.insert("files".to_string(), files);
+        vars.insert(
+            "notes".to_string(),
+            notes.current_text(&branch).unwrap_or_else(|| {
+                "No TASK_NOTES.md on the parent branch — the implementer left no record.".into()
+            }),
+        );
+        let prompt = prompts.render("red-team", &vars)?;
+
+        sessions.spawn(SpawnParams {
+            branch: child_name,
+            cwd,
+            session_type: SessionType::RedTeam,
+            model: None,
+            effort: None,
+            // Writes tests autonomously in its own isolated worktree; bash still
+            // prompts, and commit/push still hit the gate like everyone else's.
+            permission_mode: Some("acceptEdits".into()),
+            thinking: None,
+            tools_profile: None,
+            disallowed_tools: Vec::new(),
+            prompt,
+            resume_from: None,
+        })
+    })
+    .await
+}
+
+/// Read a red-team worktree's REDTEAM.md and hand it to the parent branch's
+/// main agent for a discuss-first pass — the one-click "return the task to the
+/// implementer" step.
+#[tauri::command]
+pub async fn send_red_team_findings(
+    state: State<'_, AppState>,
+    branch: String,
+) -> Result<String, String> {
+    let worktrees = state.worktrees.clone();
+    let sessions = state.sessions.clone();
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        if !branch.starts_with(RED_TEAM_PREFIX) {
+            return Err(MaestroError::InvalidData {
+                message: format!("not a red-team worktree: {branch}"),
+            });
+        }
+        let list = worktrees.list()?;
+        let child = list
+            .iter()
+            .find(|w| w.branch.as_deref() == Some(branch.as_str()))
+            .ok_or_else(|| MaestroError::InvalidData {
+                message: format!("no worktree for branch: {branch}"),
+            })?;
+        let report_path = child.path.join(RED_TEAM_REPORT);
+        let report = std::fs::read_to_string(&report_path).map_err(|_| MaestroError::InvalidData {
+            message: format!(
+                "{RED_TEAM_REPORT} not found in {} — the red-team session hasn't written its findings yet",
+                child.path.display()
+            ),
+        })?;
+        let parent = store
+            .get_branch(&branch)
+            .ok()
+            .flatten()
+            .and_then(|b| b.base_branch)
+            .ok_or_else(|| MaestroError::InvalidData {
+                message: format!("no recorded parent branch for {branch}"),
+            })?;
+        let parent_wt = list
+            .iter()
+            .find(|w| w.branch.as_deref() == Some(parent.as_str()))
+            .ok_or_else(|| MaestroError::InvalidData {
+                message: format!("no worktree for the parent branch: {parent}"),
+            })?;
+
+        let main = sessions.ensure_main(&parent, &parent_wt.path.to_string_lossy(), None, None)?;
+        let prompt = format!(
+            "A red-team QA agent attacked the committed changes on this branch and left \
+             these findings (its failing proof-tests live on `{branch}`):\n\n{report}\n\n\
+             Go through each finding (read-only for now): is it a real bug, a wrong \
+             assumption in the test, or acceptable behavior? Summarize your verdict per \
+             finding and propose fixes where warranted — then stop and wait for my \
+             go-ahead before changing anything."
+        );
+        sessions.send(&main.id, &prompt, &[])?;
+        Ok(parent)
+    })
+    .await
+}
+
 /// Pin or unpin a branch — kept at the top of the worktree list regardless of
 /// sort order, for the ones a user is actively juggling among many.
 #[tauri::command]

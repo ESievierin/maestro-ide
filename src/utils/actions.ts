@@ -49,6 +49,52 @@ export function openWorktree(branch: string, target: "explorer" | "editor", file
   });
 }
 
+/** Spawn the QA antagonist for `branch`: a child `redteam/…` worktree plus a
+ * session out to break the committed changes with failing proof-tests. On
+ * success the UI jumps to the new worktree's chat. */
+export async function startRedTeam(branch: string): Promise<void> {
+  const { useToasts } = await import("../state/toasts");
+  try {
+    const session = await invoke<Session>("start_red_team", { branch });
+    await useWorktrees.getState().refresh();
+    useWorktrees.getState().select(session.branch);
+    useWorktrees.getState().setTab("chat");
+    useToasts.getState().push({
+      severity: "info",
+      code: "red-team",
+      message: `Red team unleashed on ${branch} — findings land in REDTEAM.md.`,
+    });
+  } catch (e) {
+    useToasts.getState().push({
+      severity: "warning",
+      code: "red-team",
+      message: String(e),
+    });
+  }
+}
+
+/** Hand a red-team worktree's REDTEAM.md to the parent branch's main agent
+ * for a discuss-first verdict, then jump to that conversation. */
+export async function sendRedTeamFindings(branch: string): Promise<void> {
+  const { useToasts } = await import("../state/toasts");
+  try {
+    const parent = await invoke<string>("send_red_team_findings", { branch });
+    useWorktrees.getState().select(parent);
+    useWorktrees.getState().setTab("chat");
+    useToasts.getState().push({
+      severity: "info",
+      code: "red-team",
+      message: `Findings sent to ${parent}'s main agent.`,
+    });
+  } catch (e) {
+    useToasts.getState().push({
+      severity: "warning",
+      code: "red-team",
+      message: String(e),
+    });
+  }
+}
+
 /** Copy a worktree path with a confirming toast. */
 export async function copyPath(path: string) {
   await navigator.clipboard.writeText(path);

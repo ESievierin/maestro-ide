@@ -280,6 +280,63 @@ impl WorktreeManager {
         })
     }
 
+    /// Get-or-create a worktree on an exactly-named branch, creating the branch
+    /// from `base` when it doesn't exist yet. For system flows that own their
+    /// naming (red-team worktrees, …) instead of the user-facing convention —
+    /// deterministic names make the operation idempotent: calling it again
+    /// returns the same worktree instead of minting a sibling.
+    pub fn ensure_named(&self, name: &str, base: &str) -> Result<WorktreeInfo> {
+        validate_branch_name(name)?;
+        let repo = self.require_repo()?;
+
+        // Already checked out somewhere → reuse it.
+        if let Some(existing) = self
+            .list()?
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some(name))
+        {
+            return Ok(existing);
+        }
+
+        // Branch survived a worktree removal → reattach. Otherwise branch off `base`.
+        if self.git.branch_exists(&repo, name)? {
+            return self.create(CreateWorktreeRequest {
+                existing_branch: Some(name.to_string()),
+                kind: None,
+                task_id: None,
+                slug: None,
+                base: None,
+            });
+        }
+
+        let configured_root = self.store.get_setting(SETTING_WORKTREE_ROOT)?;
+        let path = worktree_path(&repo, name, configured_root.as_deref());
+        if path.exists() {
+            return Err(MaestroError::InvalidData {
+                message: format!("worktree path already exists: {}", path.display()),
+            });
+        }
+        self.git.create_worktree(&repo, &path, name, Some(base))?;
+        self.store.upsert_branch(name, None, Some(base))?;
+        self.bus.publish(Event::WorktreeCreated {
+            branch: name.to_string(),
+            path: path.to_string_lossy().into_owned(),
+        });
+        tracing::info!(branch = name, base, path = %path.display(), "system worktree created");
+
+        let stored = self.store.get_branch(name)?;
+        let status = self.git.branch_status(&path).ok();
+        Ok(WorktreeInfo {
+            branch: Some(name.to_string()),
+            path,
+            is_primary: false,
+            task_id: stored.as_ref().and_then(|b| b.task_id.clone()),
+            base_branch: stored.as_ref().and_then(|b| b.base_branch.clone()),
+            pinned: stored.as_ref().is_some_and(|b| b.pinned),
+            status,
+        })
+    }
+
     /// Pin or unpin a branch — kept at the top of the worktree list regardless
     /// of sort order, for the ones a user is actively juggling among many.
     pub fn set_pinned(&self, branch: &str, pinned: bool) -> Result<()> {
@@ -1251,6 +1308,51 @@ mod tests {
         let (mgr, _git, _bus) = manager_with_git();
         let err = mgr.merge_into("main", "main").unwrap_err();
         assert!(err.to_string().contains("itself"), "{err}");
+    }
+
+    #[test]
+    fn ensure_named_creates_once_then_reuses() {
+        let (mgr, git, _bus) = manager_with_git();
+
+        let first = mgr
+            .ensure_named("redteam/impl-T-1-x", "impl/T-1-x")
+            .unwrap();
+        assert_eq!(first.branch.as_deref(), Some("redteam/impl-T-1-x"));
+        assert_eq!(
+            first.base_branch.as_deref(),
+            Some("impl/T-1-x"),
+            "the parent is recorded as the base"
+        );
+        assert!(git
+            .state
+            .lock()
+            .unwrap()
+            .branches
+            .contains("redteam/impl-T-1-x"));
+
+        // Second call finds the existing worktree instead of erroring on the path.
+        let second = mgr
+            .ensure_named("redteam/impl-T-1-x", "impl/T-1-x")
+            .unwrap();
+        assert_eq!(second.path, first.path);
+        assert_eq!(
+            git.state
+                .lock()
+                .unwrap()
+                .worktrees
+                .iter()
+                .filter(|w| w.branch.as_deref() == Some("redteam/impl-T-1-x"))
+                .count(),
+            1,
+            "no sibling worktree was minted"
+        );
+    }
+
+    #[test]
+    fn ensure_named_rejects_invalid_names() {
+        let (mgr, _git, _bus) = manager_with_git();
+        assert!(mgr.ensure_named("bad name", "main").is_err());
+        assert!(mgr.ensure_named("also//bad", "main").is_err());
     }
 
     #[test]

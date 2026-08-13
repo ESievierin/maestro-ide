@@ -13,6 +13,8 @@ import {
   copyPath,
   openWorktree,
   removeWorktree,
+  sendRedTeamFindings,
+  startRedTeam,
   syncAllWorktrees,
 } from "../utils/actions";
 
@@ -157,6 +159,23 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           hint: branch,
           run: () => void sync(branch),
         });
+        if (branch.startsWith("redteam/")) {
+          result.push({
+            id: "wt:redteam-findings",
+            icon: "reply",
+            label: "Send red-team findings to the parent's main agent",
+            hint: branch,
+            run: () => void sendRedTeamFindings(branch),
+          });
+        } else {
+          result.push({
+            id: "wt:redteam",
+            icon: "shield",
+            label: "Red-team this branch…",
+            hint: "break the committed changes with failing tests",
+            run: () => void startRedTeam(branch),
+          });
+        }
       }
       if (checkCommand) {
         result.push({

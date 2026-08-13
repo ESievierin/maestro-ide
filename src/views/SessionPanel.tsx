@@ -46,6 +46,7 @@ const SESSION_TYPE_SHORT_LABELS: Record<string, string> = {
   implementation: "Implementation",
   review_fix: "Review fix",
   main: "Main agent",
+  red_team: "Red team",
 };
 const SESSION_TYPE_DESCRIPTIONS: Record<string, string> = {
   manual: "No extra behaviour",
@@ -53,6 +54,7 @@ const SESSION_TYPE_DESCRIPTIONS: Record<string, string> = {
   implementation: "Writes TASK_NOTES.md on close",
   review_fix: "Can ask the original agent",
   main: "Persistent — can't be closed while this worktree exists",
+  red_team: "Breaks the parent branch's changes with failing proof-tests",
 };
 const SESSION_TYPE_MENU_OPTIONS: SelectMenuOption[] = SESSION_TYPES.map((t) => ({
   value: t,

@@ -44,6 +44,10 @@ const DEFAULT_TEMPLATES: &[(&str, &str)] = &[
         "review-workflow-gate",
         include_str!("../../../../prompts-defaults/review-workflow-gate.md"),
     ),
+    (
+        "red-team",
+        include_str!("../../../../prompts-defaults/red-team.md"),
+    ),
 ];
 
 /// One parsed template: informational frontmatter + a `{{var}}` body.

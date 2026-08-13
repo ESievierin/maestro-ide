@@ -7,7 +7,7 @@ export type SessionStatus =
   "spawning" | "streaming" | "awaiting_input" | "done" | "failed" | "cancelled";
 
 export type SessionType =
-  "research" | "implementation" | "review_fix" | "manual" | "escalation" | "main";
+  "research" | "implementation" | "review_fix" | "manual" | "escalation" | "main" | "red_team";
 
 export type BusEvent =
   | { type: "worktree.created"; data: { branch: string; path: string } }

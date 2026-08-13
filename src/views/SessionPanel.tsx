@@ -1389,6 +1389,21 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
   }, [branch, fetch]);
 
   useEffect(() => {
+    // The worktree's main agent is supposed to be a persistent presence, but an
+    // app restart fails the live one. Revive it (backend resumes its context)
+    // the first time this worktree's chat is opened — once per branch visit,
+    // and only when no live main exists.
+    void (async () => {
+      await fetch(branch);
+      const current = useSessions.getState().byBranch[branch] ?? [];
+      const hasLiveMain = current.some(
+        (s) => s.session_type === "main" && !isTerminalStatus(s.status),
+      );
+      if (!hasLiveMain) await useSessions.getState().ensureMain(branch);
+    })();
+  }, [branch, fetch]);
+
+  useEffect(() => {
     // A session opened after a restart has nothing live in memory yet — hydrate
     // its transcript from the last autosave. A no-op once it's already loaded.
     if (selectedId) void loadTranscript(selectedId);

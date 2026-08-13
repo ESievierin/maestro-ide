@@ -21,10 +21,16 @@ export function ReviewGuide({
   branch,
   knownFiles,
   onSelect,
+  viewed,
+  onMarkViewed,
 }: {
   branch: string;
   knownFiles: string[];
   onSelect: (path: string) => void;
+  /** The diff list's per-file viewed set — the guide shows progress against it. */
+  viewed: Set<string>;
+  /** Mark/unmark a step's files as viewed alongside the check-off. */
+  onMarkViewed: (paths: string[], on: boolean) => void;
 }) {
   const cached = guideCache.get(branch);
   const [steps, setSteps] = useState<GuideStep[] | null>(cached?.steps ?? null);
@@ -64,14 +70,19 @@ export function ReviewGuide({
   };
 
   const toggleDone = (index: number) => {
+    const nowDone = !done.has(index);
     setDone((prev) => {
       const next = new Set(prev);
-      if (next.has(index)) next.delete(index);
-      else next.add(index);
+      if (nowDone) next.add(index);
+      else next.delete(index);
       const entry = guideCache.get(branch);
       if (entry) guideCache.set(branch, { ...entry, done: next });
       return next;
     });
+    // Checking off a step is reviewing its files — keep the diff list's
+    // checkmarks in step so the roadmap doubles as the review checklist.
+    const files = steps?.[index]?.files ?? [];
+    if (files.length > 0) onMarkViewed(files, nowDone);
   };
 
   return (
@@ -130,13 +141,18 @@ export function ReviewGuide({
                 {step.files.map((f) => (
                   <button
                     key={f}
-                    className="review-guide-file"
+                    className={`review-guide-file${viewed.has(f) ? " viewed" : ""}`}
                     onClick={() => onSelect(f)}
-                    title={f}
+                    title={`${f}${viewed.has(f) ? " — viewed" : ""}`}
                   >
                     {f.split("/").pop()}
                   </button>
                 ))}
+                {step.files.length > 1 && (
+                  <span className="review-guide-progress">
+                    {step.files.filter((f) => viewed.has(f)).length}/{step.files.length} viewed
+                  </span>
+                )}
               </div>
             </li>
           ))}

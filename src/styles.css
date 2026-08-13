@@ -1675,6 +1675,17 @@ input[type="checkbox"] {
   color: var(--accent);
 }
 
+.review-guide-file.viewed {
+  color: var(--success);
+  text-decoration: line-through;
+}
+
+.review-guide-progress {
+  font-size: 0.68rem;
+  color: var(--text-tertiary);
+  align-self: center;
+}
+
 .review-guide-empty {
   color: var(--text-tertiary);
   font-size: 0.75rem;

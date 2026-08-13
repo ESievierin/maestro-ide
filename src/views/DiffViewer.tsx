@@ -505,6 +505,18 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
     });
   }, []);
 
+  /** Bulk mark from the review guide: checking a step reviews its files. */
+  const setViewedFor = useCallback((paths: string[], on: boolean) => {
+    setViewed((v) => {
+      const next = new Set(v);
+      for (const path of paths) {
+        if (on) next.add(path);
+        else next.delete(path);
+      }
+      return next;
+    });
+  }, []);
+
   /** Move to the next/previous file in the (filtered) list, wrapping around —
    * called directly from the toolbar, and as the fallback when a within-file
    * chunk-navigation command runs out of chunks in the current file. */
@@ -894,6 +906,8 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
               branch={branch}
               knownFiles={(snapshot?.files ?? []).map((f) => f.path)}
               onSelect={setSelectedPath}
+              viewed={viewed}
+              onMarkViewed={setViewedFor}
             />
             {snapshot && snapshot.files.length > 1 && (
               <div className="diff-files-toolbar">

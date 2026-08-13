@@ -10,6 +10,7 @@ pub mod diff;
 pub mod escalation;
 pub mod gate;
 pub mod health;
+pub mod impact;
 pub mod launcher;
 pub mod notes;
 pub mod pr;

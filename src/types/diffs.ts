@@ -41,3 +41,31 @@ export interface BlameLine {
   line: number;
   content: string;
 }
+
+// Mirrors the Rust types in src-tauri/src/core/impact/mod.rs.
+
+export interface ImpactLink {
+  /** The changed (or ring-1) file being referenced. */
+  target: string;
+  kind: "import" | "reference";
+  /** The stem or symbol that matched. */
+  matched: string;
+}
+
+export interface ImpactedFile {
+  path: string;
+  /** 1 = references a changed file directly; 2 = imports a ring-1 file. */
+  distance: number;
+  kind: "import" | "reference";
+  links: ImpactLink[];
+}
+
+export interface ImpactReport {
+  branch: string;
+  analyzed: string[];
+  skipped: string[];
+  impacted: ImpactedFile[];
+  scanned: number;
+  /** True when a cap was hit — the radius may be wider than reported. */
+  truncated: boolean;
+}

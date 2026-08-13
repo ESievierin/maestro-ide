@@ -107,6 +107,18 @@ pub trait GitProvider: Send + Sync {
     /// Files changed between the merge-base and `branch` (rename detection on).
     fn changed_files(&self, repo: &Path, branch: &str, base: &str) -> Result<Vec<ChangedFile>>;
 
+    /// Every tracked file in `worktree`, plus untracked-but-not-ignored ones
+    /// (`git ls-files --cached --others --exclude-standard`) — the candidate set
+    /// for repo-wide scans like the impact analyzer, with node_modules/target/…
+    /// excluded by gitignore for free. Default: unsupported, so test doubles
+    /// that never scan don't have to implement it.
+    fn list_files(&self, _worktree: &Path) -> Result<Vec<String>> {
+        Err(MaestroError::Git {
+            kind: GitErrorKind::CommandFailed,
+            message: "list_files is not supported by this git provider".into(),
+        })
+    }
+
     /// Contents of `path` at `rev`; `None` when the file does not exist there.
     fn show_file(&self, repo: &Path, rev: &str, path: &str) -> Result<Option<String>>;
 

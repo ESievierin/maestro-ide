@@ -1445,6 +1445,104 @@ input[type="checkbox"] {
   cursor: pointer;
 }
 
+/* --- Blast radius (impact analysis) --- */
+
+.blast-radius {
+  flex-shrink: 0;
+  max-height: 40%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+}
+
+.blast-radius-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+
+.blast-radius-toggle {
+  flex: 1;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.blast-radius-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-height: 0;
+}
+
+.blast-radius-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.3rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.78rem;
+  min-width: 0;
+}
+
+.blast-radius-row:hover {
+  background: var(--surface-3);
+}
+
+.blast-radius-kind {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 0 0.25rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-tertiary);
+}
+
+.blast-radius-kind.import {
+  color: var(--accent);
+}
+
+.blast-radius-path {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.blast-radius-dir {
+  color: var(--text-tertiary);
+}
+
+.blast-radius-ring {
+  color: var(--text-tertiary);
+  font-size: 0.68rem;
+  padding: 0.25rem 0.3rem 0.05rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.blast-radius-empty {
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+  margin: 0;
+  padding: 0.1rem 0.3rem;
+}
+
+.blast-radius-verify {
+  align-self: flex-start;
+}
+
 .file-viewed-toggle:hover {
   color: var(--success);
 }

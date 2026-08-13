@@ -13,6 +13,7 @@ import { selectQuestions, useQuestions } from "../state/questions";
 import type { ChangedFile, DiffScope, LineEnding } from "../types/diffs";
 import type { LineQuestion } from "../types/questions";
 import type { WorktreeInfo } from "../types/worktrees";
+import { BlastRadius } from "./BlastRadius";
 import {
   type LineRange,
   lineQuestionsField,
@@ -917,6 +918,7 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
                 <li className="diff-files-empty">No files match “{search}”.</li>
               )}
             </ul>
+            <BlastRadius branch={branch} />
           </div>
           <div className="diff-editor">
             {tooLarge && tooLarge.path === selectedPath ? (

@@ -22,6 +22,7 @@ use crate::core::compose::ComposeManager;
 use crate::core::daemon::{DaemonManager, DaemonStatus};
 use crate::core::diff::{DiffManager, DiffScope, DiffSnapshot, FileDiff};
 use crate::core::gate::{GateManager, GateParam, PendingGate};
+use crate::core::impact::{ImpactManager, ImpactReport};
 use crate::core::notes::{Notes, NotesManager};
 use crate::core::pr::{
     CreatedPr, DraftComment, PostCommentsOutcome, PrComment, PrManager, ReplyOutcome,
@@ -53,6 +54,7 @@ pub struct AppState {
     pub worktrees: Arc<WorktreeManager>,
     pub sessions: Arc<SessionManager>,
     pub diffs: Arc<DiffManager>,
+    pub impact: Arc<ImpactManager>,
     pub gates: Arc<GateManager>,
     pub questions: Arc<LineQuestionManager>,
     pub prompts: Arc<PromptManager>,
@@ -1054,6 +1056,18 @@ pub async fn get_diff(
             .map(|s| (*s).clone())
     })
     .await
+}
+
+/// Blast radius of the branch's working-tree diff: which files outside it
+/// import or reference what changed. Computed on demand — a text scan over
+/// tracked source files, bounded, never cached.
+#[tauri::command]
+pub async fn analyze_impact(
+    state: State<'_, AppState>,
+    branch: String,
+) -> Result<ImpactReport, String> {
+    let impact = state.impact.clone();
+    run_core(state.bus.clone(), move || impact.analyze(&branch)).await
 }
 
 /// Force recompute of a branch's diff; publishes `diff.updated`.

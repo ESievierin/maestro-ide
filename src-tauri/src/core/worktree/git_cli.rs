@@ -292,6 +292,14 @@ impl GitProvider for GitCli {
         Ok(Some(self.run(repo, &["show", &spec])?))
     }
 
+    fn list_files(&self, worktree: &Path) -> Result<Vec<String>> {
+        let out = self.run(
+            worktree,
+            &["ls-files", "--cached", "--others", "--exclude-standard"],
+        )?;
+        Ok(out.lines().map(str::to_string).collect())
+    }
+
     fn blame_range(
         &self,
         worktree: &Path,

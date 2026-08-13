@@ -15,6 +15,7 @@ use crate::core::daemon::{DaemonManager, GhCli, JiraCli, RealDaemonExec};
 use crate::core::diff::DiffManager;
 use crate::core::escalation::EscalationManager;
 use crate::core::gate::{self, GateManager};
+use crate::core::impact::ImpactManager;
 use crate::core::notes::NotesManager;
 use crate::core::pr::PrManager;
 use crate::core::prompts::PromptManager;
@@ -97,11 +98,12 @@ pub fn run() {
         bus.clone(),
     ));
     let diffs = Arc::new(DiffManager::new(
-        git,
+        git.clone(),
         store.clone(),
         worktrees.clone(),
         bus.clone(),
     ));
+    let impact = Arc::new(ImpactManager::new(git, worktrees.clone(), diffs.clone()));
 
     let prompts_dir = maestro_home().join("prompts");
     let prompts = match PromptManager::new(&prompts_dir) {
@@ -191,6 +193,7 @@ pub fn run() {
         worktrees,
         sessions: sessions.clone(),
         diffs: diffs.clone(),
+        impact,
         gates,
         questions: questions.clone(),
         prompts,
@@ -242,6 +245,7 @@ pub fn run() {
             ipc::save_session_transcript,
             ipc::get_session_transcript,
             ipc::get_diff,
+            ipc::analyze_impact,
             ipc::refresh_diff,
             ipc::get_file_diff,
             ipc::blame_range,

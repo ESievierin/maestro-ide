@@ -341,6 +341,28 @@ export const useSessions = create<SessionsState>((set, get) => ({
             ]);
           }
         }
+        // With context and transcript carried into the revival, the graveyard
+        // of superseded main rows (one per restart) is pure tab clutter — prune
+        // it. Only after seeding: deleting first would drop the transcript we
+        // just carried forward.
+        const stale = before.filter(
+          (sess) => sess.session_type === "main" && isTerminalStatus(sess.status),
+        );
+        for (const sess of stale) {
+          try {
+            await invoke("delete_session", { sessionId: sess.id });
+          } catch {
+            // Raced with another cleanup — nothing to do.
+          }
+        }
+        if (stale.length > 0) {
+          set((s) => {
+            const transcripts = { ...s.transcripts };
+            for (const sess of stale) delete transcripts[sess.id];
+            return { transcripts };
+          });
+          await get().fetch(branch);
+        }
       }
       return session;
     } catch (e) {

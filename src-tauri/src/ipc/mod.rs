@@ -244,8 +244,10 @@ pub async fn start_red_team(state: State<'_, AppState>, branch: String) -> Resul
             });
         }
         // The child branches off the parent's *committed* state, so the file
-        // list under attack is the committed diff, not the working tree.
-        let snapshot = diffs.get(&branch, DiffScope::Branch)?;
+        // list under attack is the committed diff, not the working tree —
+        // recomputed, not cached: the user typically commits right before
+        // red-teaming, and a stale snapshot would see an empty branch diff.
+        let snapshot = diffs.refresh(&branch, DiffScope::Branch)?;
         let files: String = snapshot
             .files
             .iter()

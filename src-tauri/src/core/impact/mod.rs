@@ -120,7 +120,11 @@ impl ImpactManager {
             })?;
         let root = worktree.path;
 
-        let snapshot = self.diffs.get(branch, DiffScope::Worktree)?;
+        // Recomputed, not cached: the analyzer reads candidate files from disk,
+        // so pairing them with a stale changed-file list would misclassify
+        // files as "outside the diff". An explicit Analyze click can afford
+        // the recompute.
+        let snapshot = self.diffs.refresh(branch, DiffScope::Worktree)?;
         let mut truncated = false;
 
         // Signatures of the changed source files.

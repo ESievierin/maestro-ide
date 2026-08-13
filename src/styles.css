@@ -325,6 +325,12 @@ body {
   flex-wrap: wrap;
 }
 
+/* A child worktree (red team attacking its parent) reads as nested. */
+.worktree-items li.wt-child {
+  margin-left: 0.9rem;
+  border-left: 2px solid var(--surface-3);
+}
+
 .wt-branch {
   font-size: var(--text-sm);
   color: var(--text-primary);

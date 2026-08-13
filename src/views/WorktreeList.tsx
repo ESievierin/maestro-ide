@@ -215,9 +215,22 @@ export function WorktreeList() {
     : worktrees;
   // Pinned worktrees float to the top as a group; a stable sort keeps every
   // other relative ordering (creation order within each group) untouched.
-  const sortedWorktrees = [...filteredWorktrees].sort(
-    (a, b) => Number(b.pinned) - Number(a.pinned),
-  );
+  const pinSorted = [...filteredWorktrees].sort((a, b) => Number(b.pinned) - Number(a.pinned));
+  // Child worktrees (a red team attacking a branch) nest right under their
+  // parent so the structure reads at a glance; orphans (parent removed or
+  // filtered out) fall to the end rather than vanishing.
+  const isChild = (w: WorktreeInfo) => (w.branch ?? "").startsWith("redteam/");
+  const children = pinSorted.filter(isChild);
+  const sortedWorktrees: WorktreeInfo[] = [];
+  for (const parent of pinSorted.filter((w) => !isChild(w))) {
+    sortedWorktrees.push(parent);
+    for (const child of children) {
+      if (child.base_branch && child.base_branch === parent.branch) sortedWorktrees.push(child);
+    }
+  }
+  for (const child of children) {
+    if (!sortedWorktrees.includes(child)) sortedWorktrees.push(child);
+  }
 
   return (
     <aside className="worktree-list">
@@ -306,12 +319,13 @@ export function WorktreeList() {
             {sortedWorktrees.map((wt) => (
               <li
                 key={wt.path}
-                className={wt.branch === selected ? "selected" : ""}
+                className={`${wt.branch === selected ? "selected" : ""}${isChild(wt) ? " wt-child" : ""}`}
                 onClick={() => select(wt.branch)}
               >
                 <div className="wt-row">
                   <span className="wt-branch">
-                    <Icon name="branch" size={12} /> {wt.branch ?? "(detached)"}
+                    <Icon name={isChild(wt) ? "shield" : "branch"} size={12} />{" "}
+                    {wt.branch ?? "(detached)"}
                     {wt.pinned && <Icon name="star" size={11} className="wt-pin-indicator" />}
                   </span>
                   <StatusBadges wt={wt} />

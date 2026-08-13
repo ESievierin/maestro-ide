@@ -301,6 +301,7 @@ pub fn run() {
             ipc::dismiss_daemon_task,
             ipc::render_review_reply_style,
             ipc::render_review_workflow_gate,
+            ipc::render_review_guide_prompt,
             ipc::render_commit_prompt,
             ipc::render_pr_prompt,
             ipc::create_pr,

@@ -1543,6 +1543,139 @@ input[type="checkbox"] {
   align-self: flex-start;
 }
 
+/* --- Review guide (agent-generated diff roadmap) --- */
+
+.review-guide {
+  flex-shrink: 0;
+  max-height: 45%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+}
+
+.review-guide-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+
+.review-guide-toggle {
+  flex: 1;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.review-guide-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-height: 0;
+  counter-reset: guide-step;
+}
+
+.review-guide-step {
+  padding: 0.25rem 0.3rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+
+.review-guide-step.done {
+  opacity: 0.55;
+}
+
+.review-guide-step-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.review-guide-step-head input[type="checkbox"] {
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.review-guide-step-title {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.review-guide-step-title:hover {
+  color: var(--accent);
+}
+
+.review-guide-cat {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 0 0.25rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-tertiary);
+}
+
+.review-guide-cat.core-logic {
+  color: var(--accent);
+}
+
+.review-guide-cat.tests {
+  color: var(--success, #9ece6a);
+}
+
+.review-guide-why {
+  margin: 0.15rem 0 0 1.5rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.review-guide-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0.2rem 0 0 1.5rem;
+}
+
+.review-guide-file {
+  background: var(--surface-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 0.05rem 0.35rem;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.review-guide-file:hover {
+  color: var(--accent);
+}
+
+.review-guide-empty {
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+  margin: 0;
+  padding: 0.1rem 0.3rem;
+}
+
 .file-viewed-toggle:hover {
   color: var(--success);
 }

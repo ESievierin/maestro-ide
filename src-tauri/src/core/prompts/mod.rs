@@ -48,6 +48,10 @@ const DEFAULT_TEMPLATES: &[(&str, &str)] = &[
         "red-team",
         include_str!("../../../../prompts-defaults/red-team.md"),
     ),
+    (
+        "review-guide",
+        include_str!("../../../../prompts-defaults/review-guide.md"),
+    ),
 ];
 
 /// One parsed template: informational frontmatter + a `{{var}}` body.

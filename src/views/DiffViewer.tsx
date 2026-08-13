@@ -14,6 +14,7 @@ import type { ChangedFile, DiffScope, LineEnding } from "../types/diffs";
 import type { LineQuestion } from "../types/questions";
 import type { WorktreeInfo } from "../types/worktrees";
 import { BlastRadius } from "./BlastRadius";
+import { ReviewGuide } from "./ReviewGuide";
 import {
   type LineRange,
   lineQuestionsField,
@@ -872,6 +873,11 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
       ) : (
         <div className="diff-body">
           <div className="diff-files-panel">
+            <ReviewGuide
+              branch={branch}
+              knownFiles={(snapshot?.files ?? []).map((f) => f.path)}
+              onSelect={setSelectedPath}
+            />
             {snapshot && snapshot.files.length > 1 && (
               <div className="diff-files-toolbar">
                 {snapshot.files.length > 4 && (

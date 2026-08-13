@@ -823,6 +823,17 @@ pub async fn render_pr_prompt(
     .await
 }
 
+/// Render the "review-guide" prompt for a branch's diff — the frontend sends
+/// it to the main agent and parses the reply as a step-by-step review roadmap.
+#[tauri::command]
+pub async fn render_review_guide_prompt(
+    state: State<'_, AppState>,
+    branch: String,
+) -> Result<String, String> {
+    let compose = state.compose.clone();
+    run_core(state.bus.clone(), move || compose.guide_prompt(&branch)).await
+}
+
 /// Push the branch and open a pull request. Commit first via commit_worktree.
 #[tauri::command]
 pub async fn create_pr(

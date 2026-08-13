@@ -63,6 +63,26 @@ impl ComposeManager {
     /// not just whatever happens to be committed yet. Returns the base that
     /// was actually used, so the caller can reflect an auto-detected one.
     pub fn pr_prompt(&self, branch: &str, base: Option<&str>) -> Result<(String, String)> {
+        let (resolved_base, vars) = self.branch_context(branch, base)?;
+        let prompt = self.prompts.render("pr-description", &vars)?;
+        Ok((resolved_base, prompt))
+    }
+
+    /// Render the "review-guide" prompt: same branch context as a PR
+    /// description, but asking for a machine-readable review roadmap instead
+    /// of prose (the frontend parses the reply as JSON).
+    pub fn guide_prompt(&self, branch: &str) -> Result<String> {
+        let (_, vars) = self.branch_context(branch, None)?;
+        self.prompts.render("review-guide", &vars)
+    }
+
+    /// Everything a whole-branch prompt needs: commits, file list (tracked
+    /// stat + untracked names), truncated working-tree diff vs the merge-base.
+    fn branch_context(
+        &self,
+        branch: &str,
+        base: Option<&str>,
+    ) -> Result<(String, HashMap<String, String>)> {
         let cwd = self.worktree_path(branch)?;
         let resolved_base = self.resolve_base(branch, base)?;
         let merge_base = git(&cwd, &["merge-base", &resolved_base, "HEAD"])?
@@ -98,8 +118,7 @@ impl ComposeManager {
         }
         let mut vars = self.common_vars(branch, &resolved_base, &files, &diff)?;
         vars.insert("commits".into(), commits);
-        let prompt = self.prompts.render("pr-description", &vars)?;
-        Ok((resolved_base, prompt))
+        Ok((resolved_base, vars))
     }
 
     fn common_vars(

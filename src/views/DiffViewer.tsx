@@ -15,6 +15,7 @@ import type { LineQuestion } from "../types/questions";
 import type { WorktreeInfo } from "../types/worktrees";
 import { BlastRadius } from "./BlastRadius";
 import { ReviewGuide } from "./ReviewGuide";
+import { loadViewed, saveViewed } from "./viewedStore";
 import {
   type LineRange,
   lineQuestionsField,
@@ -478,6 +479,22 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
     () => (snapshot?.files ?? []).filter((f) => viewed.has(f.path)).length,
     [snapshot?.files, viewed],
   );
+
+  // Checkmarks survive restarts and branch switches: hydrate whenever the
+  // branch/merge-base pair changes, persist whenever the set does. The ref
+  // guards the order — never write under a key that wasn't loaded first.
+  const viewedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!snapshot) return;
+    const key = `${branch}:${snapshot.merge_base}`;
+    if (viewedKeyRef.current === key) return;
+    viewedKeyRef.current = key;
+    setViewed(loadViewed(branch, snapshot.merge_base));
+  }, [branch, snapshot]);
+  useEffect(() => {
+    if (!snapshot || viewedKeyRef.current !== `${branch}:${snapshot.merge_base}`) return;
+    saveViewed(branch, snapshot.merge_base, viewed);
+  }, [viewed, branch, snapshot]);
 
   const toggleViewed = useCallback((path: string) => {
     setViewed((v) => {

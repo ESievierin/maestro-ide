@@ -1486,8 +1486,11 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
     if (session) setSelectedId(session.id);
   };
 
-  /** Human tab label: the prompt's first words beat `manual · 3f9c2a1b`. */
+  /** Human tab label: role names for system sessions (their opening prompt is
+   * boilerplate), the prompt's first words for everything else. */
   const tabLabel = (s: Session): string => {
+    if (s.session_type === "main") return "Main agent";
+    if (s.session_type === "red_team") return "Red team";
     const prompt = firstPrompt(s.id);
     if (!prompt) return `${s.session_type} · ${s.id.slice(0, 8)}`;
     const oneLine = prompt.replace(/\s+/g, " ").trim();
@@ -1540,6 +1543,8 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
             onClick={() => setSelectedId(s.id)}
             title={`${s.session_type} · ${s.id.slice(0, 8)}`}
           >
+            {s.session_type === "main" && <Icon name="bot" size={12} />}
+            {s.session_type === "red_team" && <Icon name="shield" size={12} />}
             {tabLabel(s)}
             {s.permission_mode === READ_ONLY_MODE && <span className="pill">read-only</span>}
             <StatusPill status={s.status} />

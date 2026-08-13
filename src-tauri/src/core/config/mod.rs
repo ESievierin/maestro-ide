@@ -28,6 +28,11 @@ use crate::core::store::Store;
 use crate::core::worktree::{SETTING_BRANCH_TEMPLATE, SETTING_WORKTREE_ROOT};
 use crate::error::Result;
 
+/// Model for red-team sessions. Empty/absent = the session default.
+pub const SETTING_RED_TEAM_MODEL: &str = "red_team_model";
+/// Effort for red-team sessions. Empty/absent = the session default.
+pub const SETTING_RED_TEAM_EFFORT: &str = "red_team_effort";
+
 /// The file written on first run. Values are commented out so the built-in defaults stay
 /// in charge until the user opts in — and so the file documents what can be changed.
 const DEFAULT_CONFIG: &str = r#"# MaestroIDE configuration (~/.maestro/config.toml)
@@ -104,6 +109,11 @@ const DEFAULT_CONFIG: &str = r#"# MaestroIDE configuration (~/.maestro/config.to
 # daemon_verify_model = "sonnet"
 # daemon_verify_effort = "xhigh"
 
+# Model + effort for red-team sessions (the QA antagonist attacking a branch).
+# Default: whatever the session default is.
+# red_team_model = "sonnet"
+# red_team_effort = "high"
+
 # --- Jira (research flow) ---
 # All three must be set for the daemon to poll Jira. The token is an Atlassian
 # API token (id.atlassian.com → Security → API tokens), not your password.
@@ -137,6 +147,8 @@ pub struct Config {
     pub daemon_research_effort: Option<String>,
     pub daemon_verify_model: Option<String>,
     pub daemon_verify_effort: Option<String>,
+    pub red_team_model: Option<String>,
+    pub red_team_effort: Option<String>,
     pub jira_base_url: Option<String>,
     pub jira_email: Option<String>,
     pub jira_token: Option<String>,
@@ -233,6 +245,8 @@ impl Config {
                 SETTING_DAEMON_VERIFY_EFFORT,
                 self.daemon_verify_effort.clone(),
             ),
+            (SETTING_RED_TEAM_MODEL, self.red_team_model.clone()),
+            (SETTING_RED_TEAM_EFFORT, self.red_team_effort.clone()),
             (SETTING_JIRA_BASE_URL, self.jira_base_url.clone()),
             (SETTING_JIRA_EMAIL, self.jira_email.clone()),
             (SETTING_JIRA_TOKEN, self.jira_token.clone()),

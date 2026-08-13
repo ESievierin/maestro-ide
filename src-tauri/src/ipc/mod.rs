@@ -288,12 +288,21 @@ pub async fn start_red_team(state: State<'_, AppState>, branch: String) -> Resul
         );
         let prompt = prompts.render("red-team", &vars)?;
 
+        // Configurable bucket, same idea as the daemon's: absent/empty means
+        // the session default.
+        let setting = |key: &str| {
+            store
+                .get_setting(key)
+                .ok()
+                .flatten()
+                .filter(|v| !v.trim().is_empty())
+        };
         sessions.spawn(SpawnParams {
             branch: child_name,
             cwd,
             session_type: SessionType::RedTeam,
-            model: None,
-            effort: None,
+            model: setting(crate::core::config::SETTING_RED_TEAM_MODEL),
+            effort: setting(crate::core::config::SETTING_RED_TEAM_EFFORT),
             // Writes tests autonomously in its own isolated worktree; bash still
             // prompts, and commit/push still hit the gate like everyone else's.
             permission_mode: Some("acceptEdits".into()),

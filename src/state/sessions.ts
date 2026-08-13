@@ -21,6 +21,10 @@ import { onBusEvent } from "./events";
 
 const MODELS_CACHE_KEY = "maestro.models";
 
+/** Main sessions whose revival (transcript seed + predecessor prune) already
+ * ran — two concurrent ensureMain calls must not double-seed. */
+const seededMains = new Set<string>();
+
 /** True once the CLI has answered this app run; until then the list is a cached guess. */
 let modelsRefreshed = false;
 
@@ -321,9 +325,13 @@ export const useSessions = create<SessionsState>((set, get) => ({
       });
       // A brand-new main session right after a predecessor died is a revival
       // (the backend resumed its SDK context) — carry the old transcript
-      // forward so the chat reads as one continuous conversation.
+      // forward so the chat reads as one continuous conversation. The seeded
+      // set (not the transcripts map) is the dedup guard: the new session's
+      // own status events land in `transcripts` before this invoke resolves,
+      // so checking the map here would always skip.
       const isNew = !before.some((sess) => sess.id === session.id);
-      if (isNew && get().transcripts[session.id] === undefined) {
+      if (isNew && !seededMains.has(session.id)) {
+        seededMains.add(session.id);
         const predecessor = before
           .filter(
             (sess) =>

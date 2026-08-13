@@ -46,6 +46,9 @@ pub enum AttentionKind {
     LineQuestion,
     /// A daemon-prepared PR-comment reply plan is awaiting_input, ready to review.
     PrReviewReady,
+    /// A red-team session finished its attack pass — REDTEAM.md is ready to send
+    /// back to the parent branch.
+    RedTeamReady,
 }
 
 impl AttentionKind {
@@ -57,6 +60,7 @@ impl AttentionKind {
             AttentionKind::Question => 3,
             AttentionKind::PermissionRequest => 2,
             AttentionKind::PrReviewReady => 2,
+            AttentionKind::RedTeamReady => 2,
             AttentionKind::SessionFailed => 1,
             AttentionKind::LineQuestion => 0,
         }
@@ -67,7 +71,8 @@ impl AttentionKind {
             AttentionKind::Gate => AttentionTarget::Gate,
             AttentionKind::PermissionRequest
             | AttentionKind::Question
-            | AttentionKind::SessionFailed => AttentionTarget::Chat,
+            | AttentionKind::SessionFailed
+            | AttentionKind::RedTeamReady => AttentionTarget::Chat,
             AttentionKind::LineQuestion => AttentionTarget::Diff,
             AttentionKind::PrReviewReady => AttentionTarget::PrReplies,
         }
@@ -278,6 +283,7 @@ impl AttentionManager {
                 // different kind/target than the line-question default.
                 let kind = match source.as_str() {
                     "pr_review_ready" => AttentionKind::PrReviewReady,
+                    "red_team_ready" => AttentionKind::RedTeamReady,
                     _ => AttentionKind::LineQuestion,
                 };
                 let id = match (&session_id, &branch) {

@@ -115,6 +115,9 @@ struct RuntimeSession {
     /// Set when the user requested close; decides the terminal status on
     /// `session_closed` (graceful close → done/cancelled instead of failed).
     close_requested: bool,
+    /// The first idle moment was already handled (red-team readiness is
+    /// announced once, not on every turn end).
+    first_idle_seen: bool,
 }
 
 pub struct SessionManager {
@@ -337,6 +340,7 @@ impl SessionManager {
                 status: SessionStatus::Spawning,
                 is_writer: session.is_writer(),
                 close_requested: false,
+                first_idle_seen: false,
             },
         );
         self.publish_status(&session.id, &params.branch, SessionStatus::Spawning);
@@ -1493,11 +1497,41 @@ impl SessionManager {
         }
         self.publish_status(session_id, &branch, next);
 
+        // A red-team session's first idle moment means the attack pass is
+        // written up — surface the "send findings to the parent" step.
+        if next == SessionStatus::AwaitingInput {
+            self.announce_red_team_ready(session_id, &branch);
+        }
+
         if next.is_terminal() {
             if let Ok(mut runtime) = self.lock_runtime() {
                 runtime.remove(session_id);
             }
         }
+    }
+
+    /// Once per session, on its first `awaiting_input`: if it is a red-team
+    /// session, raise an attention item pointing at its findings.
+    fn announce_red_team_ready(&self, session_id: &str, branch: &str) {
+        {
+            let Ok(mut runtime) = self.lock_runtime() else {
+                return;
+            };
+            match runtime.get_mut(session_id) {
+                Some(entry) if !entry.first_idle_seen => entry.first_idle_seen = true,
+                _ => return,
+            }
+        }
+        match self.store.get_session(session_id) {
+            Ok(Some(session)) if session.session_type == SessionType::RedTeam => {}
+            _ => return,
+        }
+        self.bus.publish(Event::AttentionRequired {
+            source: "red_team_ready".into(),
+            branch: Some(branch.to_string()),
+            session_id: Some(session_id.to_string()),
+            message: "Red-team pass finished — review REDTEAM.md, then send the findings to the parent branch".into(),
+        });
     }
 
     fn publish_status(&self, session_id: &str, branch: &str, status: SessionStatus) {
@@ -1827,6 +1861,62 @@ mod tests {
             last.prompt.contains("context carried over"),
             "a revival announces itself instead of re-running orientation"
         );
+    }
+
+    #[tokio::test]
+    async fn a_red_team_sessions_first_idle_raises_attention_once() {
+        let (manager, bus, _engine) = setup();
+        let mut rx = bus.subscribe();
+
+        let mut params = spawn_params("redteam/impl-T-1-x");
+        params.session_type = SessionType::RedTeam;
+        let session = manager.spawn(params).unwrap();
+
+        // First idle → one red_team_ready announcement.
+        manager.handle_event(SidecarEvent::Status {
+            session_id: session.id.clone(),
+            status: "streaming".into(),
+        });
+        manager.handle_event(SidecarEvent::Status {
+            session_id: session.id.clone(),
+            status: "awaiting_input".into(),
+        });
+        // Second turn ends → no repeat.
+        manager.handle_event(SidecarEvent::Status {
+            session_id: session.id.clone(),
+            status: "streaming".into(),
+        });
+        manager.handle_event(SidecarEvent::Status {
+            session_id: session.id.clone(),
+            status: "awaiting_input".into(),
+        });
+
+        let mut announcements = 0;
+        while let Ok(event) = rx.try_recv() {
+            if let Event::AttentionRequired { source, branch, .. } = event {
+                assert_eq!(source, "red_team_ready");
+                assert_eq!(branch.as_deref(), Some("redteam/impl-T-1-x"));
+                announcements += 1;
+            }
+        }
+        assert_eq!(announcements, 1, "announced exactly once, not per turn");
+    }
+
+    #[tokio::test]
+    async fn ordinary_sessions_never_announce_red_team_readiness() {
+        let (manager, bus, _engine) = setup();
+        let mut rx = bus.subscribe();
+        let session = manager.spawn(spawn_params("impl/T-26-x")).unwrap();
+        manager.handle_event(SidecarEvent::Status {
+            session_id: session.id.clone(),
+            status: "awaiting_input".into(),
+        });
+        while let Ok(event) = rx.try_recv() {
+            assert!(
+                !matches!(event, Event::AttentionRequired { .. }),
+                "a manual session's idle is nobody's business"
+            );
+        }
     }
 
     #[tokio::test]

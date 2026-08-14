@@ -327,10 +327,23 @@ export async function clearFinishedSessionsEverywhere(): Promise<void> {
   for (const t of targets) {
     removed += await useSessions.getState().removeAllFinished(t.branch);
   }
+  // A big sweep frees rows, not bytes — compact right away so the store's
+  // footprint actually reflects what just happened.
+  let reclaimed = "";
+  if (removed > 10) {
+    try {
+      const [before, after] = await invoke<[number, number]>("vacuum_store");
+      if (before > after) {
+        reclaimed = ` Store compacted: ${(before / 1024).toFixed(0)} KB → ${(after / 1024).toFixed(0)} KB.`;
+      }
+    } catch {
+      // Housekeeping only — the sweep itself already succeeded.
+    }
+  }
   const { useToasts } = await import("../state/toasts");
   useToasts.getState().push({
     severity: "info",
     code: "sessions-cleared",
-    message: `Removed ${removed} finished session${removed === 1 ? "" : "s"}.`,
+    message: `Removed ${removed} finished session${removed === 1 ? "" : "s"}.${reclaimed}`,
   });
 }

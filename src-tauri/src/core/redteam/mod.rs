@@ -24,6 +24,12 @@ use crate::error::{MaestroError, Result};
 /// Child worktrees of the antagonist live under this branch prefix.
 pub const RED_TEAM_PREFIX: &str = "redteam/";
 
+/// The child branch attacking `parent`: the prefix plus the parent with `/`
+/// flattened, so the mapping is deterministic and the operation idempotent.
+pub fn child_branch_name(parent: &str) -> String {
+    format!("{RED_TEAM_PREFIX}{}", parent.replace('/', "-"))
+}
+
 pub struct RedTeamManager {
     worktrees: Arc<WorktreeManager>,
     sessions: Arc<SessionManager>,
@@ -112,7 +118,7 @@ impl RedTeamManager {
             return;
         }
         // A live antagonist is already on it; re-arming now would just fight it.
-        let child_name = format!("{RED_TEAM_PREFIX}{}", branch.replace('/', "-"));
+        let child_name = child_branch_name(branch);
         let attack_in_progress = self
             .store
             .list_sessions(&child_name)
@@ -172,7 +178,7 @@ impl RedTeamManager {
             });
         }
 
-        let child_name = format!("{RED_TEAM_PREFIX}{}", branch.replace('/', "-"));
+        let child_name = child_branch_name(branch);
         let child = self.worktrees.ensure_named(&child_name, branch)?;
         let cwd = child.path.to_string_lossy().into_owned();
         // Every worktree gets its main agent, this one included.
@@ -248,5 +254,169 @@ impl RedTeamManager {
             prompt,
             resume_from: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    use serde_json::Value;
+
+    use crate::core::agent::protocol::Attachment;
+    use crate::core::agent::{AgentEngine, SpawnSessionRequest};
+    use crate::core::store::SqliteStore;
+    use crate::core::worktree::GitCli;
+
+    /// Engine double: every call succeeds, nothing ever streams back.
+    struct NoopEngine;
+    impl AgentEngine for NoopEngine {
+        fn spawn_session(&self, _req: SpawnSessionRequest) -> Result<()> {
+            Ok(())
+        }
+        fn send_prompt(&self, _s: &str, _p: &str, _a: &[Attachment]) -> Result<()> {
+            Ok(())
+        }
+        fn interrupt(&self, _s: &str) -> Result<()> {
+            Ok(())
+        }
+        fn close_session(&self, _s: &str) -> Result<()> {
+            Ok(())
+        }
+        fn respond_permission(
+            &self,
+            _r: &str,
+            _a: bool,
+            _u: Option<Value>,
+            _m: Option<String>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn list_models(&self, _cwd: &str) -> Result<()> {
+            Ok(())
+        }
+        fn set_model(&self, _s: &str, _m: &str) -> Result<()> {
+            Ok(())
+        }
+        fn set_effort(&self, _s: &str, _e: &str) -> Result<()> {
+            Ok(())
+        }
+        fn set_permission_mode(&self, _s: &str, _m: &str) -> Result<()> {
+            Ok(())
+        }
+        fn set_thinking(&self, _s: &str, _t: &str) -> Result<()> {
+            Ok(())
+        }
+        fn mcp_action(&self, _s: &str, _srv: &str, _a: &str) -> Result<()> {
+            Ok(())
+        }
+        fn respond_escalation(&self, _r: &str, _res: &str) -> Result<()> {
+            Ok(())
+        }
+        fn respond_gate_check(
+            &self,
+            _r: &str,
+            _d: &str,
+            _u: Option<Value>,
+            _m: Option<String>,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn respond_user_dialog(&self, _r: &str, _b: &str, _res: Option<Value>) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn fixture() -> (RedTeamManager, Arc<WorktreeManager>, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@t.t"]);
+        git(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "base\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-m", "init"]);
+
+        let bus = EventBus::new();
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let git_cli = Arc::new(GitCli::new());
+        let worktrees = Arc::new(WorktreeManager::new(
+            git_cli.clone(),
+            store.clone(),
+            bus.clone(),
+        ));
+        worktrees.set_repo(&repo).unwrap();
+        let sessions = Arc::new(SessionManager::new(
+            store.clone(),
+            bus.clone(),
+            Arc::new(NoopEngine),
+        ));
+        let diffs = Arc::new(DiffManager::new(
+            git_cli.clone(),
+            store.clone(),
+            worktrees.clone(),
+            bus.clone(),
+        ));
+        let notes = Arc::new(NotesManager::new(worktrees.clone(), bus.clone()));
+        let prompts = Arc::new(PromptManager::new(&tmp.path().join("prompts")).unwrap());
+        let impact = Arc::new(ImpactManager::new(
+            git_cli,
+            worktrees.clone(),
+            diffs.clone(),
+            store.clone(),
+        ));
+        let mgr = RedTeamManager::new(
+            worktrees.clone(),
+            sessions,
+            diffs,
+            notes,
+            prompts,
+            store,
+            impact,
+            bus,
+        );
+        (mgr, worktrees, tmp)
+    }
+
+    #[test]
+    fn child_branch_name_flattens_slashes_under_the_prefix() {
+        assert_eq!(child_branch_name("impl/T-9-x"), "redteam/impl-T-9-x");
+        assert_eq!(child_branch_name("main"), "redteam/main");
+        // Deterministic: the same parent always maps to the same child.
+        assert_eq!(
+            child_branch_name("impl/T-9-x"),
+            child_branch_name("impl/T-9-x")
+        );
+    }
+
+    #[test]
+    fn launch_rejects_a_red_team_branch() {
+        let (mgr, _worktrees, _tmp) = fixture();
+        let err = mgr.launch("redteam/impl-x").unwrap_err();
+        assert!(err.to_string().contains("red-team its parent"), "{err}");
+    }
+
+    #[test]
+    fn launch_requires_committed_changes() {
+        let (mgr, worktrees, _tmp) = fixture();
+        // A fresh worktree branched off main has nothing committed vs its base.
+        worktrees.ensure_named("impl-fresh", "main").unwrap();
+        let err = mgr.launch("impl-fresh").unwrap_err();
+        assert!(err.to_string().contains("no committed changes"), "{err}");
     }
 }

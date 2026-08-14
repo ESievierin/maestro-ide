@@ -1686,6 +1686,14 @@ input[type="checkbox"] {
   align-self: center;
 }
 
+.daemon-task-link {
+  cursor: pointer;
+}
+
+.daemon-task-link:hover .daemon-task-title {
+  color: var(--accent);
+}
+
 .review-guide-stale {
   flex-shrink: 0;
   font-size: 0.62rem;

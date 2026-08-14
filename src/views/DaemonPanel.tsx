@@ -3,6 +3,7 @@ import { Icon, StatusDot } from "../components/Icon";
 import { SelectMenu } from "../components/SelectMenu";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useDaemon, type DaemonTask } from "../state/daemon";
+import { useWorktrees } from "../state/worktrees";
 import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 
 /**
@@ -192,7 +193,16 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
           ) : (
             <ul className="daemon-task-list">
               {visible.map((t) => (
-                <TaskRow key={t.key} task={t} onDismiss={(key) => void dismiss(key)} />
+                <TaskRow
+                  key={t.key}
+                  task={t}
+                  onDismiss={(key) => void dismiss(key)}
+                  onOpen={(branch) => {
+                    useWorktrees.getState().select(branch);
+                    useWorktrees.getState().setTab("chat");
+                    onClose();
+                  }}
+                />
               ))}
             </ul>
           )}
@@ -208,7 +218,15 @@ export function DaemonPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-function TaskRow({ task, onDismiss }: { task: DaemonTask; onDismiss: (key: string) => void }) {
+function TaskRow({
+  task,
+  onDismiss,
+  onOpen,
+}: {
+  task: DaemonTask;
+  onDismiss: (key: string) => void;
+  onOpen: (branch: string) => void;
+}) {
   const tone =
     task.state === "running"
       ? "streaming"
@@ -220,7 +238,11 @@ function TaskRow({ task, onDismiss }: { task: DaemonTask; onDismiss: (key: strin
   return (
     <li className="daemon-task">
       <StatusDot tone={tone} pulse={task.state === "running"} />
-      <span className="daemon-task-main">
+      <span
+        className={`daemon-task-main${task.branch ? " daemon-task-link" : ""}`}
+        title={task.branch ? `Open ${task.branch}'s chat` : task.key}
+        onClick={task.branch ? () => onOpen(task.branch as string) : undefined}
+      >
         <span className="daemon-task-title" title={task.key}>
           {task.title}
         </span>

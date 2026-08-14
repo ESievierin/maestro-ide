@@ -753,6 +753,27 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
               Unified
             </button>
           </div>
+          {(snapshot?.files.length ?? 0) > 1 && (
+            <button
+              className="small icon-only ghost"
+              title={
+                viewedCount < (snapshot?.files.length ?? 0)
+                  ? `Mark all ${snapshot?.files.length} files viewed`
+                  : "Clear all viewed checkmarks"
+              }
+              onClick={() =>
+                setViewedFor(
+                  (snapshot?.files ?? []).map((f) => f.path),
+                  viewedCount < (snapshot?.files.length ?? 0),
+                )
+              }
+            >
+              <Icon
+                name={viewedCount < (snapshot?.files.length ?? 0) ? "check" : "circle"}
+                size={13}
+              />
+            </button>
+          )}
           {selectedPath && (
             <button
               className="small icon-only ghost"

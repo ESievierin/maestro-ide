@@ -32,6 +32,7 @@ pub struct RedTeamManager {
     prompts: Arc<PromptManager>,
     store: Arc<dyn Store>,
     impact: Arc<ImpactManager>,
+    bus: EventBus,
 }
 
 impl RedTeamManager {
@@ -44,6 +45,7 @@ impl RedTeamManager {
         prompts: Arc<PromptManager>,
         store: Arc<dyn Store>,
         impact: Arc<ImpactManager>,
+        bus: EventBus,
     ) -> Self {
         Self {
             worktrees,
@@ -53,6 +55,7 @@ impl RedTeamManager {
             prompts,
             store,
             impact,
+            bus,
         }
     }
 
@@ -124,6 +127,16 @@ impl RedTeamManager {
         match self.launch(branch) {
             Ok(session) => {
                 tracing::info!(branch, session = %session.id, "red_team_auto launched the antagonist");
+                // A worktree and a session appearing unprompted deserve one
+                // line of explanation in the queue.
+                self.bus.publish(Event::AttentionRequired {
+                    source: "red_team_launched".into(),
+                    branch: Some(session.branch.clone()),
+                    session_id: Some(session.id.clone()),
+                    message: format!(
+                        "Implementation on {branch} finished — the red team is attacking it automatically"
+                    ),
+                });
             }
             // "No committed changes" is a normal outcome (the session may have
             // only edited notes) — a skip, not an error worth surfacing.

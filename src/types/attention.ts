@@ -7,7 +7,8 @@ export type AttentionKind =
   | "session_failed"
   | "line_question"
   | "pr_review_ready"
-  | "red_team_ready";
+  | "red_team_ready"
+  | "red_team_launched";
 
 export type AttentionTarget = "chat" | "gate" | "diff" | "pr_replies" | "notes";
 
@@ -29,4 +30,5 @@ export const KIND_LABEL: Record<AttentionKind, string> = {
   line_question: "answer",
   pr_review_ready: "reply ready",
   red_team_ready: "findings",
+  red_team_launched: "red team",
 };

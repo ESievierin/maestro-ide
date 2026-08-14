@@ -20,6 +20,7 @@ const KIND_ICON: Record<AttentionItem["kind"], IconName> = {
   line_question: "chat",
   pr_review_ready: "reply",
   red_team_ready: "shield",
+  red_team_launched: "shield",
 };
 
 export function AttentionPanel({ onClose }: { onClose: () => void }) {

@@ -212,6 +212,7 @@ pub fn run() {
         prompts.clone(),
         store.clone(),
         impact.clone(),
+        bus.clone(),
     ));
 
     let state = AppState {

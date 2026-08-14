@@ -147,6 +147,14 @@ export function PromptEditor({ onClose }: { onClose: () => void }) {
                         <Icon name="trash" size={12} /> Delete
                       </button>
                     )}
+                    {current.update_available && (
+                      <span
+                        className="badge badge-warn"
+                        title="The built-in default changed since your edit — resetting picks up the newer default (and discards the edit)"
+                      >
+                        default updated
+                      </span>
+                    )}
                     {current.has_default && (
                       <button
                         className="small"

@@ -82,19 +82,102 @@ pub struct PromptFile {
     pub has_default: bool,
     /// True when the file differs from that default (i.e. the user edited it).
     pub modified: bool,
+    /// True when the user edited this template AND the built-in default has
+    /// changed since it was installed — resetting would pick up the newer
+    /// default, discarding the edit. Unedited templates never show this: they
+    /// are auto-updated at startup instead.
+    pub update_available: bool,
 }
 
 impl PromptManager {
-    /// Ensure `dir` exists and seed it with the built-in default templates — only the
-    /// files that are missing; an edited template is never overwritten.
+    /// Ensure `dir` exists and seed it with the built-in default templates.
+    /// A template the user never edited is kept in sync with the shipped
+    /// default (tracked via a hash of the default it was installed from, in
+    /// `.installed-defaults.json`); an edited template is never overwritten.
     pub fn new(dir: impl Into<PathBuf>) -> Result<Self> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
         let manager = Self { dir };
-        for (name, contents) in DEFAULT_TEMPLATES {
-            manager.install_default(name, contents)?;
-        }
+        manager.sync_defaults()?;
         Ok(manager)
+    }
+
+    /// Install missing defaults and update stale-but-unedited ones. The hash
+    /// file records which default each template was installed from; a file
+    /// that still matches its recorded default was never touched by the user,
+    /// so a newer shipped default may replace it. Anything else is the user's.
+    fn sync_defaults(&self) -> Result<()> {
+        let mut meta = self.load_meta();
+        let mut meta_changed = false;
+        for (name, default) in DEFAULT_TEMPLATES {
+            let path = self.dir.join(format!("{name}.md"));
+            let default_hash = fnv1a(&normalize(default));
+            let existing = match fs::read_to_string(&path) {
+                Ok(raw) => Some(raw),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(err) => {
+                    tracing::warn!(name, error = %err, "unreadable prompt template; leaving it alone");
+                    continue;
+                }
+            };
+            match existing {
+                None => {
+                    fs::write(&path, default)?;
+                    meta.insert(name.to_string(), default_hash);
+                    meta_changed = true;
+                    tracing::info!(name, "installed default prompt template");
+                }
+                Some(raw) => {
+                    let file_hash = fnv1a(&normalize(&raw));
+                    match meta.get(*name) {
+                        // Never edited (still the default it was installed
+                        // from) and the shipped default moved → update.
+                        Some(installed)
+                            if *installed == file_hash && *installed != default_hash =>
+                        {
+                            fs::write(&path, default)?;
+                            meta.insert(name.to_string(), default_hash);
+                            meta_changed = true;
+                            tracing::info!(name, "default prompt template updated");
+                        }
+                        Some(_) => {}
+                        // Pre-hash installs: adopt the file as "unedited" only
+                        // when it already equals the current default; anything
+                        // else could be a user edit and stays untouched.
+                        None if file_hash == default_hash => {
+                            meta.insert(name.to_string(), default_hash);
+                            meta_changed = true;
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+        if meta_changed {
+            self.save_meta(&meta);
+        }
+        Ok(())
+    }
+
+    fn meta_path(&self) -> PathBuf {
+        self.dir.join(".installed-defaults.json")
+    }
+
+    fn load_meta(&self) -> HashMap<String, String> {
+        fs::read_to_string(self.meta_path())
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    /// Best-effort: losing the hash file only means updates stop flowing until
+    /// the next reset — never worth failing template loading over.
+    fn save_meta(&self, meta: &HashMap<String, String>) {
+        if let Ok(json) = serde_json::to_string_pretty(meta) {
+            if let Err(err) = fs::write(self.meta_path(), json) {
+                tracing::warn!(error = %err, "could not write .installed-defaults.json");
+            }
+        }
     }
 
     /// Built-in default for `name`, if there is one.
@@ -148,7 +231,13 @@ impl PromptManager {
         let default = Self::default_for(name).ok_or_else(|| MaestroError::Config {
             message: format!("no built-in default for prompt template: {name}"),
         })?;
-        self.save(name, default)
+        let file = self.save(name, default)?;
+        // The file is the current default again — record that, so future
+        // shipped updates keep flowing to it automatically.
+        let mut meta = self.load_meta();
+        meta.insert(name.to_string(), fnv1a(&normalize(default)));
+        self.save_meta(&meta);
+        Ok(file)
     }
 
     /// Remove a custom template's file. Refuses templates with a built-in
@@ -172,12 +261,23 @@ impl PromptManager {
     fn to_prompt_file(&self, name: &str, content: String) -> PromptFile {
         let parsed = parse_template(name, &content);
         let default = Self::default_for(name);
+        let modified = default.is_some_and(|d| normalize(d) != normalize(&content));
+        // Edited template + a default that moved since it was installed:
+        // resetting would pick up the newer default. Unedited ones are
+        // auto-updated at startup, so this can only be true for edits.
+        let update_available = modified
+            && default.is_some_and(|d| {
+                self.load_meta()
+                    .get(name)
+                    .is_some_and(|installed| *installed != fnv1a(&normalize(d)))
+            });
         PromptFile {
             name: name.to_string(),
             description: parsed.description,
             variables: parsed.variables,
             has_default: default.is_some(),
-            modified: default.is_some_and(|d| normalize(d) != normalize(&content)),
+            modified,
+            update_available,
             content,
         }
     }
@@ -194,16 +294,6 @@ impl PromptManager {
             });
         }
         Ok(self.dir.join(format!("{name}.md")))
-    }
-
-    /// Write `contents` to `<name>.md` in the prompts dir, unless it already exists.
-    pub fn install_default(&self, name: &str, contents: &str) -> Result<()> {
-        let path = self.dir.join(format!("{name}.md"));
-        if !path.exists() {
-            fs::write(&path, contents)?;
-            tracing::info!(name, path = %path.display(), "installed default prompt template");
-        }
-        Ok(())
     }
 
     /// Load and parse `<name>.md`.
@@ -238,6 +328,19 @@ impl PromptManager {
 /// file checked out with CRLF is not reported as edited.
 fn normalize(text: &str) -> String {
     text.replace("\r\n", "\n").trim_end().to_string()
+}
+
+/// FNV-1a over the normalized text, as hex. Deliberately hand-rolled: the hash
+/// is persisted across app versions, so it must never change algorithm the way
+/// `DefaultHasher` is allowed to. (A mismatch would only mean "treated as
+/// user-edited" — safe — but stable is better than safe-by-accident.)
+fn fnv1a(text: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 /// Split `---\n ... \n---` frontmatter from the body. `description:` is taken verbatim;
@@ -470,7 +573,7 @@ Just {{branch}}
     }
 
     #[test]
-    fn install_default_copies_once_and_never_overwrites_edits() {
+    fn defaults_install_once_and_edits_are_never_clobbered() {
         let dir = tempfile::tempdir().unwrap();
         PromptManager::new(dir.path()).unwrap();
         let path = dir.path().join("line-question.md");
@@ -480,6 +583,79 @@ Just {{branch}}
         // Re-creating the manager (e.g. app restart) must not clobber the edit.
         PromptManager::new(dir.path()).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "edited by the user");
+    }
+
+    #[test]
+    fn a_stale_unedited_default_is_updated_on_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        PromptManager::new(dir.path()).unwrap();
+
+        // Simulate an older install: the file holds a previous default, and
+        // the hash file records exactly that content as what was installed.
+        let path = dir.path().join("line-question.md");
+        let old_default = "the old shipped default";
+        fs::write(&path, old_default).unwrap();
+        let meta_path = dir.path().join(".installed-defaults.json");
+        let mut meta: HashMap<String, String> =
+            serde_json::from_str(&fs::read_to_string(&meta_path).unwrap()).unwrap();
+        meta.insert("line-question".into(), fnv1a(&normalize(old_default)));
+        fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
+
+        // A restart with a newer shipped default replaces the untouched file.
+        PromptManager::new(dir.path()).unwrap();
+        let now = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            normalize(&now),
+            normalize(PromptManager::default_for("line-question").unwrap()),
+            "the stale-but-unedited template caught up with the shipped default"
+        );
+    }
+
+    #[test]
+    fn an_edited_template_with_a_moved_default_reports_update_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = PromptManager::new(dir.path()).unwrap();
+
+        // The user edits; the recorded install hash then claims an older
+        // default than the shipped one (simulating an app upgrade after edit).
+        manager
+            .save("line-question", "my custom question prompt")
+            .unwrap();
+        let meta_path = dir.path().join(".installed-defaults.json");
+        let mut meta: HashMap<String, String> =
+            serde_json::from_str(&fs::read_to_string(&meta_path).unwrap()).unwrap();
+        meta.insert("line-question".into(), fnv1a("an older default"));
+        fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
+
+        let file = manager.read("line-question").unwrap();
+        assert!(file.modified);
+        assert!(
+            file.update_available,
+            "the editor can now say: the built-in default changed since your edit"
+        );
+
+        // Reset picks up the current default and re-records it, so the flag clears.
+        let reset = manager.reset("line-question").unwrap();
+        assert!(!reset.modified);
+        assert!(!reset.update_available);
+    }
+
+    #[test]
+    fn a_pre_hash_install_matching_the_default_is_adopted_for_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        PromptManager::new(dir.path()).unwrap();
+        // Wipe the hash file: this is what an install from before the feature looks like.
+        fs::remove_file(dir.path().join(".installed-defaults.json")).unwrap();
+
+        PromptManager::new(dir.path()).unwrap();
+        let meta: HashMap<String, String> = serde_json::from_str(
+            &fs::read_to_string(dir.path().join(".installed-defaults.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            meta.contains_key("line-question"),
+            "files still equal to the default get re-adopted into the update flow"
+        );
     }
 
     #[test]

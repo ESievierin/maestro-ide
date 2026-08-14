@@ -10,4 +10,7 @@ export interface PromptFile {
   has_default: boolean;
   /** The file differs from that default. */
   modified: boolean;
+  /** The user edited this template AND the built-in default changed since —
+   * resetting would pick up the newer default (discarding the edit). */
+  update_available: boolean;
 }

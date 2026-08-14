@@ -20,6 +20,7 @@ use crate::core::daemon::{
     SETTING_DAEMON_REPO, SETTING_DAEMON_RESEARCH_EFFORT, SETTING_DAEMON_RESEARCH_MODEL,
     SETTING_DAEMON_USAGE_THRESHOLD, SETTING_DAEMON_VERIFY_EFFORT, SETTING_DAEMON_VERIFY_MODEL,
 };
+use crate::core::escalation::SETTING_ESCALATION_TIMEOUT;
 use crate::core::gate::SETTING_GATE_COMMIT;
 use crate::core::launcher::SETTING_EDITOR_COMMAND;
 use crate::core::questions::SETTING_LINE_QUESTION_TARGET;
@@ -70,6 +71,10 @@ const DEFAULT_CONFIG: &str = r#"# MaestroIDE configuration (~/.maestro/config.to
 # How long to wait for an implementation session's last turn to write TASK_NOTES.md
 # when it is closed. 0 disables the finalize step entirely.
 # notes_finalize_timeout_secs = 120
+
+# How long one agent-to-agent escalation (a review session asking the original
+# implementer a question) may take before it is abandoned.
+# escalation_timeout_secs = 120
 
 # Editor used by the "Open in editor" button (executable path or name; the worktree
 # path is passed as its argument). Default: auto-detect JetBrains Rider.
@@ -147,6 +152,7 @@ pub struct Config {
     pub gate_commit: Option<bool>,
     pub os_notifications: Option<bool>,
     pub notes_finalize_timeout_secs: Option<u64>,
+    pub escalation_timeout_secs: Option<u64>,
     pub editor_command: Option<String>,
     pub check_command: Option<String>,
     pub check_auto: Option<bool>,
@@ -225,6 +231,10 @@ impl Config {
             (
                 SETTING_NOTES_FINALIZE_TIMEOUT,
                 self.notes_finalize_timeout_secs.map(|s| s.to_string()),
+            ),
+            (
+                SETTING_ESCALATION_TIMEOUT,
+                self.escalation_timeout_secs.map(|s| s.to_string()),
             ),
             (SETTING_EDITOR_COMMAND, self.editor_command.clone()),
             (SETTING_CHECK_COMMAND, self.check_command.clone()),

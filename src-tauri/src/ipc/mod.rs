@@ -727,6 +727,35 @@ pub async fn set_notes_finalize_timeout(
     .await
 }
 
+/// Telemetry retention window in days; 0 = keep everything (the default).
+#[tauri::command]
+pub async fn get_telemetry_retention_days(state: State<'_, AppState>) -> Result<u32, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        Ok(store
+            .get_setting(crate::core::telemetry::SETTING_TELEMETRY_RETENTION_DAYS)?
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+            .unwrap_or(0))
+    })
+    .await
+}
+
+/// Applies to the sweep on the next app start; nothing is deleted right away.
+#[tauri::command]
+pub async fn set_telemetry_retention_days(
+    state: State<'_, AppState>,
+    days: u32,
+) -> Result<(), String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        store.set_setting(
+            crate::core::telemetry::SETTING_TELEMETRY_RETENTION_DAYS,
+            &days.to_string(),
+        )
+    })
+    .await
+}
+
 /// Take a task out of the queue (or hide a finished one) without touching GitHub.
 #[tauri::command]
 pub async fn dismiss_daemon_task(state: State<'_, AppState>, key: String) -> Result<(), String> {

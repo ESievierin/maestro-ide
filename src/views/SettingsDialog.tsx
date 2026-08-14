@@ -141,6 +141,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [writerPolicy, setWriterPolicyState] = useState<string | null>(null);
   const [branchNaming, setBranchNamingState] = useState<string | null>(null);
   const [finalizeTimeout, setFinalizeTimeoutState] = useState<number | null>(null);
+  const [retentionDays, setRetentionDaysState] = useState<number | null>(null);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [usageByBranch, setUsageByBranch] = useState<BranchUsage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -153,6 +154,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     void invoke<string>("get_single_writer_policy").then(setWriterPolicyState);
     void invoke<string>("get_branch_naming").then(setBranchNamingState);
     void invoke<number>("get_notes_finalize_timeout").then(setFinalizeTimeoutState);
+    void invoke<number>("get_telemetry_retention_days").then(setRetentionDaysState);
   };
 
   useEffect(() => {
@@ -219,6 +221,16 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     setFinalizeTimeoutState(seconds);
     try {
       await invoke("set_notes_finalize_timeout", { seconds });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const changeRetentionDays = async (raw: string) => {
+    const days = Math.max(0, Math.trunc(Number(raw) || 0));
+    setRetentionDaysState(days);
+    try {
+      await invoke("set_telemetry_retention_days", { days });
     } catch (e) {
       setError(String(e));
     }
@@ -357,6 +369,20 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               onChange={() => void toggleTelemetry()}
             />
             Record conversation telemetry
+          </label>
+          <label className="settings-field">
+            Telemetry retention (days, 0 keeps everything)
+            <input
+              type="number"
+              min={0}
+              step={7}
+              value={retentionDays ?? ""}
+              disabled={retentionDays === null}
+              onChange={(e) => void changeRetentionDays(e.target.value)}
+            />
+            <span className="hint">
+              Day folders older than the window are deleted on the next app start.
+            </span>
           </label>
         </div>
 

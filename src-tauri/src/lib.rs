@@ -317,6 +317,8 @@ pub fn run() {
             ipc::set_red_team_auto,
             ipc::get_telemetry_enabled,
             ipc::set_telemetry_enabled,
+            ipc::get_telemetry_retention_days,
+            ipc::set_telemetry_retention_days,
             ipc::get_os_notifications_enabled,
             ipc::set_os_notifications_enabled,
             ipc::get_notification_digest_enabled,

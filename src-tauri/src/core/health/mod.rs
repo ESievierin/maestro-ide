@@ -40,6 +40,7 @@ pub fn run(
         checks: vec![
             check_git(),
             check_node(),
+            check_sidecar(),
             check_gh(gh),
             check_editor(store),
             check_jira(store),
@@ -47,6 +48,24 @@ pub fn run(
             check_config(config_path),
             check_telemetry(store, telemetry_root),
         ],
+    }
+}
+
+/// The other half of the sidecar dependency: node may be fine, but the script
+/// it should run must also resolve — a broken install or a stale
+/// `MAESTRO_SIDECAR_SCRIPT` fails every spawn just as cryptically.
+fn check_sidecar() -> HealthCheck {
+    let config = crate::core::agent::SidecarConfig::resolve();
+    let script = config.args.first().cloned().unwrap_or_default();
+    let exists = !script.is_empty() && std::path::Path::new(&script).exists();
+    HealthCheck {
+        name: "sidecar".into(),
+        ok: exists,
+        detail: if exists {
+            script
+        } else {
+            format!("script not found: {script} — agent sessions cannot start")
+        },
     }
 }
 
@@ -436,6 +455,7 @@ mod tests {
             [
                 "git",
                 "node",
+                "sidecar",
                 "gh",
                 "editor",
                 "jira",
@@ -444,6 +464,15 @@ mod tests {
                 "telemetry"
             ]
         );
+    }
+
+    #[test]
+    fn sidecar_check_reports_the_resolved_script() {
+        // The dev tree always carries sidecar/dist/main.js (tests run in it),
+        // so the check must both pass and name a real path.
+        let check = check_sidecar();
+        assert!(check.ok, "{}", check.detail);
+        assert!(check.detail.contains("main.js"), "{}", check.detail);
     }
 
     #[test]

@@ -147,6 +147,24 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
+  const [vacuumBusy, setVacuumBusy] = useState(false);
+
+  const compactStore = async () => {
+    setVacuumBusy(true);
+    try {
+      const [before, after] = await invoke<[number, number]>("vacuum_store");
+      const fmt = (b: number) => `${(b / 1024).toFixed(0)} KB`;
+      setBackupMessage(
+        before > after
+          ? `Store compacted: ${fmt(before)} → ${fmt(after)}.`
+          : `Store already compact (${fmt(after)}).`,
+      );
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setVacuumBusy(false);
+    }
+  };
 
   const refetchToggles = () => {
     void invoke<boolean>("get_telemetry_enabled").then(setTelemetryEnabledState);
@@ -487,6 +505,15 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             }}
           >
             <Icon name="shield" size={12} /> Run setup check…
+          </button>
+          <button
+            className="small ghost"
+            disabled={vacuumBusy}
+            title="SQLite VACUUM — reclaims the space deleted sessions left behind"
+            onClick={() => void compactStore()}
+          >
+            {vacuumBusy ? <Icon name="spinner" spin size={12} /> : <Icon name="trash" size={12} />}{" "}
+            Compact store
           </button>
         </div>
 

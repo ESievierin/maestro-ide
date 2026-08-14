@@ -175,6 +175,10 @@ pub trait Store: Send + Sync {
     /// branch/task is actually burning the most, not just the grand total.
     fn usage_by_branch(&self) -> Result<Vec<BranchUsage>>;
 
+    /// Reclaim space freed by deleted rows (SQLite `VACUUM`) — the file never
+    /// shrinks on its own after a session sweep.
+    fn vacuum(&self) -> Result<()>;
+
     // ---------- daemon task queue ----------
 
     /// Insert a new task in `queued` state. Returns `false` (and changes
@@ -722,6 +726,13 @@ impl Store for SqliteStore {
                 });
             }
             Ok(out)
+        })
+    }
+
+    fn vacuum(&self) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute("VACUUM", [])?;
+            Ok(())
         })
     }
 

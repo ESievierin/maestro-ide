@@ -756,6 +756,21 @@ pub async fn set_telemetry_retention_days(
     .await
 }
 
+/// Reclaim space freed by deleted sessions (SQLite VACUUM). Returns the file
+/// size in bytes before and after, so the UI can say what it bought.
+#[tauri::command]
+pub async fn vacuum_store(state: State<'_, AppState>) -> Result<(u64, u64), String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        let path = crate::maestro_home().join("maestro.db");
+        let size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        let before = size(&path);
+        store.vacuum()?;
+        Ok((before, size(&path)))
+    })
+    .await
+}
+
 /// Take a task out of the queue (or hide a finished one) without touching GitHub.
 #[tauri::command]
 pub async fn dismiss_daemon_task(state: State<'_, AppState>, key: String) -> Result<(), String> {

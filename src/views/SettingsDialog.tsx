@@ -136,6 +136,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const notifyError = useAttention((s) => s.error);
 
   const [telemetryEnabled, setTelemetryEnabledState] = useState<boolean | null>(null);
+  const [redTeamAuto, setRedTeamAutoState] = useState<boolean | null>(null);
   const [writerPolicy, setWriterPolicyState] = useState<string | null>(null);
   const [branchNaming, setBranchNamingState] = useState<string | null>(null);
   const [finalizeTimeout, setFinalizeTimeoutState] = useState<number | null>(null);
@@ -147,6 +148,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
   const refetchToggles = () => {
     void invoke<boolean>("get_telemetry_enabled").then(setTelemetryEnabledState);
+    void invoke<boolean>("get_red_team_auto").then(setRedTeamAutoState);
     void invoke<string>("get_single_writer_policy").then(setWriterPolicyState);
     void invoke<string>("get_branch_naming").then(setBranchNamingState);
     void invoke<number>("get_notes_finalize_timeout").then(setFinalizeTimeoutState);
@@ -166,6 +168,18 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       await invoke("set_telemetry_enabled", { enabled: next });
     } catch (e) {
       setTelemetryEnabledState(!next);
+      setError(String(e));
+    }
+  };
+
+  const toggleRedTeamAuto = async () => {
+    if (redTeamAuto === null) return;
+    const next = !redTeamAuto;
+    setRedTeamAutoState(next);
+    try {
+      await invoke("set_red_team_auto", { enabled: next });
+    } catch (e) {
+      setRedTeamAutoState(!next);
       setError(String(e));
     }
   };
@@ -338,6 +352,18 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
         <div className="settings-section">
           <h4>Session behavior</h4>
+          <label
+            className="settings-toggle"
+            title="Whenever an implementation session finishes with committed changes, spawn the QA antagonist against them automatically (an extra session per task — a spend decision, hence off by default)"
+          >
+            <input
+              type="checkbox"
+              checked={redTeamAuto ?? false}
+              disabled={redTeamAuto === null}
+              onChange={() => void toggleRedTeamAuto()}
+            />
+            Red-team finished implementation sessions automatically
+          </label>
           <label className="settings-field">
             Second writer on the same branch
             <SelectMenu

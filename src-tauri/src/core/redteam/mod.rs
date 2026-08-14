@@ -7,12 +7,16 @@
 
 use std::sync::Arc;
 
+use tokio::sync::broadcast::error::RecvError;
+
+use crate::core::bus::{Event, EventBus};
+use crate::core::config::SETTING_RED_TEAM_AUTO;
 use crate::core::diff::{DiffManager, DiffScope};
 use crate::core::impact::ImpactManager;
 use crate::core::notes::NotesManager;
 use crate::core::prompts::PromptManager;
 use crate::core::session::manager::SpawnParams;
-use crate::core::session::{Session, SessionManager, SessionType};
+use crate::core::session::{Session, SessionManager, SessionStatus, SessionType};
 use crate::core::store::Store;
 use crate::core::worktree::WorktreeManager;
 use crate::error::{MaestroError, Result};
@@ -49,6 +53,74 @@ impl RedTeamManager {
             prompts,
             store,
             impact,
+        }
+    }
+
+    /// The `red_team_auto` trigger: whenever an implementation session finishes
+    /// (`done`, not failed/cancelled) on a normal branch, attack its committed
+    /// changes without being asked. Run as a background task.
+    pub async fn run_auto_loop(self: Arc<Self>, bus: EventBus) {
+        let mut rx = bus.subscribe();
+        loop {
+            match rx.recv().await {
+                Ok(Event::SessionStatusChanged {
+                    session_id,
+                    branch,
+                    status: SessionStatus::Done,
+                }) => self.maybe_auto_launch(&session_id, &branch),
+                Ok(_) => {}
+                Err(RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "red-team auto loop lagged behind the bus");
+                }
+                Err(RecvError::Closed) => break,
+            }
+        }
+    }
+
+    fn maybe_auto_launch(&self, session_id: &str, branch: &str) {
+        if branch.starts_with(RED_TEAM_PREFIX) {
+            return;
+        }
+        let enabled = self
+            .store
+            .get_setting(SETTING_RED_TEAM_AUTO)
+            .ok()
+            .flatten()
+            .is_some_and(|v| v == "true");
+        if !enabled {
+            return;
+        }
+        // Only a finished *implementation* session means "new code to attack" —
+        // main-agent turns, reviews, and manual chats end constantly.
+        let is_implementation = self
+            .store
+            .get_session(session_id)
+            .ok()
+            .flatten()
+            .is_some_and(|s| s.session_type == SessionType::Implementation);
+        if !is_implementation {
+            return;
+        }
+        // A live antagonist is already on it; re-arming now would just fight it.
+        let child_name = format!("{RED_TEAM_PREFIX}{}", branch.replace('/', "-"));
+        let attack_in_progress = self
+            .store
+            .list_sessions(&child_name)
+            .ok()
+            .into_iter()
+            .flatten()
+            .any(|s| s.session_type == SessionType::RedTeam && !s.status.is_terminal());
+        if attack_in_progress {
+            tracing::debug!(branch, "red_team_auto: attack already live, skipping");
+            return;
+        }
+        match self.launch(branch) {
+            Ok(session) => {
+                tracing::info!(branch, session = %session.id, "red_team_auto launched the antagonist");
+            }
+            // "No committed changes" is a normal outcome (the session may have
+            // only edited notes) — a skip, not an error worth surfacing.
+            Err(err) => tracing::info!(branch, error = %err, "red_team_auto skipped"),
         }
     }
 

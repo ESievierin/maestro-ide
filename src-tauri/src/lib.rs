@@ -310,6 +310,8 @@ pub fn run() {
             ipc::set_daemon_watched_accounts,
             ipc::set_daemon_skip_labels,
             ipc::get_mock_mode,
+            ipc::get_red_team_auto,
+            ipc::set_red_team_auto,
             ipc::get_telemetry_enabled,
             ipc::set_telemetry_enabled,
             ipc::get_os_notifications_enabled,
@@ -348,6 +350,7 @@ pub fn run() {
             tauri::async_runtime::spawn(attention.clone().run_with(attention_rx));
             tauri::async_runtime::spawn(escalations.clone().run_loop(bus.clone()));
             tauri::async_runtime::spawn(checks.clone().run_auto_loop(bus.clone()));
+            tauri::async_runtime::spawn(redteam.clone().run_auto_loop(bus.clone()));
             tauri::async_runtime::spawn(daemon.clone().run_loop(bus.clone()));
             tracing::info!("event forwarder, session manager, and diff invalidator started");
             Ok(())

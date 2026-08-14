@@ -553,6 +553,31 @@ pub async fn set_telemetry_enabled(
     .await
 }
 
+/// Whether a finished implementation session automatically gets the antagonist.
+#[tauri::command]
+pub async fn get_red_team_auto(state: State<'_, AppState>) -> Result<bool, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        Ok(store
+            .get_setting(crate::core::config::SETTING_RED_TEAM_AUTO)?
+            .map(|v| v == "true")
+            .unwrap_or(false))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_red_team_auto(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        store.set_setting(
+            crate::core::config::SETTING_RED_TEAM_AUTO,
+            if enabled { "true" } else { "false" },
+        )
+    })
+    .await
+}
+
 /// Whether OS notifications are enabled — config-gated per the original brief,
 /// now also toggleable at runtime (previously only a frontend-local flag with
 /// no backend counterpart; unified so `config.toml` and the UI agree).

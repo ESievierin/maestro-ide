@@ -311,6 +311,7 @@ pub fn run() {
             ipc::set_daemon_watched_accounts,
             ipc::set_daemon_skip_labels,
             ipc::get_mock_mode,
+            ipc::preview_prompt,
             ipc::get_red_team_auto,
             ipc::set_red_team_auto,
             ipc::get_telemetry_enabled,

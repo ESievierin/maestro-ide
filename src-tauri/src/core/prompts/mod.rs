@@ -322,6 +322,19 @@ impl PromptManager {
         let template = self.load(name)?;
         Ok(render_body(&template.body, vars))
     }
+
+    /// Render arbitrary template text — an editor draft, saved or not — with a
+    /// labeled sample value for each declared variable. Never touches disk:
+    /// the preview must show the draft, not the last saved file.
+    pub fn preview(raw: &str) -> String {
+        let template = parse_template("preview", raw);
+        let vars: HashMap<String, String> = template
+            .variables
+            .iter()
+            .map(|v| (v.clone(), format!("[sample {v}]")))
+            .collect();
+        render_body(&template.body, &vars)
+    }
 }
 
 /// Compare template contents ignoring line-ending and trailing-whitespace noise, so a
@@ -562,6 +575,20 @@ Just {{branch}}
         let template = parse_template("plain", "just a body {{x}}");
         assert!(template.description.is_none());
         assert_eq!(template.body, "just a body {{x}}");
+    }
+
+    #[test]
+    fn preview_substitutes_declared_variables_with_labeled_samples() {
+        let raw = "---\nname: t\nvariables: [branch, files]\n---\nOn {{branch}}:\n{{files}}\nUndeclared {{other}} stays.\n";
+        let rendered = PromptManager::preview(raw);
+        assert!(rendered.contains("On [sample branch]:"), "{rendered}");
+        assert!(rendered.contains("[sample files]"), "{rendered}");
+        // Undeclared placeholders keep their braces so the author notices them.
+        assert!(rendered.contains("{{other}}"), "{rendered}");
+        assert!(
+            !rendered.contains("name: t"),
+            "frontmatter must be stripped"
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { usePrompts } from "../state/prompts";
@@ -23,7 +24,18 @@ export function PromptEditor({ onClose }: { onClose: () => void }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [previewOn, setPreviewOn] = useState(false);
+  const [preview, setPreview] = useState("");
   useEscapeToClose(onClose);
+
+  // Preview always reflects the current draft (saved or not); recomputed on
+  // toggle and on edits made while the preview is showing.
+  useEffect(() => {
+    if (!previewOn) return;
+    void invoke<string>("preview_prompt", { content: draft })
+      .then(setPreview)
+      .catch((e) => setPreview(String(e)));
+  }, [previewOn, draft]);
 
   useEffect(() => {
     void fetch();
@@ -123,20 +135,36 @@ export function PromptEditor({ onClose }: { onClose: () => void }) {
                     </>
                   )}
                 </p>
-                <textarea
-                  className="prompt-textarea"
-                  spellCheck={false}
-                  value={draft}
-                  onChange={(e) => {
-                    setDraft(e.target.value);
-                    setSaved(false);
-                  }}
-                />
+                {previewOn ? (
+                  <pre
+                    className="prompt-textarea prompt-preview"
+                    title="Rendered with sample values for each declared variable"
+                  >
+                    {preview}
+                  </pre>
+                ) : (
+                  <textarea
+                    className="prompt-textarea"
+                    spellCheck={false}
+                    value={draft}
+                    onChange={(e) => {
+                      setDraft(e.target.value);
+                      setSaved(false);
+                    }}
+                  />
+                )}
                 <div className="prompt-actions">
                   <span className="session-meta">
                     {dirty ? "unsaved changes" : saved ? "saved" : ""}
                   </span>
                   <div className="actions">
+                    <button
+                      className={`small ${previewOn ? "" : "ghost"}`}
+                      title="Render the draft with sample values for each declared variable"
+                      onClick={() => setPreviewOn((p) => !p)}
+                    >
+                      <Icon name="file-text" size={12} /> {previewOn ? "Edit" : "Preview"}
+                    </button>
                     {!current.has_default && (
                       <button
                         className="small danger"

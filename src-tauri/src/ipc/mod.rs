@@ -524,6 +524,13 @@ pub fn get_mock_mode() -> bool {
     std::env::var("MAESTRO_SIDECAR_MOCK").is_ok_and(|v| v == "1")
 }
 
+/// Render a template draft (saved or not) with labeled sample variables — the
+/// prompt editor's preview pane. Pure text transform, no disk access.
+#[tauri::command]
+pub fn preview_prompt(content: String) -> String {
+    crate::core::prompts::PromptManager::preview(&content)
+}
+
 /// Whether conversation telemetry (prompts + replies, per `core::telemetry`) is
 /// being recorded. On by default.
 #[tauri::command]

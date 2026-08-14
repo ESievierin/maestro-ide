@@ -3029,6 +3029,14 @@ kbd {
   background: var(--accent-bg);
 }
 
+/* The preview shares the editor's box so toggling doesn't jump the layout. */
+.prompt-preview {
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 0;
+  font-family: var(--font-mono, monospace);
+}
+
 /* Header badge when the sidecar is the mock engine — align with the buttons. */
 .mock-chip {
   align-self: center;

@@ -35,6 +35,7 @@ pub fn run(
     worktrees: &WorktreeManager,
     config_path: &Path,
     telemetry_root: &Path,
+    db_path: &Path,
 ) -> HealthReport {
     HealthReport {
         checks: vec![
@@ -47,7 +48,23 @@ pub fn run(
             check_repo(worktrees),
             check_config(config_path),
             check_telemetry(store, telemetry_root),
+            check_store(db_path),
         ],
+    }
+}
+
+/// The other thing that grows forever: sessions, transcripts, and usage rows
+/// in the SQLite store. Informational, like the telemetry row.
+fn check_store(db_path: &Path) -> HealthCheck {
+    let bytes = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
+    HealthCheck {
+        name: "store".into(),
+        ok: true,
+        detail: if bytes == 0 {
+            "not created yet".into()
+        } else {
+            format!("{} — sessions, transcripts, settings", human_size(bytes))
+        },
     }
 }
 
@@ -448,6 +465,7 @@ mod tests {
             &worktrees(),
             &tmp.path().join("config.toml"),
             &tmp.path().join("telemetry"),
+            &tmp.path().join("maestro.db"),
         );
         let names: Vec<&str> = report.checks.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
@@ -461,9 +479,23 @@ mod tests {
                 "jira",
                 "repository",
                 "config.toml",
-                "telemetry"
+                "telemetry",
+                "store"
             ]
         );
+    }
+
+    #[test]
+    fn store_check_reports_size_or_absence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let absent = check_store(&tmp.path().join("maestro.db"));
+        assert!(absent.ok);
+        assert!(absent.detail.contains("not created"), "{}", absent.detail);
+
+        let path = tmp.path().join("real.db");
+        std::fs::write(&path, vec![0u8; 4096]).unwrap();
+        let present = check_store(&path);
+        assert!(present.detail.contains("4.0 KB"), "{}", present.detail);
     }
 
     #[test]

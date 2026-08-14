@@ -1448,6 +1448,7 @@ pub async fn run_health_check(
             &worktrees,
             &crate::maestro_home().join("config.toml"),
             &crate::maestro_home().join("telemetry"),
+            &crate::maestro_home().join("maestro.db"),
         ))
     })
     .await

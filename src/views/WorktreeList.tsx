@@ -7,6 +7,7 @@ import { useDiffs } from "../state/diffs";
 import { useUI } from "../state/ui";
 import { activeSessionCount, useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
+import { isTerminalStatus } from "../types/sessions";
 import type { WorktreeInfo } from "../types/worktrees";
 import { removeWorktree, syncAllWorktrees } from "../utils/actions";
 import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
@@ -31,6 +32,15 @@ function StatusBadges({ wt }: { wt: WorktreeInfo }) {
   const cost = useSessions((s) =>
     (wt.branch ? (s.byBranch[wt.branch] ?? []) : []).reduce(
       (sum, sess) => sum + (s.usage[sess.id]?.costUsd ?? 0),
+      0,
+    ),
+  );
+  // The worst context pressure among the branch's live sessions — a background
+  // agent quietly running its window to the wall deserves a visible warning.
+  const contextPercent = useSessions((s) =>
+    (wt.branch ? (s.byBranch[wt.branch] ?? []) : []).reduce(
+      (max, sess) =>
+        isTerminalStatus(sess.status) ? max : Math.max(max, s.usage[sess.id]?.contextPercent ?? 0),
       0,
     ),
   );
@@ -86,6 +96,14 @@ function StatusBadges({ wt }: { wt: WorktreeInfo }) {
       {diffReady && (
         <span className="badge badge-info">
           <Icon name="diff" size={11} /> {diffFiles}
+        </span>
+      )}
+      {contextPercent >= 90 && (
+        <span
+          className="badge badge-warn"
+          title="A live session on this branch has nearly filled its context window"
+        >
+          ctx {Math.round(contextPercent)}%
         </span>
       )}
       {cost > 0 && (

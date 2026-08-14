@@ -131,9 +131,32 @@ export async function copyPath(path: string) {
 }
 
 /** Remove a worktree, confirming (with the native dialog — window.confirm can
- * hang the webview, see the close-hang fix) when it has uncommitted changes. */
+ * hang the webview, see the close-hang fix) when it has uncommitted changes.
+ * A red-team child attacking the branch goes down with it — otherwise the
+ * child silently outlives its target and orphans at the end of the list. */
 export async function removeWorktree(branch: string): Promise<void> {
-  const { remove } = useWorktrees.getState();
+  const { worktrees, remove } = useWorktrees.getState();
+  const child = worktrees.find(
+    (w) => (w.branch ?? "").startsWith("redteam/") && w.base_branch === branch,
+  );
+  if (child?.branch) {
+    const { confirm } = await import("@tauri-apps/plugin-dialog");
+    const alsoChild = await confirm(
+      `"${branch}" has a red team attacking it (${child.branch}).\nDismantle that worktree along with it?`,
+      { title: "MaestroIDE", kind: "warning" },
+    );
+    if (alsoChild) {
+      const childBranch = child.branch;
+      const sessions = useSessions.getState().byBranch[childBranch] ?? [];
+      for (const session of sessions) {
+        // The main session refuses a direct close — worktree removal handles it.
+        if (!isTerminalStatus(session.status) && session.session_type !== "main") {
+          await useSessions.getState().close(session.id);
+        }
+      }
+      await remove(childBranch, true);
+    }
+  }
   const outcome = await remove(branch, false);
   if (outcome?.outcome === "dirty_confirmation_required") {
     const { confirm } = await import("@tauri-apps/plugin-dialog");

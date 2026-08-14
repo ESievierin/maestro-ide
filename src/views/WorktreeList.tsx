@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Icon, StatusDot } from "../components/Icon";
+import { useAttention } from "../state/attention";
 import { useChecks } from "../state/checks";
 import { useDiffs } from "../state/diffs";
 import { useUI } from "../state/ui";
@@ -22,6 +23,9 @@ function StatusBadges({ wt }: { wt: WorktreeInfo }) {
     wt.branch ? (s.snapshots[`${wt.branch}|worktree`]?.files.length ?? null) : null,
   );
   const check = useChecks((s) => (wt.branch ? s.results[wt.branch] : undefined));
+  const attention = useAttention((s) =>
+    wt.branch ? s.items.filter((i) => i.branch === wt.branch).length : 0,
+  );
 
   const list = sessions ?? [];
   const working = list.some((s) => s.status === "streaming" || s.status === "spawning");
@@ -33,6 +37,14 @@ function StatusBadges({ wt }: { wt: WorktreeInfo }) {
 
   return (
     <span className="badges">
+      {attention > 0 && (
+        <span
+          className="badge badge-attention"
+          title={`${attention} item${attention > 1 ? "s" : ""} waiting on you here`}
+        >
+          <Icon name="bell" size={11} /> {attention}
+        </span>
+      )}
       {failed && (
         <span className="badge badge-failed">
           <Icon name="alert" size={11} /> failed

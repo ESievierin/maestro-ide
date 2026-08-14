@@ -3015,6 +3015,13 @@ kbd {
   background: var(--accent-bg);
 }
 
+/* A worktree row with pending attention items — same tone as the header chip. */
+.badge-attention {
+  color: var(--warning);
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+}
+
 /* ---------- Error toasts (T10) ---------- */
 
 .toasts {

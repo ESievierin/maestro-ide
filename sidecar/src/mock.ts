@@ -434,6 +434,44 @@ export class MockSession implements SessionHandle {
       });
     }
 
+    // A review-roadmap prompt (the review-guide template) expects a JSON-only
+    // reply; the default echo would hand the parser the template's own example
+    // instead. Cover the prompt's changed-file list in two plausible steps.
+    let roadmap: string | null = null;
+    if (this.triggered(prompt, "roadmap")) {
+      // The block is `git diff --stat` output (plus `?? name` untracked
+      // lines): take the path before the pipe, drop the summary line.
+      const fence = /Changed files:\s*```\s*([\s\S]*?)```/.exec(prompt);
+      const files = (fence?.[1] ?? "")
+        .split("\n")
+        .map((line) => (line.replace(/^\?\?\s+/, "").split("|")[0] ?? "").trim())
+        .filter((path) => path.length > 0 && !/\d+ files? changed/.test(path));
+      if (files.length > 0) {
+        const core = files.slice(0, Math.ceil(files.length / 2));
+        const rest = files.slice(core.length);
+        roadmap = JSON.stringify({
+          steps: [
+            {
+              title: "Read the core change",
+              why: "Mock: the heart of this diff.",
+              files: core,
+              category: "core-logic",
+            },
+            ...(rest.length > 0
+              ? [
+                  {
+                    title: "Skim the supporting edits",
+                    why: "Mock: wiring around the core.",
+                    files: rest,
+                    category: "supporting",
+                  },
+                ]
+              : []),
+          ],
+        });
+      }
+    }
+
     const settings = [
       this.model && `model=${this.model}`,
       this.effort && `effort=${this.effort}`,
@@ -442,7 +480,10 @@ export class MockSession implements SessionHandle {
     ]
       .filter(Boolean)
       .join(" ");
-    const words = `Mock reply${settings ? ` (${settings})` : ""} to: ${prompt}`.split(" ");
+    const words =
+      roadmap !== null
+        ? [roadmap]
+        : `Mock reply${settings ? ` (${settings})` : ""} to: ${prompt}`.split(" ");
     for (const word of words) {
       if (this.interrupted || this.closed) break;
       this.emit({ type: "stream_delta", session_id: this.sessionId, text: word + " " });

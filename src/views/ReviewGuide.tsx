@@ -181,7 +181,7 @@ export function ReviewGuide({
                   return dependents > 0 ? (
                     <span
                       className="review-guide-impact"
-                      title={`${dependents} file${dependents > 1 ? "s" : ""} outside this diff reference what this step changes (blast radius)`}
+                      title={`${dependents} file${dependents > 1 ? "s" : ""} outside this diff ${dependents > 1 ? "reference" : "references"} what this step changes (blast radius)`}
                     >
                       <Icon name="alert" size={10} /> {dependents}
                     </span>

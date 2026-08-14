@@ -60,7 +60,13 @@ export function ReviewGuide({
     setBusy(true);
     setError(null);
     try {
-      const prompt = await invoke<string>("render_review_guide_prompt", { branch });
+      const prompt = await invoke<string>("render_review_guide_prompt", { branch }).catch(
+        (e: unknown) => {
+          setError(String(e));
+          return null;
+        },
+      );
+      if (!prompt) return;
       const result = await askMainAgent({
         branch,
         prompt,

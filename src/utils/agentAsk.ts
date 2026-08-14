@@ -85,9 +85,11 @@ export function waitForTerminal(
       );
       if (!session || isTerminalStatus(session.status)) finish(true);
     };
-    check();
+    // check() can finish synchronously, and finish() touches timer/unsub —
+    // they must exist first or the already-satisfied case throws a TDZ error.
     const timer = setTimeout(() => finish(false), timeoutMs);
     const unsub = useSessions.subscribe(check);
+    check();
   });
 }
 
@@ -139,9 +141,10 @@ function waitForIdle(sessionId: string, branch: string, timeoutMs = 120_000): Pr
       if (!session || isTerminalStatus(session.status)) return finish(false);
       if (session.status === "awaiting_input") finish(true);
     };
-    check();
+    // Same ordering constraint as waitForTerminal: finish() needs timer/unsub.
     const timer = setTimeout(() => finish(false), timeoutMs);
     const unsub = useSessions.subscribe(check);
+    check();
   });
 }
 

@@ -93,6 +93,10 @@ export function ReviewGuide({
       setSignature(currentSignature);
       setOpen(true);
       guideCache.set(branch, { steps: parsed, done: fresh, signature: currentSignature });
+    } catch (e) {
+      // A thrown step (ensureMain, send) must surface, not die as an
+      // unhandled rejection with the panel silently idle.
+      setError(String(e));
     } finally {
       setBusy(false);
     }

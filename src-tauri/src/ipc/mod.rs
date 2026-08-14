@@ -221,8 +221,9 @@ pub async fn ensure_main_session(
 /// the parent branch with `/` flattened, so the operation is idempotent.
 const RED_TEAM_PREFIX: &str = "redteam/";
 
-/// Where a red-team session writes its findings, in its worktree root.
-const RED_TEAM_REPORT: &str = "REDTEAM.md";
+/// Where a red-team session writes its findings, in its worktree root — the
+/// same file the notes pipeline treats as that branch's record.
+const RED_TEAM_REPORT: &str = crate::core::notes::RED_TEAM_FILE;
 
 /// Spawn (or re-arm) the QA antagonist for `branch`: a child worktree branched
 /// off it, plus a writer session whose only goal is to break the committed

@@ -32,7 +32,7 @@ export function NotesPanel({ worktree }: { worktree: WorktreeInfo }) {
     <div className="notes-panel">
       <div className="panel-header">
         <h2>
-          Task notes
+          {branch.startsWith("redteam/") ? "Red-team findings" : "Task notes"}
           {notes?.updated_at && (
             <span className="count">{new Date(notes.updated_at).toLocaleString()}</span>
           )}
@@ -71,8 +71,17 @@ export function NotesPanel({ worktree }: { worktree: WorktreeInfo }) {
         </div>
       ) : (
         <p className="empty">
-          No <code>TASK_NOTES.md</code> yet — it is written when an implementation session closes,
-          and it is committed with the branch like any other file.
+          {branch.startsWith("redteam/") ? (
+            <>
+              No <code>REDTEAM.md</code> yet — the red team writes it once its attack pass lands
+              findings.
+            </>
+          ) : (
+            <>
+              No <code>TASK_NOTES.md</code> yet — it is written when an implementation session
+              closes, and it is committed with the branch like any other file.
+            </>
+          )}
         </p>
       )}
     </div>

@@ -29,6 +29,21 @@ use crate::error::{MaestroError, Result};
 /// The notes file's name in the worktree root. Committed like any other file.
 pub const NOTES_FILE: &str = "TASK_NOTES.md";
 
+/// The record a red-team worktree leaves behind instead of task notes.
+pub const RED_TEAM_FILE: &str = "REDTEAM.md";
+
+/// Which file is "the record" for a branch: red-team worktrees write their
+/// findings to REDTEAM.md; everything else keeps TASK_NOTES.md. The whole
+/// notes pipeline (read, write, Q&A append, prompt rendering, the Notes tab)
+/// follows this one choice.
+fn record_file(branch: &str) -> &'static str {
+    if branch.starts_with("redteam/") {
+        RED_TEAM_FILE
+    } else {
+        NOTES_FILE
+    }
+}
+
 /// One `##` section of the notes. Unknown sections are kept: the file is user-editable and
 /// losing content nobody expected would be worse than rendering it verbatim.
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -104,7 +119,10 @@ impl NotesManager {
             Err(err) => {
                 // A file that exists but cannot be read is worth reporting as a state, not
                 // an error: the panel says why instead of the app raising a toast.
-                return Ok(Notes::unavailable(branch, format!("{NOTES_FILE}: {err}")));
+                return Ok(Notes::unavailable(
+                    branch,
+                    format!("{}: {err}", record_file(branch)),
+                ));
             }
         };
 
@@ -130,7 +148,10 @@ impl NotesManager {
         let path = self
             .notes_path(branch)?
             .ok_or_else(|| MaestroError::InvalidData {
-                message: format!("no worktree for {branch} — cannot write {NOTES_FILE}"),
+                message: format!(
+                    "no worktree for {branch} — cannot write {}",
+                    record_file(branch)
+                ),
             })?;
         std::fs::write(&path, raw)?;
         tracing::info!(branch, bytes = raw.len(), "task notes written");
@@ -177,7 +198,7 @@ impl NotesManager {
             .list()?
             .into_iter()
             .find(|w| w.branch.as_deref() == Some(branch));
-        Ok(worktree.map(|w| w.path.join(NOTES_FILE)))
+        Ok(worktree.map(|w| w.path.join(record_file(branch))))
     }
 }
 

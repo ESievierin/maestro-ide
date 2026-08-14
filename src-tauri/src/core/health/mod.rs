@@ -39,6 +39,7 @@ pub fn run(
     HealthReport {
         checks: vec![
             check_git(),
+            check_node(),
             check_gh(gh),
             check_editor(store),
             check_jira(store),
@@ -46,6 +47,31 @@ pub fn run(
             check_config(config_path),
             check_telemetry(store, telemetry_root),
         ],
+    }
+}
+
+/// The sidecar is a Node process; without `node` on PATH every agent session
+/// dies at spawn with an error that never names the real culprit.
+fn check_node() -> HealthCheck {
+    match Command::new("node").arg("--version").output() {
+        Ok(out) if out.status.success() => HealthCheck {
+            name: "node".into(),
+            ok: true,
+            detail: format!(
+                "{} — runs the agent sidecar",
+                String::from_utf8_lossy(&out.stdout).trim()
+            ),
+        },
+        Ok(out) => HealthCheck {
+            name: "node".into(),
+            ok: false,
+            detail: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        },
+        Err(err) => HealthCheck {
+            name: "node".into(),
+            ok: false,
+            detail: format!("not found on PATH — agent sessions cannot start: {err}"),
+        },
     }
 }
 
@@ -409,6 +435,7 @@ mod tests {
             names,
             [
                 "git",
+                "node",
                 "gh",
                 "editor",
                 "jira",
@@ -417,6 +444,15 @@ mod tests {
                 "telemetry"
             ]
         );
+    }
+
+    #[test]
+    fn node_check_reports_a_version_on_this_machine() {
+        // The dev/CI machine builds the sidecar, so node must be present —
+        // and the check must find it the same way the sidecar spawn does.
+        let check = check_node();
+        assert!(check.ok, "{}", check.detail);
+        assert!(check.detail.starts_with('v'), "{}", check.detail);
     }
 
     #[test]

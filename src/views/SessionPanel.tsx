@@ -1480,14 +1480,16 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
   };
 
   /** Human tab label: role names for system sessions (their opening prompt is
-   * boilerplate), the prompt's first words for everything else. */
+   * boilerplate), role + the prompt's first words for everything else — two
+   * sessions with the same prompt must still read as different tabs. */
   const tabLabel = (s: Session): string => {
     if (s.session_type === "main") return "Main agent";
     if (s.session_type === "red_team") return "Red team";
+    const role = SESSION_TYPE_ROLE_LABELS[s.session_type] ?? s.session_type;
     const prompt = firstPrompt(s.id);
-    if (!prompt) return `${s.session_type} · ${s.id.slice(0, 8)}`;
+    if (!prompt) return `${role} · ${s.id.slice(0, 8)}`;
     const oneLine = prompt.replace(/\s+/g, " ").trim();
-    return oneLine.length > 26 ? `${oneLine.slice(0, 26)}…` : oneLine;
+    return `${role}: ${oneLine.length > 26 ? `${oneLine.slice(0, 26)}…` : oneLine}`;
   };
 
   const finishedCount = list.filter((s) => isTerminalStatus(s.status)).length;

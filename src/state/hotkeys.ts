@@ -19,6 +19,7 @@ export const HOTKEY_ACTIONS: readonly HotkeyAction[] = [
   { id: "tab-notes", label: "Notes tab", defaultCombo: "Alt+N" },
   { id: "worktree-prev", label: "Previous worktree", defaultCombo: "Alt+ArrowUp" },
   { id: "worktree-next", label: "Next worktree", defaultCombo: "Alt+ArrowDown" },
+  { id: "needs-you", label: "Needs-you drawer", defaultCombo: "Alt+A" },
 ];
 
 const STORAGE_KEY = "maestro.hotkeyOverrides";

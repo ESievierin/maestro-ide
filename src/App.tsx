@@ -479,15 +479,17 @@ function DaemonChip() {
   );
 }
 
-/** "Needs you" with its own local open state (a drawer, not a routed dialog). */
+/** "Needs you" drawer; open-state lives in the UI store so the rebindable
+ * hotkey (Alt+A by default) can toggle it from anywhere. */
 function AttentionArea({ count }: { count: number }) {
-  const [open, setOpen] = useState(false);
+  const open = useUI((s) => s.attentionOpen);
+  const setOpen = useUI((s) => s.setAttentionOpen);
   return (
     <>
       <button
         className={`small ghost ${count > 0 ? "attention-alert" : ""}`}
-        onClick={() => setOpen((o) => !o)}
-        title="Everything waiting on you"
+        onClick={() => setOpen(!open)}
+        title={`Everything waiting on you (${useHotkeyBindings.getState().comboFor("needs-you")})`}
       >
         <Icon name="bell" /> Needs you
         {count > 0 && <span className="count-pill">{count}</span>}

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { eventMatchesCombo, useHotkeyBindings } from "../state/hotkeys";
+import { useUI } from "../state/ui";
 import { useWorktrees } from "../state/worktrees";
 
 /**
@@ -7,6 +8,7 @@ import { useWorktrees } from "../state/worktrees";
  *   Alt+1…9        select the nth worktree
  *   Alt+↑ / Alt+↓  previous / next worktree
  *   Alt+C / Alt+D / Alt+N  chat / diff / notes panel
+ *   Alt+A          toggle the "Needs you" drawer
  *
  * Everything but the digit shortcuts is rebindable (Settings → Keyboard
  * shortcuts, see `state/hotkeys.ts`) — the defaults above are what a fresh
@@ -41,6 +43,8 @@ export function useHotkeys(): void {
         // Wrap around; an unknown/absent selection starts at the first entry.
         const next = (current + step + branches.length) % branches.length;
         select(branches[current === -1 ? 0 : next]);
+      } else if (eventMatchesCombo(event, comboFor("needs-you"))) {
+        useUI.getState().setAttentionOpen(!useUI.getState().attentionOpen);
       } else if (event.altKey && !event.ctrlKey && !event.metaKey && /^[1-9]$/.test(event.key)) {
         const index = Number(event.key) - 1;
         if (index >= branches.length) return;

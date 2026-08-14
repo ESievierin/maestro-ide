@@ -320,6 +320,8 @@ pub fn run() {
             ipc::get_telemetry_retention_days,
             ipc::set_telemetry_retention_days,
             ipc::vacuum_store,
+            ipc::get_escalation_timeout,
+            ipc::set_escalation_timeout,
             ipc::get_os_notifications_enabled,
             ipc::set_os_notifications_enabled,
             ipc::get_notification_digest_enabled,

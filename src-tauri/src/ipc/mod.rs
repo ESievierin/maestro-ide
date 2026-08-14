@@ -727,6 +727,34 @@ pub async fn set_notes_finalize_timeout(
     .await
 }
 
+/// How long one agent-to-agent escalation may take before it is abandoned.
+#[tauri::command]
+pub async fn get_escalation_timeout(state: State<'_, AppState>) -> Result<u64, String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        Ok(store
+            .get_setting(crate::core::escalation::SETTING_ESCALATION_TIMEOUT)?
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(120))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_escalation_timeout(
+    state: State<'_, AppState>,
+    seconds: u64,
+) -> Result<(), String> {
+    let store = state.store.clone();
+    run_core(state.bus.clone(), move || {
+        store.set_setting(
+            crate::core::escalation::SETTING_ESCALATION_TIMEOUT,
+            &seconds.to_string(),
+        )
+    })
+    .await
+}
+
 /// Telemetry retention window in days; 0 = keep everything (the default).
 #[tauri::command]
 pub async fn get_telemetry_retention_days(state: State<'_, AppState>) -> Result<u32, String> {

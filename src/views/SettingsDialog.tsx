@@ -142,6 +142,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [branchNaming, setBranchNamingState] = useState<string | null>(null);
   const [finalizeTimeout, setFinalizeTimeoutState] = useState<number | null>(null);
   const [retentionDays, setRetentionDaysState] = useState<number | null>(null);
+  const [escalationTimeout, setEscalationTimeoutState] = useState<number | null>(null);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [usageByBranch, setUsageByBranch] = useState<BranchUsage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -173,6 +174,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     void invoke<string>("get_branch_naming").then(setBranchNamingState);
     void invoke<number>("get_notes_finalize_timeout").then(setFinalizeTimeoutState);
     void invoke<number>("get_telemetry_retention_days").then(setRetentionDaysState);
+    void invoke<number>("get_escalation_timeout").then(setEscalationTimeoutState);
   };
 
   useEffect(() => {
@@ -239,6 +241,16 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     setFinalizeTimeoutState(seconds);
     try {
       await invoke("set_notes_finalize_timeout", { seconds });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const changeEscalationTimeout = async (raw: string) => {
+    const seconds = Math.max(0, Math.trunc(Number(raw) || 0));
+    setEscalationTimeoutState(seconds);
+    try {
+      await invoke("set_escalation_timeout", { seconds });
     } catch (e) {
       setError(String(e));
     }
@@ -458,6 +470,21 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             <span className="hint">
               How long a closing implementation session gets to write TASK_NOTES.md before it is
               closed anyway.
+            </span>
+          </label>
+          <label className="settings-field">
+            Escalation timeout (seconds)
+            <input
+              type="number"
+              min={0}
+              step={30}
+              value={escalationTimeout ?? ""}
+              disabled={escalationTimeout === null}
+              onChange={(e) => void changeEscalationTimeout(e.target.value)}
+            />
+            <span className="hint">
+              How long one agent-to-agent question (a reviewer asking the implementer) may wait for
+              its answer before it is abandoned.
             </span>
           </label>
         </div>

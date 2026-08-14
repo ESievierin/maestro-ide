@@ -29,9 +29,25 @@ they're allowed to commit or push, and see at a glance which one needs you.
 - **Prompts as data.** Commit messages, PR descriptions, and review-reply drafts are
   generated from editable markdown templates in `~/.maestro/prompts/` — including,
   optionally, a personal style guide so generated text sounds like you, not a generic bot.
+  Templates you haven't touched pick up improved defaults on update; ones you've edited
+  are never overwritten.
 - **Cross-agent context that survives a session ending.** An implementation session
   writes `TASK_NOTES.md` on close; a review session reads it and can escalate a direct
   question back to the implementer instead of guessing.
+- **Blast radius.** Before trusting a change, see what it implicitly touches: the app
+  scans the repo for modules that import or reference what the diff changed and lists
+  the likely-affected dependents — with a one-click "verify these with the main agent."
+- **A red-team antagonist (QA).** One click branches a child worktree off a task and
+  spawns an agent whose only goal is to break the code — edge cases, race conditions,
+  failing proof-tests. It gets the blast radius as ammunition, can interrogate the
+  implementer directly, and writes `REDTEAM.md`; its findings go back to the parent
+  branch's agent for rework, then the whole child worktree is dismantled.
+- **An interactive review guide.** For a human reviewing a big diff: an agent orders
+  the changes into a step-by-step roadmap — critical business logic first, boilerplate
+  last — and checking off a step marks its files as viewed in the diff viewer.
+- **A fleet view.** A header chip shows how many agents are streaming or waiting on
+  you right now, with per-session cost; one attention queue collects everything that
+  blocks anyone — permission prompts, gates, questions, failures, red-team findings.
 
 Nothing about GitHub/Jira write access, or what an agent is allowed to run, is silent:
 every state change is an event on a central bus, and everything that touches the outside

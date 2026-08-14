@@ -33,8 +33,10 @@ export function AttentionPanel({ onClose }: { onClose: () => void }) {
       select(item.branch);
       if (item.target === "pr_replies") {
         useUI.getState().openDialog("replies");
+      } else if (item.target === "diff" || item.target === "notes") {
+        setTab(item.target);
       } else {
-        setTab(item.target === "diff" ? "diff" : "chat");
+        setTab("chat");
       }
     }
     if (item.target !== "gate") {

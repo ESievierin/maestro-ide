@@ -31,6 +31,8 @@ pub enum AttentionTarget {
     Diff,
     /// The PR-replies dialog for the branch (a daemon review plan is ready).
     PrReplies,
+    /// The notes tab of the branch (a red-team's REDTEAM.md is ready to read).
+    Notes,
 }
 
 /// What kind of situation is waiting. Kept as a string-ish enum so the UI can label and
@@ -71,10 +73,11 @@ impl AttentionKind {
             AttentionKind::Gate => AttentionTarget::Gate,
             AttentionKind::PermissionRequest
             | AttentionKind::Question
-            | AttentionKind::SessionFailed
-            | AttentionKind::RedTeamReady => AttentionTarget::Chat,
+            | AttentionKind::SessionFailed => AttentionTarget::Chat,
             AttentionKind::LineQuestion => AttentionTarget::Diff,
             AttentionKind::PrReviewReady => AttentionTarget::PrReplies,
+            // The deliverable is REDTEAM.md, rendered in the Notes tab.
+            AttentionKind::RedTeamReady => AttentionTarget::Notes,
         }
     }
 }
@@ -520,6 +523,23 @@ mod tests {
         assert_eq!(mgr.list().unwrap().len(), 1);
         mgr.dismiss_session("s4").unwrap();
         assert!(mgr.list().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn red_team_findings_point_at_the_notes_tab() {
+        let (mgr, _bus) = manager();
+        mgr.handle(Event::AttentionRequired {
+            source: "red_team_ready".into(),
+            branch: Some("redteam/impl-T-9".into()),
+            session_id: Some("rt1".into()),
+            message: "Red team finished".into(),
+        });
+
+        let list = mgr.list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].kind, AttentionKind::RedTeamReady);
+        // The deliverable is REDTEAM.md, so clicking must land where it renders.
+        assert_eq!(list[0].target, AttentionTarget::Notes);
     }
 
     #[tokio::test]

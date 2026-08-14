@@ -9,7 +9,7 @@ export type AttentionKind =
   | "pr_review_ready"
   | "red_team_ready";
 
-export type AttentionTarget = "chat" | "gate" | "diff" | "pr_replies";
+export type AttentionTarget = "chat" | "gate" | "diff" | "pr_replies" | "notes";
 
 export interface AttentionItem {
   id: string;

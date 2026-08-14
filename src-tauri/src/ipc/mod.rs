@@ -1451,6 +1451,7 @@ pub async fn run_health_check(
             store.as_ref(),
             &crate::core::daemon::GhCli,
             &worktrees,
+            &crate::maestro_home().join("config.toml"),
         ))
     })
     .await

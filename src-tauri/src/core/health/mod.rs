@@ -3,6 +3,7 @@
 //! changes anything — useful for getting set up on a new machine, especially
 //! right after carrying settings over via `core::backup`'s export/import.
 
+use std::path::Path;
 use std::process::Command;
 
 use serde::Serialize;
@@ -27,7 +28,12 @@ pub struct HealthReport {
 
 /// Run every check. Each one is independent and never panics the others —
 /// one broken tool should not hide the state of the rest.
-pub fn run(store: &dyn Store, gh: &dyn GhProvider, worktrees: &WorktreeManager) -> HealthReport {
+pub fn run(
+    store: &dyn Store,
+    gh: &dyn GhProvider,
+    worktrees: &WorktreeManager,
+    config_path: &Path,
+) -> HealthReport {
     HealthReport {
         checks: vec![
             check_git(),
@@ -35,7 +41,47 @@ pub fn run(store: &dyn Store, gh: &dyn GhProvider, worktrees: &WorktreeManager) 
             check_editor(store),
             check_jira(store),
             check_repo(worktrees),
+            check_config(config_path),
         ],
+    }
+}
+
+/// A malformed config.toml is otherwise applied as "no overrides" with only a
+/// log line to show for it — the one silent failure mode a user actually hits
+/// after hand-editing the file.
+fn check_config(path: &Path) -> HealthCheck {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return HealthCheck {
+                name: "config.toml".into(),
+                ok: true,
+                detail: "not created yet — defaults in effect".into(),
+            };
+        }
+        Err(err) => {
+            return HealthCheck {
+                name: "config.toml".into(),
+                ok: false,
+                detail: format!("unreadable: {err}"),
+            };
+        }
+    };
+    match toml::from_str::<crate::core::config::Config>(&raw) {
+        Ok(_) => HealthCheck {
+            name: "config.toml".into(),
+            ok: true,
+            detail: path.to_string_lossy().into_owned(),
+        },
+        Err(err) => HealthCheck {
+            name: "config.toml".into(),
+            ok: false,
+            // toml's message already names the line/column; first line is enough.
+            detail: format!(
+                "ignored (defaults in effect): {}",
+                err.to_string().lines().next().unwrap_or("parse error")
+            ),
+        },
     }
 }
 
@@ -281,8 +327,30 @@ mod tests {
         let gh = MockGh {
             accounts: Ok(vec![]),
         };
-        let report = run(&store, &gh, &worktrees());
+        let tmp = tempfile::tempdir().unwrap();
+        let report = run(&store, &gh, &worktrees(), &tmp.path().join("config.toml"));
         let names: Vec<&str> = report.checks.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["git", "gh", "editor", "jira", "repository"]);
+        assert_eq!(
+            names,
+            ["git", "gh", "editor", "jira", "repository", "config.toml"]
+        );
+    }
+
+    #[test]
+    fn config_check_passes_when_absent_or_valid_and_fails_on_garbage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        let absent = check_config(&path);
+        assert!(absent.ok);
+        assert!(absent.detail.contains("defaults"));
+
+        std::fs::write(&path, "daemon_poll_minutes = 7\n").unwrap();
+        assert!(check_config(&path).ok);
+
+        std::fs::write(&path, "daemon_poll_minutes = [not toml").unwrap();
+        let broken = check_config(&path);
+        assert!(!broken.ok);
+        assert!(broken.detail.contains("ignored"), "{}", broken.detail);
     }
 }

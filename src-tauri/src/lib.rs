@@ -28,7 +28,7 @@ use crate::ipc::AppState;
 
 /// Directory holding all persistent Maestro state (`~/.maestro`, or `$MAESTRO_HOME` when
 /// set — an isolated profile for a second instance without touching the real one).
-fn maestro_home() -> PathBuf {
+pub fn maestro_home() -> PathBuf {
     if let Ok(custom) = std::env::var("MAESTRO_HOME") {
         return PathBuf::from(custom);
     }

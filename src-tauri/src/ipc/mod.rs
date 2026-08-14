@@ -531,6 +531,13 @@ pub fn preview_prompt(content: String) -> String {
     crate::core::prompts::PromptManager::preview(&content)
 }
 
+/// The active state directory (`~/.maestro`, or `$MAESTRO_HOME`) — shown in
+/// Settings → About so bug reports can name the profile they ran against.
+#[tauri::command]
+pub fn get_maestro_home() -> String {
+    crate::maestro_home().to_string_lossy().into_owned()
+}
+
 /// Whether conversation telemetry (prompts + replies, per `core::telemetry`) is
 /// being recorded. On by default.
 #[tauri::command]

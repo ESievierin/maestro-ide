@@ -137,6 +137,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
   const [telemetryEnabled, setTelemetryEnabledState] = useState<boolean | null>(null);
   const [redTeamAuto, setRedTeamAutoState] = useState<boolean | null>(null);
+  const [about, setAbout] = useState<{ version: string; home: string; mock: boolean } | null>(null);
   const [writerPolicy, setWriterPolicyState] = useState<string | null>(null);
   const [branchNaming, setBranchNamingState] = useState<string | null>(null);
   const [finalizeTimeout, setFinalizeTimeoutState] = useState<number | null>(null);
@@ -158,6 +159,15 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     refetchToggles();
     void invoke<UsageSummary>("get_usage_summary").then(setUsage);
     void invoke<BranchUsage[]>("get_usage_by_branch").then(setUsageByBranch);
+    void (async () => {
+      const { getVersion } = await import("@tauri-apps/api/app");
+      const [version, home, mock] = await Promise.all([
+        getVersion(),
+        invoke<string>("get_maestro_home"),
+        invoke<boolean>("get_mock_mode"),
+      ]);
+      setAbout({ version, home, mock });
+    })().catch(() => setAbout(null));
   }, []);
 
   const toggleTelemetry = async () => {
@@ -452,6 +462,20 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           >
             <Icon name="shield" size={12} /> Run setup check…
           </button>
+        </div>
+
+        <div className="settings-section">
+          <h4>About</h4>
+          <p className="settings-usage-line settings-about">
+            MaestroIDE {about?.version ?? "…"}
+            {about?.mock ? " · mock engine" : ""}
+            {about?.home && (
+              <>
+                {" · "}
+                <span title="Active state directory (MAESTRO_HOME)">{about.home}</span>
+              </>
+            )}
+          </p>
         </div>
 
         <div className="modal-actions">

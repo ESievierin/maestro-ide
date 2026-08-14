@@ -197,6 +197,12 @@ impl GitProvider for GitCli {
         Ok(parse_branch_status(&out))
     }
 
+    fn last_commit_subject(&self, worktree: &Path) -> Result<Option<String>> {
+        let out = self.run(worktree, &["log", "-1", "--format=%s"])?;
+        let subject = out.trim();
+        Ok((!subject.is_empty()).then(|| subject.to_string()))
+    }
+
     fn merge_base_diff(&self, repo: &Path, branch: &str, base: &str) -> Result<String> {
         // `base...branch` diffs from the merge-base, exactly what the diff viewer needs.
         // `--ignore-cr-at-eol`: a repo without consistent .gitattributes can have the

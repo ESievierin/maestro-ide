@@ -86,6 +86,13 @@ pub trait GitProvider: Send + Sync {
     /// Status of the branch checked out at `worktree`.
     fn branch_status(&self, worktree: &Path) -> Result<BranchStatus>;
 
+    /// Subject line of the newest commit at `worktree` — a one-line "what
+    /// happened here last" for the list. Default: unknown, so test doubles
+    /// that don't care stay untouched.
+    fn last_commit_subject(&self, _worktree: &Path) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// Raw unified diff of `branch` against its merge-base with `base`
     /// (`git diff base...branch`). Consumed by the diff engine in T5.
     fn merge_base_diff(&self, repo: &Path, branch: &str, base: &str) -> Result<String>;

@@ -57,6 +57,8 @@ pub struct WorktreeInfo {
     pub pinned: bool,
     /// `None` when status could not be read (e.g. the directory vanished).
     pub status: Option<BranchStatus>,
+    /// Newest commit's subject line — "what happened here last" at a glance.
+    pub last_commit_subject: Option<String>,
 }
 
 /// Request to create (or re-attach) a worktree.
@@ -184,6 +186,7 @@ impl WorktreeManager {
                     None
                 }
             };
+            let last_commit_subject = self.git.last_commit_subject(&entry.path).unwrap_or(None);
             infos.push(WorktreeInfo {
                 branch: entry.branch,
                 path: entry.path,
@@ -192,6 +195,7 @@ impl WorktreeManager {
                 base_branch: stored.as_ref().and_then(|b| b.base_branch.clone()),
                 pinned: stored.as_ref().is_some_and(|b| b.pinned),
                 status,
+                last_commit_subject,
             });
         }
         Ok(infos)
@@ -269,6 +273,7 @@ impl WorktreeManager {
 
         let stored = self.store.get_branch(&branch)?;
         let status = self.git.branch_status(&path).ok();
+        let last_commit_subject = self.git.last_commit_subject(&path).unwrap_or(None);
         Ok(WorktreeInfo {
             branch: Some(branch),
             path,
@@ -277,6 +282,7 @@ impl WorktreeManager {
             base_branch: stored.as_ref().and_then(|b| b.base_branch.clone()),
             pinned: stored.as_ref().is_some_and(|b| b.pinned),
             status,
+            last_commit_subject,
         })
     }
 
@@ -326,6 +332,7 @@ impl WorktreeManager {
 
         let stored = self.store.get_branch(name)?;
         let status = self.git.branch_status(&path).ok();
+        let last_commit_subject = self.git.last_commit_subject(&path).unwrap_or(None);
         Ok(WorktreeInfo {
             branch: Some(name.to_string()),
             path,
@@ -334,6 +341,7 @@ impl WorktreeManager {
             base_branch: stored.as_ref().and_then(|b| b.base_branch.clone()),
             pinned: stored.as_ref().is_some_and(|b| b.pinned),
             status,
+            last_commit_subject,
         })
     }
 

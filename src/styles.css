@@ -3029,6 +3029,16 @@ kbd {
   background: var(--accent-bg);
 }
 
+/* One muted line of "what happened here last" under the branch name. */
+.wt-last-commit {
+  font-size: 0.68rem;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 0.1rem;
+}
+
 /* Compact inline filter among the event drawer's header buttons. */
 .event-filter {
   width: 14rem;

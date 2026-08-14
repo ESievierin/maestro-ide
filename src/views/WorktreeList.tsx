@@ -392,6 +392,11 @@ export function WorktreeList() {
                   </span>
                   <StatusBadges wt={wt} />
                 </div>
+                {wt.last_commit_subject && (
+                  <div className="wt-last-commit" title={wt.last_commit_subject}>
+                    {wt.last_commit_subject}
+                  </div>
+                )}
                 {(wt.task_id || wt.branch) && (
                   <div className="wt-meta">
                     {wt.task_id && <span className="wt-task">{wt.task_id}</span>}

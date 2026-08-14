@@ -15,6 +15,8 @@ export interface WorktreeInfo {
   /** Kept at the top of the list regardless of sort order. */
   pinned: boolean;
   status: BranchStatus | null;
+  /** Newest commit's subject line — "what happened here last" at a glance. */
+  last_commit_subject: string | null;
 }
 
 export interface RepoInfo {

@@ -10,6 +10,7 @@ import { isTerminalStatus } from "../types/sessions";
 import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 import {
   clearFinishedSessions,
+  clearFinishedSessionsEverywhere,
   copyPath,
   dismantleRedTeam,
   openWorktree,
@@ -239,6 +240,18 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         icon: "arrow-down",
         label: `Sync all ${syncableWorktrees} worktrees with their base`,
         run: () => void syncAllWorktrees(),
+      });
+    }
+
+    const finishedEverywhere = Object.values(useSessions.getState().byBranch)
+      .flat()
+      .filter((s) => isTerminalStatus(s.status)).length;
+    if (finishedEverywhere > 0) {
+      result.push({
+        id: "app:clear-finished-everywhere",
+        icon: "trash",
+        label: `Clear ${finishedEverywhere} finished session${finishedEverywhere === 1 ? "" : "s"} on all branches…`,
+        run: () => void clearFinishedSessionsEverywhere(),
       });
     }
 

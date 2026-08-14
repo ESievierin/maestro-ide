@@ -302,3 +302,35 @@ export async function clearFinishedSessions(branch: string, finishedCount: numbe
   }
   await useSessions.getState().removeAllFinished(branch);
 }
+
+/** The fleet-wide version: sweep terminal sessions off every branch at once —
+ * a long-lived fleet accumulates them everywhere, not just where you look. */
+export async function clearFinishedSessionsEverywhere(): Promise<void> {
+  const byBranch = useSessions.getState().byBranch;
+  const targets = Object.entries(byBranch)
+    .map(([branch, list]) => ({
+      branch,
+      finished: list.filter((s) => isTerminalStatus(s.status)).length,
+    }))
+    .filter((t) => t.finished > 0);
+  const total = targets.reduce((sum, t) => sum + t.finished, 0);
+  if (total === 0) return;
+
+  const { confirm } = await import("@tauri-apps/plugin-dialog");
+  const ok = await confirm(
+    `Delete ${total} finished session${total === 1 ? "" : "s"} across ${targets.length} branch${targets.length === 1 ? "" : "es"}? This cannot be undone.`,
+    { title: "MaestroIDE", kind: "warning" },
+  );
+  if (!ok) return;
+
+  let removed = 0;
+  for (const t of targets) {
+    removed += await useSessions.getState().removeAllFinished(t.branch);
+  }
+  const { useToasts } = await import("../state/toasts");
+  useToasts.getState().push({
+    severity: "info",
+    code: "sessions-cleared",
+    message: `Removed ${removed} finished session${removed === 1 ? "" : "s"}.`,
+  });
+}

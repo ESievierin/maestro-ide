@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Icon } from "../components/Icon";
 import { useNotes } from "../state/notes";
-import { exportNotes } from "../utils/actions";
+import { dismantleRedTeam, exportNotes, sendRedTeamFindings } from "../utils/actions";
 import type { WorktreeInfo } from "../types/worktrees";
 
 /**
@@ -45,6 +45,25 @@ export function NotesPanel({ worktree }: { worktree: WorktreeInfo }) {
           >
             <Icon name="download" size={13} />
           </button>
+        )}
+        {branch.startsWith("redteam/") && (
+          <>
+            <button
+              className="small"
+              disabled={!notes?.exists}
+              title="Hand REDTEAM.md to the parent branch's main agent for a discuss-first verdict"
+              onClick={() => void sendRedTeamFindings(branch)}
+            >
+              <Icon name="reply" size={13} /> Send to parent
+            </button>
+            <button
+              className="small ghost"
+              title="Remove this red-team worktree; the branch survives in git"
+              onClick={() => void dismantleRedTeam(branch)}
+            >
+              <Icon name="trash" size={13} /> Dismantle
+            </button>
+          </>
         )}
         <button className="small ghost" disabled={!!loading} onClick={() => void refresh(branch)}>
           <Icon name="refresh" spin={!!loading} /> Refresh

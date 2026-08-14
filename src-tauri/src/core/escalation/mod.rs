@@ -141,14 +141,28 @@ impl EscalationManager {
             );
         }
 
+        // A red-team asker interrogates the *parent* branch's implementer: the
+        // redteam/ branch itself only ever hosts attacks, never the sessions
+        // that wrote the code under them.
+        let question_branch = if asking.branch.starts_with("redteam/") {
+            self.store
+                .get_branch(&asking.branch)
+                .ok()
+                .flatten()
+                .and_then(|row| row.base_branch)
+                .unwrap_or_else(|| asking.branch.clone())
+        } else {
+            asking.branch.clone()
+        };
+
         // The target is the branch's most recent implementation session with a resumable
         // context. Never research/manual (they did not write the code), never a fan-out.
-        let target = match self.resolve_target(&asking.branch) {
+        let target = match self.resolve_target(&question_branch) {
             Some(target) => target,
             None => return Answer::failed("no implementation session", NO_CONTEXT),
         };
 
-        let cwd = match self.worktree_path(&asking.branch) {
+        let cwd = match self.worktree_path(&question_branch) {
             Some(path) => path,
             None => {
                 return Answer::failed(
@@ -160,7 +174,7 @@ impl EscalationManager {
         };
 
         let spawned = self.sessions.spawn(SpawnParams {
-            branch: asking.branch.clone(),
+            branch: question_branch.clone(),
             cwd,
             session_type: SessionType::Escalation,
             model: Some(ESCALATION_MODEL.to_string()),
@@ -551,6 +565,31 @@ mod tests {
         for tool in ["Edit", "Write", "Bash"] {
             assert!(DISALLOWED.contains(&tool));
         }
+    }
+
+    #[tokio::test]
+    async fn a_red_team_asker_targets_the_parent_branchs_implementer() {
+        let (h, _asking) = harness(true);
+        // A red-team branch whose recorded base is the implementation branch.
+        h.store
+            .upsert_branch("redteam/impl-S2-T2", None, Some("impl/S2-T2"))
+            .unwrap();
+        let red = Session::new("redteam/impl-S2-T2", SessionType::RedTeam, None, None, None);
+        h.store.insert_session(&red).unwrap();
+
+        // No worktree is configured, so the answer stops at the worktree check —
+        // but only AFTER target resolution succeeded on the parent. A failure to
+        // redirect would have failed earlier with "no implementation session".
+        let answer = h
+            .escalations
+            .answer(&red.id, "is the retry cap intended?")
+            .await;
+        assert!(
+            answer.text.contains("no worktree to run in"),
+            "resolution must reach the worktree step (i.e. the parent's implementer \
+             was found), got: {}",
+            answer.text
+        );
     }
 
     #[tokio::test]

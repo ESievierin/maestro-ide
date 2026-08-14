@@ -332,8 +332,12 @@ pub async fn start_red_team(state: State<'_, AppState>, branch: String) -> Resul
             // prompts, and commit/push still hit the gate like everyone else's.
             permission_mode: Some("acceptEdits".into()),
             thinking: None,
-            tools_profile: None,
-            disallowed_tools: Vec::new(),
+            // The review profile carries ask_original_agent — "is this behavior
+            // intended?" goes to the parent's implementer instead of being
+            // guessed. The profile's other tool posts PR comments; that's not
+            // the antagonist's job, so it's withheld.
+            tools_profile: Some(crate::core::session::REVIEW_TOOLS_PROFILE.to_string()),
+            disallowed_tools: vec!["mcp__maestro__submit_review_comments".to_string()],
             prompt,
             resume_from: None,
         })

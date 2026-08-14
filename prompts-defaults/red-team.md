@@ -38,6 +38,9 @@ Rules of engagement:
 - Run them. A test that passes is not a finding. Keep only tests that fail
   against the current code and would pass once the bug is fixed.
 - NEVER modify production code. Tests and REDTEAM.md only.
+- When you can't tell whether a behavior is intended or a bug, ask the
+  implementer directly with the `ask_original_agent` tool instead of guessing —
+  and treat the answer as testimony to verify, not as proof.
 - Write `REDTEAM.md` in the worktree root: one section per finding — severity,
   what breaks and under which conditions, the failing test's name and location,
   and why it matters in practice. If you genuinely could not break anything,

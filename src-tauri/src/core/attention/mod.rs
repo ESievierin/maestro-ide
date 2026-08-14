@@ -188,7 +188,15 @@ impl AttentionManager {
 
     /// Consume bus events and keep the queue in sync. Run as a background task.
     pub async fn run_loop(self: Arc<Self>, bus: EventBus) {
-        let mut rx = bus.subscribe();
+        let rx = bus.subscribe();
+        self.run_with(rx).await;
+    }
+
+    /// Like [`run_loop`](Self::run_loop), but on a receiver subscribed by the
+    /// caller — startup subscribes *before* `fail_stale_sessions` publishes its
+    /// failures, so "failed on app restart" items land deterministically
+    /// instead of racing the spawn of this task.
+    pub async fn run_with(self: Arc<Self>, mut rx: tokio::sync::broadcast::Receiver<Event>) {
         loop {
             match rx.recv().await {
                 Ok(event) => self.handle(event),

@@ -137,6 +137,10 @@ pub fn run() {
             .with_telemetry(telemetry),
     );
 
+    // The attention queue must witness the stale-session failures below, but its
+    // consumer task only spawns in setup() — subscribe now so the events buffer
+    // in the channel instead of racing the spawn (and usually losing).
+    let attention_rx = bus.subscribe();
     // Sessions from a previous app run cannot be reattached (yet) — fail them.
     sessions.fail_stale_sessions("app restart");
     let questions = Arc::new(
@@ -330,7 +334,7 @@ pub fn run() {
             tauri::async_runtime::spawn(sessions.clone().run_loop(signal_rx));
             tauri::async_runtime::spawn(diffs.clone().run_invalidation_loop(bus.clone()));
             tauri::async_runtime::spawn(questions.clone().run_loop(bus.clone()));
-            tauri::async_runtime::spawn(attention.clone().run_loop(bus.clone()));
+            tauri::async_runtime::spawn(attention.clone().run_with(attention_rx));
             tauri::async_runtime::spawn(escalations.clone().run_loop(bus.clone()));
             tauri::async_runtime::spawn(checks.clone().run_auto_loop(bus.clone()));
             tauri::async_runtime::spawn(daemon.clone().run_loop(bus.clone()));

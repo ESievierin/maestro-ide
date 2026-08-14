@@ -1644,6 +1644,20 @@ input[type="checkbox"] {
   color: var(--accent);
 }
 
+/* Blast-radius flag on a step: N files outside the diff depend on it. */
+.review-guide-impact {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  font-size: 0.62rem;
+  font-weight: 600;
+  padding: 0 0.25rem;
+  border-radius: var(--radius-sm);
+  color: var(--warning);
+  background: var(--warning-bg);
+}
+
 .review-guide-cat.tests {
   color: var(--success, #9ece6a);
 }

@@ -1,13 +1,10 @@
 import { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../components/Icon";
+import { useImpactReports } from "../state/impactReports";
 import { useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
 import type { ImpactReport, ImpactedFile } from "../types/diffs";
-
-/** Reports survive tab switches within one app run; `signature` records the
- * diff each was computed against so a moved diff reads as stale, not current. */
-const reportCache = new Map<string, { report: ImpactReport; signature: string }>();
 
 /**
  * Blast radius of the branch's diff: which files outside it import or
@@ -26,7 +23,7 @@ export function BlastRadius({
   mergeBase: string;
   knownFiles: string[];
 }) {
-  const cached = reportCache.get(branch);
+  const cached = useImpactReports((s) => s.byBranch[branch]);
   const [report, setReport] = useState<ImpactReport | null>(cached?.report ?? null);
   const [signature, setSignature] = useState<string | null>(cached?.signature ?? null);
   const [busy, setBusy] = useState(false);
@@ -48,7 +45,7 @@ export function BlastRadius({
       setReport(fresh);
       setSignature(currentSignature);
       setOpen(true);
-      reportCache.set(branch, { report: fresh, signature: currentSignature });
+      useImpactReports.getState().set(branch, fresh, currentSignature);
     } catch (e) {
       setError(String(e));
     } finally {

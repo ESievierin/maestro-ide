@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../components/Icon";
+import { stepDependents, useImpactReports } from "../state/impactReports";
 import { askMainAgent } from "../utils/agentAsk";
 import { CATEGORY_LABELS, parseReviewGuide, type GuideStep } from "./reviewGuideSteps";
 
@@ -49,6 +50,10 @@ export function ReviewGuide({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(true);
+  // The branch's blast radius (if the user computed one) — steps whose files
+  // have outside dependents get flagged, so the reviewer knows where a change
+  // ripples beyond the diff and deserves the slow read.
+  const impactReport = useImpactReports((s) => s.byBranch[branch]?.report);
 
   const currentSignature = useMemo(
     () => diffSignature(mergeBase, knownFiles),
@@ -167,6 +172,17 @@ export function ReviewGuide({
                 <span className={`review-guide-cat ${step.category}`}>
                   {CATEGORY_LABELS[step.category]}
                 </span>
+                {(() => {
+                  const dependents = stepDependents(impactReport, step.files);
+                  return dependents > 0 ? (
+                    <span
+                      className="review-guide-impact"
+                      title={`${dependents} file${dependents > 1 ? "s" : ""} outside this diff reference what this step changes (blast radius)`}
+                    >
+                      <Icon name="alert" size={10} /> {dependents}
+                    </span>
+                  ) : null;
+                })()}
               </div>
               {step.why && <p className="review-guide-why">{step.why}</p>}
               <div className="review-guide-files">

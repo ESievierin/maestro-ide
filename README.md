@@ -99,6 +99,14 @@ npm run format:check
 npm test
 ```
 
+## More docs
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — the module map and the invariants the
+  design leans on.
+- [CHANGELOG.md](CHANGELOG.md) — what shipped, grouped by era.
+- [docs/perf-baseline.md](docs/perf-baseline.md) — reference startup/suite
+  numbers for spotting regressions.
+
 ## License
 
 [MIT](LICENSE)

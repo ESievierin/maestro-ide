@@ -266,6 +266,7 @@ export default function App() {
           <Icon name="branch" size={16} className="brand-mark" /> MaestroIDE
         </h1>
         <div className="actions">
+          <MockChip />
           <FleetChip />
           <DaemonChip />
           <AttentionArea count={attentionCount} />
@@ -422,6 +423,28 @@ function FleetChip() {
         </div>
       )}
     </>
+  );
+}
+
+/** Visible only when the sidecar runs the mock engine — a test profile must
+ * never be mistaken for the real thing. */
+function MockChip() {
+  const [mock, setMock] = useState(false);
+  useEffect(() => {
+    void import("@tauri-apps/api/core").then(({ invoke }) =>
+      invoke<boolean>("get_mock_mode")
+        .then(setMock)
+        .catch(() => setMock(false)),
+    );
+  }, []);
+  if (!mock) return null;
+  return (
+    <span
+      className="badge badge-warn mock-chip"
+      title="MAESTRO_SIDECAR_MOCK=1 — agents are simulated, nothing reaches a real model"
+    >
+      <Icon name="alert" size={11} /> mock
+    </span>
   );
 }
 

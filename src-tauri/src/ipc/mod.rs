@@ -625,6 +625,13 @@ pub async fn set_daemon_skip_labels(
     run_core(state.bus.clone(), move || daemon.set_skip_labels(&labels)).await
 }
 
+/// Whether the sidecar runs the mock engine (`MAESTRO_SIDECAR_MOCK=1`) — a test
+/// profile must be visibly distinguishable from the real thing.
+#[tauri::command]
+pub fn get_mock_mode() -> bool {
+    std::env::var("MAESTRO_SIDECAR_MOCK").is_ok_and(|v| v == "1")
+}
+
 /// Whether conversation telemetry (prompts + replies, per `core::telemetry`) is
 /// being recorded. On by default.
 #[tauri::command]

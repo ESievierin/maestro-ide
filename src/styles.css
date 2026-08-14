@@ -1690,6 +1690,11 @@ input[type="checkbox"] {
   cursor: pointer;
 }
 
+.fleet-cost {
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+}
+
 .daemon-task-link:hover .daemon-task-title {
   color: var(--accent);
 }

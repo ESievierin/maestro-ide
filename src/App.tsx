@@ -342,15 +342,22 @@ export default function App() {
 function FleetChip() {
   const [open, setOpen] = useState(false);
   const byBranch = useSessions((s) => s.byBranch);
+  const usage = useSessions((s) => s.usage);
   const select = useWorktrees((s) => s.select);
   const setTab = useWorktrees((s) => s.setTab);
 
   const fleet = useMemo(() => {
-    const rows: { id: string; branch: string; type: string; status: string }[] = [];
+    const rows: { id: string; branch: string; type: string; status: string; cost: number }[] = [];
     for (const [branch, list] of Object.entries(byBranch)) {
       for (const sess of list) {
         if (sess.status === "streaming" || sess.status === "awaiting_input") {
-          rows.push({ id: sess.id, branch, type: sess.session_type, status: sess.status });
+          rows.push({
+            id: sess.id,
+            branch,
+            type: sess.session_type,
+            status: sess.status,
+            cost: usage[sess.id]?.costUsd ?? 0,
+          });
         }
       }
     }
@@ -359,7 +366,7 @@ function FleetChip() {
       a.status === b.status ? a.branch.localeCompare(b.branch) : a.status === "streaming" ? -1 : 1,
     );
     return rows;
-  }, [byBranch]);
+  }, [byBranch, usage]);
 
   if (fleet.length === 0) return null;
   const working = fleet.filter((r) => r.status === "streaming").length;
@@ -405,6 +412,7 @@ function FleetChip() {
                   </span>
                   <span className="attention-message">
                     {SESSION_TYPE_ROLE_LABELS[row.type] ?? row.type}
+                    {row.cost > 0 && <span className="fleet-cost"> ${row.cost.toFixed(2)}</span>}
                   </span>
                   <span className="attention-branch">{row.branch}</span>
                 </button>

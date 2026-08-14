@@ -159,6 +159,22 @@ impl AttentionManager {
         Ok(())
     }
 
+    /// Drop everything except gates in one go (stale failures pile up after a
+    /// restart). Gates survive: they are questions, not notifications — each
+    /// blocks a command until answered in its dialog. Returns how many went.
+    pub fn dismiss_all(&self) -> Result<usize> {
+        let mut items = self.lock()?;
+        let before = items.len();
+        items.retain(|_, item| item.kind == AttentionKind::Gate);
+        let removed = before - items.len();
+        drop(items);
+        if removed > 0 {
+            tracing::debug!(removed, "attention queue cleared");
+            self.publish_updated();
+        }
+        Ok(removed)
+    }
+
     /// Drop every item of a session (its chat was closed, or it was deleted).
     pub fn dismiss_session(&self, session_id: &str) -> Result<()> {
         let before = self.lock()?.len();
@@ -523,6 +539,38 @@ mod tests {
         assert_eq!(mgr.list().unwrap().len(), 1);
         mgr.dismiss_session("s4").unwrap();
         assert!(mgr.list().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dismiss_all_clears_everything_but_gates() {
+        let (mgr, _bus) = manager();
+        mgr.handle(Event::SessionStatusChanged {
+            session_id: "s1".into(),
+            branch: "impl/a".into(),
+            status: SessionStatus::Failed,
+        });
+        mgr.handle(Event::AttentionRequired {
+            source: "line_question".into(),
+            branch: Some("impl/a".into()),
+            session_id: Some("s2".into()),
+            message: "Answer ready".into(),
+        });
+        mgr.handle(Event::GatePending {
+            gate_id: "g1".into(),
+            session_id: "s3".into(),
+            tool: "Bash".into(),
+            kind: "git push".into(),
+            branch: "impl/a".into(),
+            params: Vec::new(),
+            note: None,
+            raw_args: serde_json::json!({}),
+        });
+
+        assert_eq!(mgr.dismiss_all().unwrap(), 2);
+        let left = mgr.list().unwrap();
+        assert_eq!(left.len(), 1, "the gate must survive");
+        assert_eq!(left[0].kind, AttentionKind::Gate);
+        assert_eq!(mgr.dismiss_all().unwrap(), 0, "idempotent on gates only");
     }
 
     #[tokio::test]

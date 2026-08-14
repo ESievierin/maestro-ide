@@ -277,6 +277,7 @@ pub fn run() {
             ipc::run_health_check,
             ipc::list_attention,
             ipc::dismiss_attention,
+            ipc::dismiss_all_attention,
             ipc::refresh_models,
             ipc::set_session_model,
             ipc::set_session_effort,

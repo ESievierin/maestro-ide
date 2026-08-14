@@ -1509,6 +1509,13 @@ pub async fn dismiss_attention(state: State<'_, AppState>, id: String) -> Result
     run_core(state.bus.clone(), move || attention.dismiss(&id)).await
 }
 
+/// Clear the whole queue except gates; returns how many items went.
+#[tauri::command]
+pub async fn dismiss_all_attention(state: State<'_, AppState>) -> Result<usize, String> {
+    let attention = state.attention.clone();
+    run_core(state.bus.clone(), move || attention.dismiss_all()).await
+}
+
 /// Refresh the model list from the CLI (no session, no tokens). The answer arrives as a
 /// `session.models` event, so the selector is never stale after switching sidecar modes.
 #[tauri::command]

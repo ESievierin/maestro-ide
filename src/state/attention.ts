@@ -34,6 +34,8 @@ interface AttentionState {
   fetchNotificationsEnabled: () => Promise<void>;
   fetchDigestEnabled: () => Promise<void>;
   dismiss: (id: string) => Promise<void>;
+  /** Clear everything except gates — they block a command until answered. */
+  dismissAll: () => Promise<void>;
   setNotificationsEnabled: (enabled: boolean) => Promise<void>;
   setDigestEnabled: (enabled: boolean) => Promise<void>;
   clearError: () => void;
@@ -77,6 +79,18 @@ export const useAttention = create<AttentionState>((set) => ({
       await invoke("dismiss_attention", { id });
       set((s) => {
         const items = s.items.filter((i) => i.id !== id);
+        return { items: items.length === 0 ? EMPTY : items };
+      });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  dismissAll: async () => {
+    try {
+      await invoke("dismiss_all_attention");
+      set((s) => {
+        const items = s.items.filter((i) => i.kind === "gate");
         return { items: items.length === 0 ? EMPTY : items };
       });
     } catch (e) {

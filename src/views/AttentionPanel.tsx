@@ -23,10 +23,11 @@ const KIND_ICON: Record<AttentionItem["kind"], IconName> = {
 };
 
 export function AttentionPanel({ onClose }: { onClose: () => void }) {
-  const { items, error, dismiss, clearError } = useAttention();
+  const { items, error, dismiss, dismissAll, clearError } = useAttention();
   const select = useWorktrees((s) => s.select);
   const setTab = useWorktrees((s) => s.setTab);
   useEscapeToClose(onClose);
+  const dismissable = items.filter((i) => i.kind !== "gate").length;
 
   const navigate = (item: AttentionItem) => {
     if (item.branch) {
@@ -53,6 +54,15 @@ export function AttentionPanel({ onClose }: { onClose: () => void }) {
           Needs you <span className="count">({items.length})</span>
         </h2>
         <div className="actions">
+          {dismissable > 1 && (
+            <button
+              className="small ghost"
+              title="Dismiss every item except gates — those block a command until answered"
+              onClick={() => void dismissAll()}
+            >
+              <Icon name="close" size={11} /> Dismiss all
+            </button>
+          )}
           <button
             className="small icon-only"
             title="Settings — notifications and other app-wide toggles"

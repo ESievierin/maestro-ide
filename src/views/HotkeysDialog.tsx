@@ -42,6 +42,7 @@ export function HotkeysDialog({ onClose }: { onClose: () => void }) {
       `${comboFor("tab-chat")} / ${comboFor("tab-diff")} / ${comboFor("tab-notes")}`,
       "Chat / Diff / Notes tab",
     ],
+    [comboFor("needs-you"), "Needs-you drawer"],
     [comboFor("command-palette"), "Command palette"],
   ];
   const groups = [{ title: "Navigate", keys: navigateKeys }, ...STATIC_GROUPS];

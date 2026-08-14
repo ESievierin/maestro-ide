@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { flushTranscripts, useSessions } from "./state/sessions";
 import { EventLog } from "./components/EventLog";
 import { Icon } from "./components/Icon";
@@ -265,6 +265,7 @@ export default function App() {
           <Icon name="branch" size={16} className="brand-mark" /> MaestroIDE
         </h1>
         <div className="actions">
+          <FleetChip />
           <DaemonChip />
           <AttentionArea count={attentionCount} />
           <button
@@ -328,6 +329,101 @@ export default function App() {
       {dialog === "health-check" && <HealthCheckDialog onClose={closeDialog} />}
       {paletteOpen && <CommandPalette onClose={() => setPalette(false)} />}
     </div>
+  );
+}
+
+/** Session-type labels the fleet drawer shows — role names beat raw enum values. */
+const FLEET_TYPE_LABELS: Record<string, string> = {
+  main: "Main agent",
+  red_team: "Red team",
+  review_fix: "Review fix",
+  implementation: "Implementation",
+  research: "Research",
+  manual: "Manual",
+  escalation: "Escalation",
+};
+
+/**
+ * The whole fleet at a glance: how many agents are working (streaming) or
+ * parked on their next instruction (awaiting input) across every worktree,
+ * with a drawer to jump straight to any of them. Complements "Needs you",
+ * which only lists items that block.
+ */
+function FleetChip() {
+  const [open, setOpen] = useState(false);
+  const byBranch = useSessions((s) => s.byBranch);
+  const select = useWorktrees((s) => s.select);
+  const setTab = useWorktrees((s) => s.setTab);
+
+  const fleet = useMemo(() => {
+    const rows: { id: string; branch: string; type: string; status: string }[] = [];
+    for (const [branch, list] of Object.entries(byBranch)) {
+      for (const sess of list) {
+        if (sess.status === "streaming" || sess.status === "awaiting_input") {
+          rows.push({ id: sess.id, branch, type: sess.session_type, status: sess.status });
+        }
+      }
+    }
+    // Working agents first — they're the ones worth watching.
+    rows.sort((a, b) =>
+      a.status === b.status ? a.branch.localeCompare(b.branch) : a.status === "streaming" ? -1 : 1,
+    );
+    return rows;
+  }, [byBranch]);
+
+  if (fleet.length === 0) return null;
+  const working = fleet.filter((r) => r.status === "streaming").length;
+
+  return (
+    <>
+      <button
+        className="small ghost"
+        onClick={() => setOpen((o) => !o)}
+        title={`${working} working, ${fleet.length - working} awaiting input — the whole fleet`}
+      >
+        <Icon name="bot" spin={working > 0} /> Fleet
+        <span className="count-pill">{fleet.length}</span>
+      </button>
+      {open && (
+        <div className="attention-panel fleet-panel">
+          <div className="panel-header">
+            <h2>
+              Fleet{" "}
+              <span className="count">
+                ({working} working · {fleet.length - working} awaiting)
+              </span>
+            </h2>
+            <div className="actions">
+              <button className="small icon-only" onClick={() => setOpen(false)} title="Close">
+                <Icon name="close" />
+              </button>
+            </div>
+          </div>
+          <ul className="attention-items">
+            {fleet.map((row) => (
+              <li key={row.id}>
+                <button
+                  className="attention-main"
+                  onClick={() => {
+                    select(row.branch);
+                    setTab("chat");
+                    setOpen(false);
+                  }}
+                >
+                  <span className="badge badge-active">
+                    {row.status === "streaming" ? "working" : "awaiting"}
+                  </span>
+                  <span className="attention-message">
+                    {FLEET_TYPE_LABELS[row.type] ?? row.type}
+                  </span>
+                  <span className="attention-branch">{row.branch}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
   );
 }
 

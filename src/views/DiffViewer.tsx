@@ -904,6 +904,7 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
           <div className="diff-files-panel">
             <ReviewGuide
               branch={branch}
+              mergeBase={snapshot?.merge_base ?? ""}
               knownFiles={(snapshot?.files ?? []).map((f) => f.path)}
               onSelect={setSelectedPath}
               viewed={viewed}

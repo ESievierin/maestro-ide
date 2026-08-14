@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../components/Icon";
 import { askMainAgent } from "../utils/agentAsk";
@@ -8,8 +8,15 @@ const GUIDE_MODEL = "sonnet";
 const GUIDE_EFFORT = "high";
 
 /** Guides + progress survive tab switches and remounts within one app run;
- * regeneration is always one click away, so nothing here needs persisting. */
-const guideCache = new Map<string, { steps: GuideStep[]; done: Set<number> }>();
+ * regeneration is always one click away, so nothing here needs persisting.
+ * `signature` records the diff the guide was built against, so a moved diff
+ * shows as stale instead of silently guiding through an outdated roadmap. */
+const guideCache = new Map<string, { steps: GuideStep[]; done: Set<number>; signature: string }>();
+
+/** What the guide was generated against: the merge-base plus the file set. */
+function diffSignature(mergeBase: string, files: string[]): string {
+  return `${mergeBase}:${[...files].sort().join("\n")}`;
+}
 
 /**
  * The review roadmap: the branch's main agent reads the whole diff and lays
@@ -19,12 +26,15 @@ const guideCache = new Map<string, { steps: GuideStep[]; done: Set<number> }>();
  */
 export function ReviewGuide({
   branch,
+  mergeBase,
   knownFiles,
   onSelect,
   viewed,
   onMarkViewed,
 }: {
   branch: string;
+  /** The current snapshot's merge-base — part of the staleness signature. */
+  mergeBase: string;
   knownFiles: string[];
   onSelect: (path: string) => void;
   /** The diff list's per-file viewed set — the guide shows progress against it. */
@@ -35,9 +45,16 @@ export function ReviewGuide({
   const cached = guideCache.get(branch);
   const [steps, setSteps] = useState<GuideStep[] | null>(cached?.steps ?? null);
   const [done, setDone] = useState<Set<number>>(cached?.done ?? new Set());
+  const [signature, setSignature] = useState<string | null>(cached?.signature ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(true);
+
+  const currentSignature = useMemo(
+    () => diffSignature(mergeBase, knownFiles),
+    [mergeBase, knownFiles],
+  );
+  const stale = steps !== null && signature !== null && signature !== currentSignature;
 
   const generate = async () => {
     setBusy(true);
@@ -62,8 +79,9 @@ export function ReviewGuide({
       const fresh = new Set<number>();
       setSteps(parsed);
       setDone(fresh);
+      setSignature(currentSignature);
       setOpen(true);
-      guideCache.set(branch, { steps: parsed, done: fresh });
+      guideCache.set(branch, { steps: parsed, done: fresh, signature: currentSignature });
     } finally {
       setBusy(false);
     }
@@ -96,6 +114,14 @@ export function ReviewGuide({
           <Icon name={open ? "chevron-down" : "chevron-right"} size={12} /> Review guide
           {steps && ` · ${done.size}/${steps.length}`}
         </button>
+        {stale && (
+          <span
+            className="review-guide-stale"
+            title="The diff changed since this guide was built — regenerate it"
+          >
+            stale
+          </span>
+        )}
         <button
           className="small ghost"
           disabled={busy}

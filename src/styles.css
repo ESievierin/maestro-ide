@@ -1686,6 +1686,17 @@ input[type="checkbox"] {
   align-self: center;
 }
 
+.review-guide-stale {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 0 0.25rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--warning, #e0af68);
+}
+
 .review-guide-empty {
   color: var(--text-tertiary);
   font-size: 0.75rem;

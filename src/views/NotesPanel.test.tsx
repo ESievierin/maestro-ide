@@ -32,6 +32,7 @@ const worktree = {
   base_branch: "main",
   pinned: false,
   status: null,
+  last_commit_subject: null,
 };
 
 afterEach(() => {

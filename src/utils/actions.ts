@@ -82,6 +82,12 @@ export async function sendRedTeamFindings(branch: string): Promise<void> {
     const parent = await invoke<string>("send_red_team_findings", { branch });
     useWorktrees.getState().select(parent);
     useWorktrees.getState().setTab("chat");
+    // The findings went to the parent's MAIN agent — focus that tab, not
+    // whichever session the panel showed last.
+    const main = (useSessions.getState().byBranch[parent] ?? []).find(
+      (s) => s.session_type === "main" && !isTerminalStatus(s.status),
+    );
+    if (main) useSessions.getState().requestFocus(main.id);
     useToasts.getState().push({
       severity: "info",
       code: "red-team",

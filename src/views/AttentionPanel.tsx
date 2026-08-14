@@ -1,6 +1,7 @@
 import { Icon, type IconName } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { useAttention } from "../state/attention";
+import { useSessions } from "../state/sessions";
 import { useUI } from "../state/ui";
 import { useWorktrees } from "../state/worktrees";
 import type { AttentionItem } from "../types/attention";
@@ -39,6 +40,8 @@ export function AttentionPanel({ onClose }: { onClose: () => void }) {
         setTab(item.target);
       } else {
         setTab("chat");
+        // The item names its session — land on that tab, not the last one.
+        if (item.session_id) useSessions.getState().requestFocus(item.session_id);
       }
     }
     if (item.target !== "gate") {

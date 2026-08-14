@@ -1402,6 +1402,18 @@ export function SessionPanel({ worktree }: { worktree: WorktreeInfo }) {
     if (selectedId) void loadTranscript(selectedId);
   }, [selectedId, loadTranscript]);
 
+  // Navigation actions (attention items, fleet rows, findings hand-offs) name
+  // the conversation they mean; landing on whatever tab happened to be
+  // selected last buries it behind an extra click.
+  const focusRequest = useSessions((s) => s.focusRequest);
+  useEffect(() => {
+    if (!focusRequest) return;
+    if ((sessions ?? []).some((s) => s.id === focusRequest)) {
+      setSelectedId(focusRequest);
+      useSessions.getState().clearFocus();
+    }
+  }, [focusRequest, sessions]);
+
   useEffect(() => {
     // Tab labels read the first prompt out of the transcript — load every tab's
     // history, not just the selected one, so restarted sessions aren't all

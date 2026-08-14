@@ -405,6 +405,8 @@ function FleetChip() {
                   onClick={() => {
                     select(row.branch);
                     setTab("chat");
+                    // The row IS a session — land on its tab specifically.
+                    useSessions.getState().requestFocus(row.id);
                     setOpen(false);
                   }}
                 >

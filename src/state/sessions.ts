@@ -130,6 +130,12 @@ interface SessionsState {
   /** `reconnect` | `enable` | `disable` one MCP server of a live session. */
   mcpAction: (sessionId: string, server: string, action: string) => Promise<void>;
   clearError: () => void;
+  /** Ask the session panel to select this session's tab — set by navigation
+   * actions (attention items, fleet rows, findings hand-offs) that know which
+   * conversation the user actually wants to see. */
+  focusRequest: string | null;
+  requestFocus: (sessionId: string) => void;
+  clearFocus: () => void;
 }
 
 /**
@@ -210,6 +216,7 @@ export const useSessions = create<SessionsState>((set, get) => ({
   usage: {},
   rateLimit: null,
   error: null,
+  focusRequest: null,
   presets: [],
 
   refreshModels: async () => {
@@ -571,6 +578,9 @@ export const useSessions = create<SessionsState>((set, get) => ({
   },
 
   clearError: () => set({ error: null }),
+
+  requestFocus: (sessionId) => set({ focusRequest: sessionId }),
+  clearFocus: () => set({ focusRequest: null }),
 }));
 
 /** Transcript entry for an answered dialog, built from the answer alone. */

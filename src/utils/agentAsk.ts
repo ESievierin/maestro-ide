@@ -117,11 +117,43 @@ export async function askViaFollowup(opts: {
   return waitForTurn(opts.sessionId, fromIndex, opts.timeoutMs);
 }
 
+/** Wait until `sessionId` is idle (`awaiting_input`). Sending while another
+ * turn streams wouldn't corrupt anything — the SDK queues messages — but
+ * `waitForTurn` would latch onto the *in-flight* turn's completion and return
+ * the wrong task's text as the answer. `false` on timeout, disappearance, or
+ * a terminal status. */
+function waitForIdle(sessionId: string, branch: string, timeoutMs = 120_000): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsub();
+      resolve(ok);
+    };
+    const check = () => {
+      const session = (useSessions.getState().byBranch[branch] ?? []).find(
+        (s) => s.id === sessionId,
+      );
+      if (!session || isTerminalStatus(session.status)) return finish(false);
+      if (session.status === "awaiting_input") finish(true);
+    };
+    check();
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    const unsub = useSessions.subscribe(check);
+  });
+}
+
 /**
  * Resolve (creating if necessary) the branch's persistent main-agent session,
  * send it `prompt`, and wait for the reply — the primitive behind PR review
  * drafts and commit/PR-description generation now that they all go through
  * one continuous conversation instead of a throwaway resumed session.
+ *
+ * Waits for the agent to go idle first: it may be mid-turn on something else
+ * (a daemon review, a revival's opening turn), and the answer must belong to
+ * *this* question.
  */
 export async function askMainAgent(opts: {
   branch: string;
@@ -132,6 +164,13 @@ export async function askMainAgent(opts: {
 }): Promise<AskResult | null> {
   const session = await useSessions.getState().ensureMain(opts.branch);
   if (!session) return null;
+  const idle = await waitForIdle(session.id, opts.branch);
+  if (!idle) {
+    useSessions.setState({
+      error: "The main agent is busy with another turn — try again when it finishes.",
+    });
+    return null;
+  }
   const { text, ok } = await askViaFollowup({
     sessionId: session.id,
     prompt: opts.prompt,

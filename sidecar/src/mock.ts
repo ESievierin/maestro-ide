@@ -101,20 +101,28 @@ export class MockSession implements SessionHandle {
     void this.runTurn(prompt + suffix);
   }
 
+  /** Trigger words match as standalone tokens, never substrings — a real
+   * prompt mentioning "TASK_NOTES.md" must not trip the "ASK" scenario.
+   * `_` is a word character, so compound triggers (REVIEW_COMMENTS) still
+   * match whole and "REVIEW_PLAN.md" does not trip "PLAN". */
+  private triggered(prompt: string, word: string): boolean {
+    return new RegExp(`\\b${word}\\b`).test(prompt);
+  }
+
   private async runTurn(prompt: string): Promise<void> {
     this.interrupted = false;
     this.emit({ type: "status", session_id: this.sessionId, status: "streaming" });
 
-    if (prompt.includes("CRASH")) {
+    if (this.triggered(prompt, "CRASH")) {
       await sleep(20);
       process.exit(13);
     }
 
-    if (prompt.includes("PERMISSION") || prompt.includes("GATE")) {
+    if (this.triggered(prompt, "PERMISSION") || this.triggered(prompt, "GATE")) {
       const requestId = `mock-perm-${this.sessionId}-${++this.permissionCounter}`;
       // "GATE" exercises the T7 approval path: a push+PR command the gate must
       // intercept with editable PR fields. Plain "PERMISSION" stays a chat prompt.
-      const command = prompt.includes("GATE")
+      const command = this.triggered(prompt, "GATE")
         ? 'git push -u origin HEAD && gh pr create --title "Mock PR" --body "Body from the agent"'
         : "echo mock";
       const allowed = await new Promise<boolean>((resolve) => {
@@ -144,7 +152,7 @@ export class MockSession implements SessionHandle {
       });
     }
 
-    if (prompt.includes("THINK")) {
+    if (this.triggered(prompt, "THINK")) {
       for (const part of ["Let me think. ", "The mock has two options. ", "Option two it is."]) {
         if (this.interrupted || this.closed) break;
         this.emit({ type: "thinking_delta", session_id: this.sessionId, text: part });
@@ -152,7 +160,7 @@ export class MockSession implements SessionHandle {
       }
     }
 
-    if (prompt.includes("TOOLS")) {
+    if (this.triggered(prompt, "TOOLS")) {
       const id = `mock-read-${++this.toolCounter}`;
       this.emit({
         type: "tool_use",
@@ -171,7 +179,7 @@ export class MockSession implements SessionHandle {
       });
     }
 
-    if (prompt.includes("EDIT_FILE")) {
+    if (this.triggered(prompt, "EDIT_FILE")) {
       // Tests the diff-viewer "jump" button: a real Edit call reports an
       // absolute path, same as this — built from the session's own cwd so it
       // resolves to whatever worktree actually spawned this mock session.
@@ -198,7 +206,7 @@ export class MockSession implements SessionHandle {
       });
     }
 
-    if (prompt.includes("SUBAGENT")) {
+    if (this.triggered(prompt, "SUBAGENT")) {
       const id = `mock-task-${++this.toolCounter}`;
       this.emit({
         type: "tool_use",
@@ -231,7 +239,7 @@ export class MockSession implements SessionHandle {
       });
     }
 
-    if (prompt.includes("TODO")) {
+    if (this.triggered(prompt, "TODO")) {
       this.emit({
         type: "todos",
         session_id: this.sessionId,
@@ -243,7 +251,7 @@ export class MockSession implements SessionHandle {
       });
     }
 
-    if (prompt.includes("DENY")) {
+    if (this.triggered(prompt, "DENY")) {
       this.emit({
         type: "permission_denied",
         session_id: this.sessionId,
@@ -253,7 +261,7 @@ export class MockSession implements SessionHandle {
       });
     }
 
-    if (prompt.includes("LIMIT")) {
+    if (this.triggered(prompt, "LIMIT")) {
       this.emit({
         type: "rate_limit",
         session_id: this.sessionId,
@@ -264,7 +272,7 @@ export class MockSession implements SessionHandle {
       });
     }
 
-    if (prompt.includes("HOOKCHECK")) {
+    if (this.triggered(prompt, "HOOKCHECK")) {
       // Exercises the PreToolUse path: the core decides before the "tool" runs.
       const requestId = `mock-gate-${this.sessionId}-${++this.gateCounter}`;
       const verdict = await new Promise<string>((resolve) => {
@@ -286,7 +294,7 @@ export class MockSession implements SessionHandle {
       });
     }
 
-    if (prompt.includes("ESCALATE")) {
+    if (this.triggered(prompt, "ESCALATE")) {
       const requestId = `mock-esc-${this.sessionId}-${++this.escalationCounter}`;
       const result = await new Promise<string>((resolve) => {
         this.pendingEscalations.set(requestId, resolve);
@@ -304,7 +312,7 @@ export class MockSession implements SessionHandle {
       });
     }
 
-    if (prompt.includes("AUTH")) {
+    if (this.triggered(prompt, "AUTH")) {
       const requestId = `mock-elicit-${this.sessionId}-${++this.dialogCounter}`;
       const answer = await new Promise<string>((resolve) => {
         this.pendingDialogs.set(requestId, resolve);
@@ -329,7 +337,7 @@ export class MockSession implements SessionHandle {
       });
     }
 
-    if (prompt.includes("PLAN")) {
+    if (this.triggered(prompt, "PLAN")) {
       const requestId = `mock-plan-${this.sessionId}-${++this.dialogCounter}`;
       const answer = await new Promise<string>((resolve) => {
         this.pendingDialogs.set(requestId, resolve);
@@ -350,7 +358,7 @@ export class MockSession implements SessionHandle {
       });
     }
 
-    if (prompt.includes("REVIEW_COMMENTS")) {
+    if (this.triggered(prompt, "REVIEW_COMMENTS")) {
       const requestId = `mock-review-comments-${this.sessionId}-${++this.dialogCounter}`;
       const answer = await new Promise<string>((resolve) => {
         this.pendingDialogs.set(requestId, resolve);
@@ -385,7 +393,7 @@ export class MockSession implements SessionHandle {
       });
     }
 
-    if (prompt.includes("ASK")) {
+    if (this.triggered(prompt, "ASK")) {
       const requestId = `mock-dialog-${this.sessionId}-${++this.dialogCounter}`;
       const answer = await new Promise<string>((resolve) => {
         this.pendingDialogs.set(requestId, resolve);

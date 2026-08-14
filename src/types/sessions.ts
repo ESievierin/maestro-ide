@@ -281,6 +281,17 @@ export const SESSION_TYPE_LABELS: Record<string, string> = {
   review_fix: "review fix (can ask the original agent)",
 };
 
+/** Short role names for wherever a session type is displayed raw. */
+export const SESSION_TYPE_ROLE_LABELS: Record<string, string> = {
+  manual: "Manual",
+  research: "Research",
+  implementation: "Implementation",
+  review_fix: "Review fix",
+  escalation: "Escalation",
+  main: "Main agent",
+  red_team: "Red team",
+};
+
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 /**

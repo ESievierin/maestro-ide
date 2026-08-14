@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../components/Icon";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
+import { SESSION_TYPE_ROLE_LABELS } from "../types/sessions";
 import type { SessionSearchResult } from "../types/sessions";
 import { useUI } from "../state/ui";
 import { useWorktrees } from "../state/worktrees";
@@ -90,7 +91,9 @@ export function SessionSearchDialog({ onClose }: { onClose: () => void }) {
               <li key={r.session_id} onClick={() => jumpTo(r)}>
                 <div className="session-search-result-head">
                   <Icon name="branch" size={11} /> {r.branch}
-                  <span className="badge badge-muted">{r.session_type}</span>
+                  <span className="badge badge-muted">
+                    {SESSION_TYPE_ROLE_LABELS[r.session_type] ?? r.session_type}
+                  </span>
                   <span className={`badge badge-${r.status === "failed" ? "failed" : "muted"}`}>
                     {r.status.replace("_", " ")}
                   </span>

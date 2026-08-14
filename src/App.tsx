@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { flushTranscripts, useSessions } from "./state/sessions";
+import { SESSION_TYPE_ROLE_LABELS } from "./types/sessions";
 import { EventLog } from "./components/EventLog";
 import { Icon } from "./components/Icon";
 import { Toasts } from "./components/Toasts";
@@ -332,17 +333,6 @@ export default function App() {
   );
 }
 
-/** Session-type labels the fleet drawer shows — role names beat raw enum values. */
-const FLEET_TYPE_LABELS: Record<string, string> = {
-  main: "Main agent",
-  red_team: "Red team",
-  review_fix: "Review fix",
-  implementation: "Implementation",
-  research: "Research",
-  manual: "Manual",
-  escalation: "Escalation",
-};
-
 /**
  * The whole fleet at a glance: how many agents are working (streaming) or
  * parked on their next instruction (awaiting input) across every worktree,
@@ -414,7 +404,7 @@ function FleetChip() {
                     {row.status === "streaming" ? "working" : "awaiting"}
                   </span>
                   <span className="attention-message">
-                    {FLEET_TYPE_LABELS[row.type] ?? row.type}
+                    {SESSION_TYPE_ROLE_LABELS[row.type] ?? row.type}
                   </span>
                   <span className="attention-branch">{row.branch}</span>
                 </button>

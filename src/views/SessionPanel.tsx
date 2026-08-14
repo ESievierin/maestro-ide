@@ -25,6 +25,7 @@ import {
   PERMISSION_MODES,
   MAX_ATTACHMENT_BYTES,
   READ_ONLY_MODE,
+  SESSION_TYPE_ROLE_LABELS,
   SESSION_TYPES,
   THINKING_LABELS,
   THINKING_OPTIONS,
@@ -40,14 +41,6 @@ import { QuestionDialog } from "./QuestionDialog";
 
 const DEFAULT_OPTION: SelectMenuOption = { value: "", label: "Default" };
 
-const SESSION_TYPE_SHORT_LABELS: Record<string, string> = {
-  manual: "Manual",
-  research: "Research",
-  implementation: "Implementation",
-  review_fix: "Review fix",
-  main: "Main agent",
-  red_team: "Red team",
-};
 const SESSION_TYPE_DESCRIPTIONS: Record<string, string> = {
   manual: "No extra behaviour",
   research: "Read-only work",
@@ -58,7 +51,7 @@ const SESSION_TYPE_DESCRIPTIONS: Record<string, string> = {
 };
 const SESSION_TYPE_MENU_OPTIONS: SelectMenuOption[] = SESSION_TYPES.map((t) => ({
   value: t,
-  label: SESSION_TYPE_SHORT_LABELS[t] ?? t,
+  label: SESSION_TYPE_ROLE_LABELS[t] ?? t,
   description: SESSION_TYPE_DESCRIPTIONS[t],
 }));
 

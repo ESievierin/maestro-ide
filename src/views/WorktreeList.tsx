@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Icon, StatusDot } from "../components/Icon";
 import { useAttention } from "../state/attention";
+import { useBranchUsage } from "../state/branchUsage";
 import { useChecks } from "../state/checks";
 import { useDiffs } from "../state/diffs";
 import { useUI } from "../state/ui";
@@ -27,14 +28,16 @@ function StatusBadges({ wt }: { wt: WorktreeInfo }) {
   const attention = useAttention((s) =>
     wt.branch ? s.items.filter((i) => i.branch === wt.branch).length : 0,
   );
-  // Cost accumulated this app run across the branch's sessions — a number, so
-  // the selector stays referentially stable for zustand.
-  const cost = useSessions((s) =>
+  // Lifetime cost from the store (survives restarts); the in-memory sum only
+  // fills the sub-second gap before the aggregate refetch lands.
+  const runCost = useSessions((s) =>
     (wt.branch ? (s.byBranch[wt.branch] ?? []) : []).reduce(
       (sum, sess) => sum + (s.usage[sess.id]?.costUsd ?? 0),
       0,
     ),
   );
+  const lifetimeCost = useBranchUsage((s) => (wt.branch ? (s.costByBranch[wt.branch] ?? 0) : 0));
+  const cost = Math.max(lifetimeCost, runCost);
   // The worst context pressure among the branch's live sessions — a background
   // agent quietly running its window to the wall deserves a visible warning.
   const contextPercent = useSessions((s) =>
@@ -107,7 +110,7 @@ function StatusBadges({ wt }: { wt: WorktreeInfo }) {
         </span>
       )}
       {cost > 0 && (
-        <span className="badge badge-muted" title="Agent cost on this branch (this app run)">
+        <span className="badge badge-muted" title="Agent cost on this branch (all time)">
           ${cost.toFixed(2)}
         </span>
       )}
@@ -208,6 +211,8 @@ export function WorktreeList() {
   useEffect(() => {
     // refresh is a stable zustand action; run once on mount.
     void refresh();
+    // Lifetime cost decoration; refreshed by usage events afterwards.
+    void useBranchUsage.getState().fetch();
   }, [refresh]);
 
   const onSync = async (branch: string) => {

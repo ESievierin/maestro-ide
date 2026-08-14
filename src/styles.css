@@ -3029,6 +3029,13 @@ kbd {
   background: var(--accent-bg);
 }
 
+/* Compact inline filter among the event drawer's header buttons. */
+.event-filter {
+  width: 14rem;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.4rem;
+}
+
 /* Query input + role filter share one row; the input takes the slack. */
 .session-search-controls {
   display: flex;

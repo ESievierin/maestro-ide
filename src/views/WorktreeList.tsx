@@ -206,12 +206,26 @@ export function WorktreeList() {
   };
 
   const normalizedFilter = filter.trim().toLowerCase();
+  const matchesFilter = (wt: WorktreeInfo) =>
+    (wt.branch ?? "").toLowerCase().includes(normalizedFilter) ||
+    (wt.task_id ?? "").toLowerCase().includes(normalizedFilter);
+  // A match keeps its family: filtering by the parent must not hide its
+  // red-team child (and vice versa) — the nesting would silently lie.
   const filteredWorktrees = normalizedFilter
-    ? worktrees.filter(
-        (wt) =>
-          (wt.branch ?? "").toLowerCase().includes(normalizedFilter) ||
-          (wt.task_id ?? "").toLowerCase().includes(normalizedFilter),
-      )
+    ? worktrees.filter((wt) => {
+        if (matchesFilter(wt)) return true;
+        const isChildRow = (wt.branch ?? "").startsWith("redteam/");
+        if (isChildRow) {
+          const parent = worktrees.find((p) => p.branch === wt.base_branch);
+          return parent !== undefined && matchesFilter(parent);
+        }
+        return worktrees.some(
+          (c) =>
+            (c.branch ?? "").startsWith("redteam/") &&
+            c.base_branch === wt.branch &&
+            matchesFilter(c),
+        );
+      })
     : worktrees;
   // Pinned worktrees float to the top as a group; a stable sort keeps every
   // other relative ordering (creation order within each group) untouched.

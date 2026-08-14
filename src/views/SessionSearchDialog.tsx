@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../components/Icon";
+import { SelectMenu, type SelectMenuOption } from "../components/SelectMenu";
 import { useEscapeToClose } from "../hooks/useEscapeToClose";
 import { SESSION_TYPE_ROLE_LABELS } from "../types/sessions";
 import type { SessionSearchResult } from "../types/sessions";
@@ -11,6 +12,11 @@ import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 const MIN_QUERY_LENGTH = 2;
 const DEBOUNCE_MS = 250;
 
+const ROLE_FILTER_OPTIONS: SelectMenuOption[] = [
+  { value: "", label: "All roles" },
+  ...Object.entries(SESSION_TYPE_ROLE_LABELS).map(([value, label]) => ({ value, label })),
+];
+
 /**
  * Substring search across every session's transcript, on every branch — not
  * just the one currently open. A real project accumulates history worth
@@ -18,11 +24,13 @@ const DEBOUNCE_MS = 250;
  */
 export function SessionSearchDialog({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("");
+  const [role, setRole] = useState("");
   const [results, setResults] = useState<SessionSearchResult[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   useEscapeToClose(onClose);
+  const shown = role ? results.filter((r) => r.session_type === role) : results;
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -57,13 +65,21 @@ export function SessionSearchDialog({ onClose }: { onClose: () => void }) {
         <h3>
           <Icon name="search" /> Search session history
         </h3>
-        <input
-          ref={inputRef}
-          type="text"
-          placeholder="Search every branch's prompts and replies…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+        <div className="session-search-controls">
+          <input
+            ref={inputRef}
+            type="text"
+            placeholder="Search every branch's prompts and replies…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <SelectMenu
+            value={role}
+            options={ROLE_FILTER_OPTIONS}
+            title="Narrow the hits to one session role"
+            onChange={setRole}
+          />
+        </div>
 
         {error && (
           <p className="error-banner" onClick={() => setError(null)} title="Click to dismiss">
@@ -77,17 +93,20 @@ export function SessionSearchDialog({ onClose }: { onClose: () => void }) {
           </p>
         )}
 
-        {!busy && query.trim().length >= MIN_QUERY_LENGTH && results.length === 0 && (
-          <p className="empty">No sessions mention "{query.trim()}".</p>
+        {!busy && query.trim().length >= MIN_QUERY_LENGTH && shown.length === 0 && (
+          <p className="empty">
+            No {role ? `${SESSION_TYPE_ROLE_LABELS[role] ?? role} ` : ""}sessions mention "
+            {query.trim()}".
+          </p>
         )}
 
         {query.trim().length > 0 && query.trim().length < MIN_QUERY_LENGTH && (
           <p className="hint">Keep typing — at least {MIN_QUERY_LENGTH} characters.</p>
         )}
 
-        {results.length > 0 && (
+        {shown.length > 0 && (
           <ul className="session-search-results">
-            {results.map((r) => (
+            {shown.map((r) => (
               <li key={r.session_id} onClick={() => jumpTo(r)}>
                 <div className="session-search-result-head">
                   <Icon name="branch" size={11} /> {r.branch}

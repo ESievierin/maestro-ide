@@ -3029,6 +3029,16 @@ kbd {
   background: var(--accent-bg);
 }
 
+/* Query input + role filter share one row; the input takes the slack. */
+.session-search-controls {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.session-search-controls input {
+  flex: 1;
+}
+
 /* The preview shares the editor's box so toggling doesn't jump the layout. */
 .prompt-preview {
   overflow: auto;

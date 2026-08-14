@@ -61,6 +61,7 @@ impl RedTeamManager {
     /// changes without being asked. Run as a background task.
     pub async fn run_auto_loop(self: Arc<Self>, bus: EventBus) {
         let mut rx = bus.subscribe();
+        tracing::debug!("red-team auto loop started");
         loop {
             match rx.recv().await {
                 Ok(Event::SessionStatusChanged {
@@ -88,6 +89,7 @@ impl RedTeamManager {
             .flatten()
             .is_some_and(|v| v == "true");
         if !enabled {
+            tracing::debug!(branch, "red_team_auto: disabled");
             return;
         }
         // Only a finished *implementation* session means "new code to attack" —
@@ -99,6 +101,11 @@ impl RedTeamManager {
             .flatten()
             .is_some_and(|s| s.session_type == SessionType::Implementation);
         if !is_implementation {
+            tracing::debug!(
+                branch,
+                session_id,
+                "red_team_auto: not an implementation session"
+            );
             return;
         }
         // A live antagonist is already on it; re-arming now would just fight it.

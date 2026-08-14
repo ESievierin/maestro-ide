@@ -16,6 +16,7 @@ pub mod notes;
 pub mod pr;
 pub mod prompts;
 pub mod questions;
+pub mod redteam;
 pub mod session;
 pub mod store;
 pub mod telemetry;

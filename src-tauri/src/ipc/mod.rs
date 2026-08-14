@@ -64,6 +64,7 @@ pub struct AppState {
     pub daemon: Arc<DaemonManager>,
     pub compose: Arc<ComposeManager>,
     pub prs: Arc<PrManager>,
+    pub redteam: Arc<crate::core::redteam::RedTeamManager>,
 }
 
 /// Forward every bus event to the frontend over a single Tauri event channel.
@@ -219,7 +220,7 @@ pub async fn ensure_main_session(
 
 /// Branch-name prefix identifying red-team worktrees; the rest of the name is
 /// the parent branch with `/` flattened, so the operation is idempotent.
-const RED_TEAM_PREFIX: &str = "redteam/";
+const RED_TEAM_PREFIX: &str = crate::core::redteam::RED_TEAM_PREFIX;
 
 /// Where a red-team session writes its findings, in its worktree root — the
 /// same file the notes pipeline treats as that branch's record.
@@ -232,117 +233,8 @@ const RED_TEAM_REPORT: &str = crate::core::notes::RED_TEAM_FILE;
 /// parent's main agent through `send_red_team_findings`, human in the middle.
 #[tauri::command]
 pub async fn start_red_team(state: State<'_, AppState>, branch: String) -> Result<Session, String> {
-    let worktrees = state.worktrees.clone();
-    let sessions = state.sessions.clone();
-    let diffs = state.diffs.clone();
-    let notes = state.notes.clone();
-    let prompts = state.prompts.clone();
-    let store = state.store.clone();
-    let impact = state.impact.clone();
-    run_core(state.bus.clone(), move || {
-        if branch.starts_with(RED_TEAM_PREFIX) {
-            return Err(MaestroError::InvalidData {
-                message: "this already is a red-team worktree — red-team its parent instead".into(),
-            });
-        }
-        // The child branches off the parent's *committed* state, so the file
-        // list under attack is the committed diff, not the working tree —
-        // recomputed, not cached: the user typically commits right before
-        // red-teaming, and a stale snapshot would see an empty branch diff.
-        let snapshot = diffs.refresh(&branch, DiffScope::Branch)?;
-        let files: String = snapshot
-            .files
-            .iter()
-            .map(|f| format!("{} {}", f.status, f.path))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if files.is_empty() {
-            return Err(MaestroError::InvalidData {
-                message: format!(
-                    "no committed changes on {branch} vs {} — commit first; the red team attacks committed code",
-                    snapshot.base
-                ),
-            });
-        }
-
-        let child_name = format!("{RED_TEAM_PREFIX}{}", branch.replace('/', "-"));
-        let child = worktrees.ensure_named(&child_name, &branch)?;
-        let cwd = child.path.to_string_lossy().into_owned();
-        // Every worktree gets its main agent, this one included.
-        sessions.ensure_main(&child_name, &cwd, None, None)?;
-
-        // The dependents of the change are prime hunting ground; best-effort —
-        // a failed scan must never block the attack itself.
-        let impacted = match impact.analyze(&branch) {
-            Ok(report) => {
-                let lines: Vec<String> = report
-                    .impacted
-                    .iter()
-                    .take(30)
-                    .map(|f| format!("{} ({}, ring {})", f.path, f.kind, f.distance))
-                    .collect();
-                if lines.is_empty() {
-                    "(no outside dependents found)".to_string()
-                } else {
-                    lines.join("\n")
-                }
-            }
-            Err(err) => {
-                tracing::debug!(error = %err, "impact scan for the red-team prompt failed");
-                "(blast-radius scan unavailable)".to_string()
-            }
-        };
-
-        let branch_row = store.get_branch(&branch).ok().flatten();
-        let mut vars = std::collections::HashMap::new();
-        vars.insert("parent_branch".to_string(), branch.clone());
-        vars.insert("base".to_string(), snapshot.base.clone());
-        vars.insert("impacted".to_string(), impacted);
-        vars.insert(
-            "task_id".to_string(),
-            branch_row
-                .and_then(|b| b.task_id)
-                .unwrap_or_else(|| "(none)".to_string()),
-        );
-        vars.insert("files".to_string(), files);
-        vars.insert(
-            "notes".to_string(),
-            notes.current_text(&branch).unwrap_or_else(|| {
-                "No TASK_NOTES.md on the parent branch — the implementer left no record.".into()
-            }),
-        );
-        let prompt = prompts.render("red-team", &vars)?;
-
-        // Configurable bucket, same idea as the daemon's: absent/empty means
-        // the session default.
-        let setting = |key: &str| {
-            store
-                .get_setting(key)
-                .ok()
-                .flatten()
-                .filter(|v| !v.trim().is_empty())
-        };
-        sessions.spawn(SpawnParams {
-            branch: child_name,
-            cwd,
-            session_type: SessionType::RedTeam,
-            model: setting(crate::core::config::SETTING_RED_TEAM_MODEL),
-            effort: setting(crate::core::config::SETTING_RED_TEAM_EFFORT),
-            // Writes tests autonomously in its own isolated worktree; bash still
-            // prompts, and commit/push still hit the gate like everyone else's.
-            permission_mode: Some("acceptEdits".into()),
-            thinking: None,
-            // The review profile carries ask_original_agent — "is this behavior
-            // intended?" goes to the parent's implementer instead of being
-            // guessed. The profile's other tool posts PR comments; that's not
-            // the antagonist's job, so it's withheld.
-            tools_profile: Some(crate::core::session::REVIEW_TOOLS_PROFILE.to_string()),
-            disallowed_tools: vec!["mcp__maestro__submit_review_comments".to_string()],
-            prompt,
-            resume_from: None,
-        })
-    })
-    .await
+    let redteam = state.redteam.clone();
+    run_core(state.bus.clone(), move || redteam.launch(&branch)).await
 }
 
 /// Read a red-team worktree's REDTEAM.md and hand it to the parent branch's

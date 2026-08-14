@@ -204,6 +204,16 @@ pub fn run() {
         bus.clone(),
     ));
 
+    let redteam = Arc::new(core::redteam::RedTeamManager::new(
+        worktrees.clone(),
+        sessions.clone(),
+        diffs.clone(),
+        notes.clone(),
+        prompts.clone(),
+        store.clone(),
+        impact.clone(),
+    ));
+
     let state = AppState {
         bus: bus.clone(),
         store,
@@ -220,6 +230,7 @@ pub fn run() {
         daemon: daemon.clone(),
         compose,
         prs,
+        redteam: redteam.clone(),
     };
 
     let sessions_for_shutdown = sessions.clone();

@@ -956,7 +956,11 @@ export function DiffViewer({ worktree }: { worktree: WorktreeInfo }) {
                 <li className="diff-files-empty">No files match “{search}”.</li>
               )}
             </ul>
-            <BlastRadius branch={branch} />
+            <BlastRadius
+              branch={branch}
+              mergeBase={snapshot?.merge_base ?? ""}
+              knownFiles={(snapshot?.files ?? []).map((f) => f.path)}
+            />
           </div>
           <div className="diff-editor">
             {tooLarge && tooLarge.path === selectedPath ? (

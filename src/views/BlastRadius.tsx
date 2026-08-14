@@ -1,9 +1,13 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Icon } from "../components/Icon";
 import { useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
 import type { ImpactReport, ImpactedFile } from "../types/diffs";
+
+/** Reports survive tab switches within one app run; `signature` records the
+ * diff each was computed against so a moved diff reads as stale, not current. */
+const reportCache = new Map<string, { report: ImpactReport; signature: string }>();
 
 /**
  * Blast radius of the branch's diff: which files outside it import or
@@ -12,19 +16,39 @@ import type { ImpactReport, ImpactedFile } from "../types/diffs";
  * direct dependents, then files importing those. One click hands the whole
  * radius to the branch's main agent for verification.
  */
-export function BlastRadius({ branch }: { branch: string }) {
-  const [report, setReport] = useState<ImpactReport | null>(null);
+export function BlastRadius({
+  branch,
+  mergeBase,
+  knownFiles,
+}: {
+  branch: string;
+  /** The current snapshot's merge-base — part of the staleness signature. */
+  mergeBase: string;
+  knownFiles: string[];
+}) {
+  const cached = reportCache.get(branch);
+  const [report, setReport] = useState<ImpactReport | null>(cached?.report ?? null);
+  const [signature, setSignature] = useState<string | null>(cached?.signature ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [verifyBusy, setVerifyBusy] = useState(false);
   const [open, setOpen] = useState(true);
 
+  const currentSignature = useMemo(
+    () => `${mergeBase}:${[...knownFiles].sort().join("\n")}`,
+    [mergeBase, knownFiles],
+  );
+  const stale = report !== null && signature !== null && signature !== currentSignature;
+
   const analyze = async () => {
     setBusy(true);
     setError(null);
     try {
-      setReport(await invoke<ImpactReport>("analyze_impact", { branch }));
+      const fresh = await invoke<ImpactReport>("analyze_impact", { branch });
+      setReport(fresh);
+      setSignature(currentSignature);
       setOpen(true);
+      reportCache.set(branch, { report: fresh, signature: currentSignature });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -81,6 +105,14 @@ export function BlastRadius({ branch }: { branch: string }) {
           <Icon name={open ? "chevron-down" : "chevron-right"} size={12} /> Blast radius
           {report && ` · ${report.impacted.length}`}
         </button>
+        {stale && (
+          <span
+            className="review-guide-stale"
+            title="The diff changed since this radius was computed — analyze again"
+          >
+            stale
+          </span>
+        )}
         <button
           className="small ghost"
           disabled={busy}

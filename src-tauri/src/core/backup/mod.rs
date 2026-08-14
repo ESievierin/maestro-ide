@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::attention::{SETTING_NOTIFICATION_DIGEST, SETTING_OS_NOTIFICATIONS};
 use crate::core::checks::{SETTING_CHECK_AUTO, SETTING_CHECK_COMMAND};
+use crate::core::config::{
+    SETTING_IMPACT_INCLUDE_REFERENCES, SETTING_RED_TEAM_EFFORT, SETTING_RED_TEAM_MODEL,
+};
 use crate::core::daemon::{
     SETTING_DAEMON_ENABLED, SETTING_DAEMON_POLL_MINUTES, SETTING_DAEMON_RESEARCH_EFFORT,
     SETTING_DAEMON_RESEARCH_MODEL, SETTING_DAEMON_SKIP_LABELS, SETTING_DAEMON_USAGE_THRESHOLD,
@@ -54,6 +57,9 @@ pub const EXPORTABLE_SETTINGS: &[&str] = &[
     SETTING_DAEMON_VERIFY_MODEL,
     SETTING_DAEMON_VERIFY_EFFORT,
     SETTING_DAEMON_SKIP_LABELS,
+    SETTING_RED_TEAM_MODEL,
+    SETTING_RED_TEAM_EFFORT,
+    SETTING_IMPACT_INCLUDE_REFERENCES,
 ];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -81,8 +87,11 @@ pub struct ImportSummary {
     pub settings_skipped: Vec<String>,
 }
 
-/// Snapshot every exportable setting that has a value, plus every prompt
-/// template (built-in or user-added) exactly as `PromptManager` sees it.
+/// Snapshot every exportable setting that has a value, plus the prompt
+/// templates the user actually owns: edited defaults and custom templates.
+/// Unedited defaults are deliberately left out — they reinstall themselves on
+/// any machine, and carrying them would pin an old bundle's defaults over a
+/// newer app's (and knock those files out of the automatic update flow).
 pub fn export(store: &dyn Store, prompts: &PromptManager) -> Result<SettingsBundle> {
     let mut settings = BTreeMap::new();
     for key in EXPORTABLE_SETTINGS {
@@ -93,6 +102,7 @@ pub fn export(store: &dyn Store, prompts: &PromptManager) -> Result<SettingsBund
     let prompt_entries = prompts
         .list()?
         .into_iter()
+        .filter(|p| p.modified || !p.has_default)
         .map(|p| PromptEntry {
             name: p.name,
             content: p.content,
@@ -180,6 +190,11 @@ mod tests {
             .prompts
             .iter()
             .any(|p| p.name == "commit-message" && p.content == "Custom: {{branch}}"));
+        assert!(
+            !bundle.prompts.iter().any(|p| p.name == "line-question"),
+            "unedited defaults stay out of the bundle — they reinstall themselves \
+             and must keep receiving shipped updates on the destination"
+        );
 
         let dst = store();
         let dst_prompts_dir = tempfile::tempdir().unwrap();

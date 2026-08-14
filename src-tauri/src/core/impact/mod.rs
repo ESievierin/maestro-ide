@@ -19,7 +19,9 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
+use crate::core::config::SETTING_IMPACT_INCLUDE_REFERENCES;
 use crate::core::diff::{DiffManager, DiffScope};
+use crate::core::store::Store;
 use crate::core::worktree::{GitProvider, WorktreeManager};
 use crate::error::{MaestroError, Result};
 
@@ -93,6 +95,7 @@ pub struct ImpactManager {
     git: Arc<dyn GitProvider>,
     worktrees: Arc<WorktreeManager>,
     diffs: Arc<DiffManager>,
+    store: Arc<dyn Store>,
 }
 
 impl ImpactManager {
@@ -100,12 +103,24 @@ impl ImpactManager {
         git: Arc<dyn GitProvider>,
         worktrees: Arc<WorktreeManager>,
         diffs: Arc<DiffManager>,
+        store: Arc<dyn Store>,
     ) -> Self {
         Self {
             git,
             worktrees,
             diffs,
+            store,
         }
+    }
+
+    /// `impact_include_references` setting — on unless explicitly `"false"`.
+    fn include_references(&self) -> bool {
+        self.store
+            .get_setting(SETTING_IMPACT_INCLUDE_REFERENCES)
+            .ok()
+            .flatten()
+            .map(|v| v != "false")
+            .unwrap_or(true)
     }
 
     /// Analyze the blast radius of `branch`'s working-tree diff.
@@ -125,6 +140,7 @@ impl ImpactManager {
         // files as "outside the diff". An explicit Analyze click can afford
         // the recompute.
         let snapshot = self.diffs.refresh(branch, DiffScope::Worktree)?;
+        let include_refs = self.include_references();
         let mut truncated = false;
 
         // Signatures of the changed source files.
@@ -142,8 +158,14 @@ impl ImpactManager {
                 continue;
             }
             // A deleted file has no content on disk; its stem still matters —
-            // anything still importing it is exactly what broke.
-            let content = read_bounded(&root.join(&file.path));
+            // anything still importing it is exactly what broke. With symbol
+            // references configured off, skip reading entirely: a stem-only
+            // signature can only ever produce import links.
+            let content = if include_refs {
+                read_bounded(&root.join(&file.path))
+            } else {
+                None
+            };
             signatures.push(derive_signature(&file.path, content.as_deref()));
             analyzed.push(file.path.clone());
         }

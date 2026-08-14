@@ -32,6 +32,9 @@ use crate::error::Result;
 pub const SETTING_RED_TEAM_MODEL: &str = "red_team_model";
 /// Effort for red-team sessions. Empty/absent = the session default.
 pub const SETTING_RED_TEAM_EFFORT: &str = "red_team_effort";
+/// `"false"` limits the blast radius to import links, dropping the noisier
+/// symbol-mention matches. Default: on.
+pub const SETTING_IMPACT_INCLUDE_REFERENCES: &str = "impact_include_references";
 
 /// The file written on first run. Values are commented out so the built-in defaults stay
 /// in charge until the user opts in — and so the file documents what can be changed.
@@ -114,6 +117,10 @@ const DEFAULT_CONFIG: &str = r#"# MaestroIDE configuration (~/.maestro/config.to
 # red_team_model = "sonnet"
 # red_team_effort = "high"
 
+# Blast radius: also count plain symbol mentions as (weaker) links, not just
+# import lines. Turn off if the reference ring is too noisy in your codebase.
+# impact_include_references = true
+
 # --- Jira (research flow) ---
 # All three must be set for the daemon to poll Jira. The token is an Atlassian
 # API token (id.atlassian.com → Security → API tokens), not your password.
@@ -149,6 +156,7 @@ pub struct Config {
     pub daemon_verify_effort: Option<String>,
     pub red_team_model: Option<String>,
     pub red_team_effort: Option<String>,
+    pub impact_include_references: Option<bool>,
     pub jira_base_url: Option<String>,
     pub jira_email: Option<String>,
     pub jira_token: Option<String>,
@@ -247,6 +255,10 @@ impl Config {
             ),
             (SETTING_RED_TEAM_MODEL, self.red_team_model.clone()),
             (SETTING_RED_TEAM_EFFORT, self.red_team_effort.clone()),
+            (
+                SETTING_IMPACT_INCLUDE_REFERENCES,
+                self.impact_include_references.map(|b| b.to_string()),
+            ),
             (SETTING_JIRA_BASE_URL, self.jira_base_url.clone()),
             (SETTING_JIRA_EMAIL, self.jira_email.clone()),
             (SETTING_JIRA_TOKEN, self.jira_token.clone()),

@@ -103,7 +103,12 @@ pub fn run() {
         worktrees.clone(),
         bus.clone(),
     ));
-    let impact = Arc::new(ImpactManager::new(git, worktrees.clone(), diffs.clone()));
+    let impact = Arc::new(ImpactManager::new(
+        git,
+        worktrees.clone(),
+        diffs.clone(),
+        store.clone(),
+    ));
 
     let prompts_dir = maestro_home().join("prompts");
     let prompts = match PromptManager::new(&prompts_dir) {

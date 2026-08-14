@@ -373,7 +373,7 @@ mod tests {
             bus.clone(),
         ));
         let notes = Arc::new(NotesManager::new(worktrees.clone(), bus.clone()));
-        let prompts = Arc::new(PromptManager::new(&tmp.path().join("prompts")).unwrap());
+        let prompts = Arc::new(PromptManager::new(tmp.path().join("prompts")).unwrap());
         let impact = Arc::new(ImpactManager::new(
             git_cli,
             worktrees.clone(),

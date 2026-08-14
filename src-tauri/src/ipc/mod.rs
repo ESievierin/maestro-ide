@@ -238,6 +238,7 @@ pub async fn start_red_team(state: State<'_, AppState>, branch: String) -> Resul
     let notes = state.notes.clone();
     let prompts = state.prompts.clone();
     let store = state.store.clone();
+    let impact = state.impact.clone();
     run_core(state.bus.clone(), move || {
         if branch.starts_with(RED_TEAM_PREFIX) {
             return Err(MaestroError::InvalidData {
@@ -270,10 +271,33 @@ pub async fn start_red_team(state: State<'_, AppState>, branch: String) -> Resul
         // Every worktree gets its main agent, this one included.
         sessions.ensure_main(&child_name, &cwd, None, None)?;
 
+        // The dependents of the change are prime hunting ground; best-effort —
+        // a failed scan must never block the attack itself.
+        let impacted = match impact.analyze(&branch) {
+            Ok(report) => {
+                let lines: Vec<String> = report
+                    .impacted
+                    .iter()
+                    .take(30)
+                    .map(|f| format!("{} ({}, ring {})", f.path, f.kind, f.distance))
+                    .collect();
+                if lines.is_empty() {
+                    "(no outside dependents found)".to_string()
+                } else {
+                    lines.join("\n")
+                }
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "impact scan for the red-team prompt failed");
+                "(blast-radius scan unavailable)".to_string()
+            }
+        };
+
         let branch_row = store.get_branch(&branch).ok().flatten();
         let mut vars = std::collections::HashMap::new();
         vars.insert("parent_branch".to_string(), branch.clone());
         vars.insert("base".to_string(), snapshot.base.clone());
+        vars.insert("impacted".to_string(), impacted);
         vars.insert(
             "task_id".to_string(),
             branch_row

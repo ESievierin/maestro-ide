@@ -11,6 +11,7 @@ import { closeOnBackdropMouseDown } from "../utils/backdropClose";
 import {
   clearFinishedSessions,
   copyPath,
+  dismantleRedTeam,
   openWorktree,
   removeWorktree,
   sendRedTeamFindings,
@@ -166,6 +167,13 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
             label: "Send red-team findings to the parent's main agent",
             hint: branch,
             run: () => void sendRedTeamFindings(branch),
+          });
+          result.push({
+            id: "wt:redteam-dismantle",
+            icon: "trash",
+            label: "Dismantle red team (remove this worktree)…",
+            hint: branch,
+            run: () => void dismantleRedTeam(branch),
           });
         } else {
           result.push({

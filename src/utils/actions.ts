@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSessions } from "../state/sessions";
 import { useWorktrees } from "../state/worktrees";
 import type { Notes } from "../types/notes";
+import { isTerminalStatus } from "../types/sessions";
 import type { Session } from "../types/sessions";
 import { defaultTranscriptFilename, transcriptToMarkdown } from "./exportTranscript";
 
@@ -93,6 +94,29 @@ export async function sendRedTeamFindings(branch: string): Promise<void> {
       message: String(e),
     });
   }
+}
+
+/** Tear down a red-team worktree once its findings served their purpose:
+ * close whatever still runs there, then remove the worktree through the
+ * normal flow (dirty state still gets its own discard confirmation — the
+ * uncommitted proof-tests die with it, and that deserves an explicit yes).
+ * The branch row survives, so a later re-attack reattaches. */
+export async function dismantleRedTeam(branch: string): Promise<void> {
+  if (!branch.startsWith("redteam/")) return;
+  const { confirm } = await import("@tauri-apps/plugin-dialog");
+  const ok = await confirm(
+    `Dismantle the red team on "${branch}"?\nThe worktree is removed; the branch (with any committed tests) survives in git.`,
+    { title: "MaestroIDE", kind: "warning" },
+  );
+  if (!ok) return;
+  const sessions = useSessions.getState().byBranch[branch] ?? [];
+  for (const session of sessions) {
+    // The main session refuses a direct close — worktree removal handles it.
+    if (!isTerminalStatus(session.status) && session.session_type !== "main") {
+      await useSessions.getState().close(session.id);
+    }
+  }
+  await removeWorktree(branch);
 }
 
 /** Copy a worktree path with a confirming toast. */

@@ -24,6 +24,18 @@ function dispatch(event: unknown) {
 
 const { useAttention } = await import("./attention");
 const { sendNotification } = await import("@tauri-apps/plugin-notification");
+const { invoke } = await import("@tauri-apps/api/core");
+import type { AttentionItem } from "../types/attention";
+
+const item = (id: string, kind: AttentionItem["kind"]): AttentionItem => ({
+  id,
+  kind,
+  target: kind === "gate" ? "gate" : "chat",
+  branch: "impl/a",
+  session_id: null,
+  message: `${kind} item`,
+  created_at: "2026-08-14T00:00:00Z",
+});
 
 const sessionFailed = (branch: string) => ({
   type: "session.status_changed",
@@ -94,5 +106,33 @@ describe("notification digest", () => {
       title: "MaestroIDE",
       body: "2 items need your attention",
     });
+  });
+});
+
+describe("dismissAll", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined);
+  });
+
+  it("clears everything except gates — they block a command until answered", async () => {
+    useAttention.setState({
+      items: [item("g1", "gate"), item("f1", "session_failed"), item("r1", "red_team_ready")],
+    });
+    await useAttention.getState().dismissAll();
+    expect(invoke).toHaveBeenCalledWith("dismiss_all_attention");
+    const left = useAttention.getState().items;
+    expect(left.map((i) => i.id)).toEqual(["g1"]);
+  });
+
+  it("keeps the list intact and surfaces the error when the backend fails", async () => {
+    useAttention.setState({
+      items: [item("f1", "session_failed")],
+      error: null,
+    });
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("core down"));
+    await useAttention.getState().dismissAll();
+    expect(useAttention.getState().items).toHaveLength(1);
+    expect(useAttention.getState().error).toContain("core down");
   });
 });

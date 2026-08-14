@@ -407,8 +407,24 @@ export const useSessions = create<SessionsState>((set, get) => ({
   },
 
   close: async (sessionId) => {
+    // A live implementation session doesn't close instantly: the core asks it
+    // to write TASK_NOTES.md first (up to notes_finalize_timeout_secs). Say so
+    // inline, or the tab just sits there looking ignored.
+    const session = Object.values(get().byBranch)
+      .flat()
+      .find((s) => s.id === sessionId);
+    const finalizes =
+      session?.session_type === "implementation" && !isTerminalStatus(session.status);
     try {
       await invoke("close_session", { sessionId });
+      if (finalizes) {
+        set((s) => ({
+          transcripts: appendTranscript(s.transcripts, sessionId, {
+            kind: "settings",
+            text: "Closing — the agent is writing TASK_NOTES.md first",
+          }),
+        }));
+      }
     } catch (e) {
       set({ error: String(e) });
     }

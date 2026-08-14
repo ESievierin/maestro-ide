@@ -35,6 +35,10 @@ use serde::Serialize;
 /// it off entirely.
 pub const SETTING_TELEMETRY_ENABLED: &str = "telemetry_enabled";
 
+/// Days of telemetry to keep. Absent/`0` = keep everything (the default —
+/// deleting a user's conversation history must be an explicit opt-in).
+pub const SETTING_TELEMETRY_RETENTION_DAYS: &str = "telemetry_retention_days";
+
 #[derive(Serialize)]
 struct TelemetryLine<'a> {
     ts: String,
@@ -90,6 +94,11 @@ thin slice (the Q&A, plus reasoning) rather than a full activity log.
 
 Controlled by the `telemetry_enabled` setting (default on). Turning it off stops
 new writes; it does not touch anything already on disk.
+
+## Retention
+
+`telemetry_retention_days` in config.toml (0 or absent = keep everything, the
+default) deletes day folders older than the window at every app start.
 "#;
 
 impl TelemetryManager {
@@ -205,6 +214,45 @@ impl TelemetryManager {
         }
         std::fs::write(path, README)
     }
+
+    /// Delete day directories older than `retention_days`. `0` keeps everything.
+    /// Only directories whose name parses as `%Y-%m-%d` are considered — anything
+    /// else under `sessions/` is left alone. Errors are logged, never fatal:
+    /// retention is housekeeping, not a startup dependency.
+    pub fn sweep(&self, retention_days: u32) {
+        if retention_days == 0 {
+            return;
+        }
+        let sessions = self.root.join("sessions");
+        let entries = match std::fs::read_dir(&sessions) {
+            Ok(entries) => entries,
+            Err(_) => return, // nothing recorded yet
+        };
+        let cutoff = Utc::now().date_naive() - chrono::Days::new(u64::from(retention_days));
+        let mut removed = 0usize;
+        for entry in entries.filter_map(|e| e.ok()) {
+            let name = entry.file_name();
+            let Some(day) = name
+                .to_str()
+                .and_then(|n| chrono::NaiveDate::parse_from_str(n, "%Y-%m-%d").ok())
+            else {
+                continue;
+            };
+            // `> cutoff` keeps exactly `retention_days` days, today included.
+            if day > cutoff {
+                continue;
+            }
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => removed += 1,
+                Err(err) => {
+                    tracing::warn!(error = %err, day = %day, "telemetry retention sweep failed")
+                }
+            }
+        }
+        if removed > 0 {
+            tracing::info!(removed, retention_days, "telemetry retention sweep");
+        }
+    }
 }
 
 /// Filesystem-safe stand-in for a branch name: anything that isn't
@@ -293,6 +341,61 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names.len(), 2);
+    }
+
+    #[test]
+    fn sweep_removes_only_day_dirs_past_the_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = TelemetryManager::new(tmp.path().to_path_buf());
+        let sessions = tmp.path().join("sessions");
+
+        let today = Utc::now().date_naive();
+        let old = (today - chrono::Days::new(10))
+            .format("%Y-%m-%d")
+            .to_string();
+        let edge = (today - chrono::Days::new(7))
+            .format("%Y-%m-%d")
+            .to_string();
+        let fresh = today.format("%Y-%m-%d").to_string();
+        for day in [&old, &edge, &fresh] {
+            std::fs::create_dir_all(sessions.join(day)).unwrap();
+            std::fs::write(sessions.join(day).join("x.jsonl"), "{}\n").unwrap();
+        }
+        // Not a day dir: must survive any window.
+        std::fs::create_dir_all(sessions.join("not-a-date")).unwrap();
+
+        mgr.sweep(7);
+
+        assert!(
+            !sessions.join(&old).exists(),
+            "10 days old is past a 7-day window"
+        );
+        assert!(
+            !sessions.join(&edge).exists(),
+            "day 7 is the first one out of the window"
+        );
+        assert!(sessions.join(&fresh).exists(), "today always survives");
+        assert!(sessions.join("not-a-date").exists());
+    }
+
+    #[test]
+    fn sweep_zero_keeps_everything() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = TelemetryManager::new(tmp.path().to_path_buf());
+        let sessions = tmp.path().join("sessions");
+        let ancient = "2020-01-01";
+        std::fs::create_dir_all(sessions.join(ancient)).unwrap();
+
+        mgr.sweep(0);
+        assert!(sessions.join(ancient).exists());
+    }
+
+    #[test]
+    fn sweep_without_a_telemetry_dir_is_a_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = TelemetryManager::new(tmp.path().join("never-written"));
+        mgr.sweep(7); // must not panic or create anything
+        assert!(!tmp.path().join("never-written").exists());
     }
 
     fn read_lines(

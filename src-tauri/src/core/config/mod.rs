@@ -25,6 +25,7 @@ use crate::core::launcher::SETTING_EDITOR_COMMAND;
 use crate::core::questions::SETTING_LINE_QUESTION_TARGET;
 use crate::core::session::manager::{SETTING_NOTES_FINALIZE_TIMEOUT, SETTING_SINGLE_WRITER_POLICY};
 use crate::core::store::Store;
+use crate::core::telemetry::SETTING_TELEMETRY_RETENTION_DAYS;
 use crate::core::worktree::{SETTING_BRANCH_TEMPLATE, SETTING_WORKTREE_ROOT};
 use crate::error::Result;
 
@@ -121,6 +122,10 @@ const DEFAULT_CONFIG: &str = r#"# MaestroIDE configuration (~/.maestro/config.to
 # import lines. Turn off if the reference ring is too noisy in your codebase.
 # impact_include_references = true
 
+# Days of conversation telemetry (~/.maestro/telemetry) to keep; older day
+# folders are deleted at startup. 0 or absent = keep everything forever.
+# telemetry_retention_days = 30
+
 # --- Jira (research flow) ---
 # All three must be set for the daemon to poll Jira. The token is an Atlassian
 # API token (id.atlassian.com → Security → API tokens), not your password.
@@ -157,6 +162,7 @@ pub struct Config {
     pub red_team_model: Option<String>,
     pub red_team_effort: Option<String>,
     pub impact_include_references: Option<bool>,
+    pub telemetry_retention_days: Option<u32>,
     pub jira_base_url: Option<String>,
     pub jira_email: Option<String>,
     pub jira_token: Option<String>,
@@ -258,6 +264,10 @@ impl Config {
             (
                 SETTING_IMPACT_INCLUDE_REFERENCES,
                 self.impact_include_references.map(|b| b.to_string()),
+            ),
+            (
+                SETTING_TELEMETRY_RETENTION_DAYS,
+                self.telemetry_retention_days.map(|d| d.to_string()),
             ),
             (SETTING_JIRA_BASE_URL, self.jira_base_url.clone()),
             (SETTING_JIRA_EMAIL, self.jira_email.clone()),

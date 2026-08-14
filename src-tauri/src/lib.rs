@@ -21,7 +21,7 @@ use crate::core::pr::PrManager;
 use crate::core::prompts::PromptManager;
 use crate::core::questions::LineQuestionManager;
 use crate::core::session::SessionManager;
-use crate::core::store::SqliteStore;
+use crate::core::store::{SqliteStore, Store};
 use crate::core::telemetry::TelemetryManager;
 use crate::core::worktree::{GitCli, WorktreeManager};
 use crate::ipc::AppState;
@@ -123,6 +123,14 @@ pub fn run() {
     // needs it (and the templates) to ask a closing implementation session for its notes.
     let notes = Arc::new(NotesManager::new(worktrees.clone(), bus.clone()));
     let telemetry = Arc::new(TelemetryManager::new(maestro_home().join("telemetry")));
+    // Retention housekeeping — config.toml was applied above, so the setting is fresh.
+    let retention_days = store
+        .get_setting(core::telemetry::SETTING_TELEMETRY_RETENTION_DAYS)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0);
+    telemetry.sweep(retention_days);
     let sessions = Arc::new(
         SessionManager::with_gates(store.clone(), bus.clone(), engine, Some(gates.clone()))
             .with_notes(notes.clone(), prompts.clone())

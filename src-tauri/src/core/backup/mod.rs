@@ -28,7 +28,7 @@ use crate::core::prompts::PromptManager;
 use crate::core::questions::SETTING_LINE_QUESTION_TARGET;
 use crate::core::session::manager::{SETTING_NOTES_FINALIZE_TIMEOUT, SETTING_SINGLE_WRITER_POLICY};
 use crate::core::store::Store;
-use crate::core::telemetry::SETTING_TELEMETRY_ENABLED;
+use crate::core::telemetry::{SETTING_TELEMETRY_ENABLED, SETTING_TELEMETRY_RETENTION_DAYS};
 use crate::core::worktree::SETTING_BRANCH_TEMPLATE;
 use crate::error::{MaestroError, Result};
 
@@ -39,6 +39,7 @@ pub const BUNDLE_VERSION: u32 = 1;
 /// not secrets, not a machine's own account selection.
 pub const EXPORTABLE_SETTINGS: &[&str] = &[
     SETTING_TELEMETRY_ENABLED,
+    SETTING_TELEMETRY_RETENTION_DAYS,
     SETTING_OS_NOTIFICATIONS,
     SETTING_NOTIFICATION_DIGEST,
     SETTING_SINGLE_WRITER_POLICY,

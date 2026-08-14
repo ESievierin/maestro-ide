@@ -1480,6 +1480,7 @@ pub async fn run_health_check(
             &crate::core::daemon::GhCli,
             &worktrees,
             &crate::maestro_home().join("config.toml"),
+            &crate::maestro_home().join("telemetry"),
         ))
     })
     .await

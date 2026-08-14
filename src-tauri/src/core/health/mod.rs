@@ -12,6 +12,7 @@ use crate::core::daemon::jira::{SETTING_JIRA_BASE_URL, SETTING_JIRA_EMAIL, SETTI
 use crate::core::daemon::GhProvider;
 use crate::core::launcher;
 use crate::core::store::Store;
+use crate::core::telemetry::SETTING_TELEMETRY_RETENTION_DAYS;
 use crate::core::worktree::WorktreeManager;
 
 #[derive(Clone, Debug, Serialize)]
@@ -33,6 +34,7 @@ pub fn run(
     gh: &dyn GhProvider,
     worktrees: &WorktreeManager,
     config_path: &Path,
+    telemetry_root: &Path,
 ) -> HealthReport {
     HealthReport {
         checks: vec![
@@ -42,7 +44,74 @@ pub fn run(
             check_jira(store),
             check_repo(worktrees),
             check_config(config_path),
+            check_telemetry(store, telemetry_root),
         ],
+    }
+}
+
+/// How much disk the conversation logs occupy and what governs it — the number
+/// that tells a user whether `telemetry_retention_days` is worth setting.
+fn check_telemetry(store: &dyn Store, root: &Path) -> HealthCheck {
+    let retention = store
+        .get_setting(SETTING_TELEMETRY_RETENTION_DAYS)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0);
+    let policy = if retention == 0 {
+        "kept forever".to_string()
+    } else {
+        format!("kept {retention} days")
+    };
+    let (files, bytes) = dir_footprint(&root.join("sessions"));
+    HealthCheck {
+        name: "telemetry".into(),
+        ok: true, // informational — footprint is never a failure
+        detail: if files == 0 {
+            format!("empty — {policy}")
+        } else {
+            format!(
+                "{files} file{} / {} — {policy}",
+                if files == 1 { "" } else { "s" },
+                human_size(bytes)
+            )
+        },
+    }
+}
+
+/// Recursive file count + byte total; unreadable subtrees just count for nothing.
+fn dir_footprint(dir: &Path) -> (u64, u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    let mut files = 0;
+    let mut bytes = 0;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_dir() {
+            let (f, b) = dir_footprint(&path);
+            files += f;
+            bytes += b;
+        } else if let Ok(meta) = entry.metadata() {
+            files += 1;
+            bytes += meta.len();
+        }
+    }
+    (files, bytes)
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
     }
 }
 
@@ -328,12 +397,58 @@ mod tests {
             accounts: Ok(vec![]),
         };
         let tmp = tempfile::tempdir().unwrap();
-        let report = run(&store, &gh, &worktrees(), &tmp.path().join("config.toml"));
+        let report = run(
+            &store,
+            &gh,
+            &worktrees(),
+            &tmp.path().join("config.toml"),
+            &tmp.path().join("telemetry"),
+        );
         let names: Vec<&str> = report.checks.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
             names,
-            ["git", "gh", "editor", "jira", "repository", "config.toml"]
+            [
+                "git",
+                "gh",
+                "editor",
+                "jira",
+                "repository",
+                "config.toml",
+                "telemetry"
+            ]
         );
+    }
+
+    #[test]
+    fn telemetry_check_reports_footprint_and_policy() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("telemetry");
+
+        let empty = check_telemetry(&store, &root);
+        assert!(empty.ok);
+        assert!(empty.detail.contains("empty"), "{}", empty.detail);
+        assert!(empty.detail.contains("forever"), "{}", empty.detail);
+
+        let day = root.join("sessions").join("2026-08-14");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(day.join("a.jsonl"), vec![b'x'; 2048]).unwrap();
+        std::fs::write(day.join("b.jsonl"), vec![b'y'; 1024]).unwrap();
+        store
+            .set_setting(SETTING_TELEMETRY_RETENTION_DAYS, "30")
+            .unwrap();
+
+        let full = check_telemetry(&store, &root);
+        assert!(full.detail.contains("2 files"), "{}", full.detail);
+        assert!(full.detail.contains("3.0 KB"), "{}", full.detail);
+        assert!(full.detail.contains("kept 30 days"), "{}", full.detail);
+    }
+
+    #[test]
+    fn human_size_picks_sane_units() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(2048), "2.0 KB");
+        assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
     }
 
     #[test]

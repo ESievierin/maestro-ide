@@ -26,6 +26,14 @@ function StatusBadges({ wt }: { wt: WorktreeInfo }) {
   const attention = useAttention((s) =>
     wt.branch ? s.items.filter((i) => i.branch === wt.branch).length : 0,
   );
+  // Cost accumulated this app run across the branch's sessions — a number, so
+  // the selector stays referentially stable for zustand.
+  const cost = useSessions((s) =>
+    (wt.branch ? (s.byBranch[wt.branch] ?? []) : []).reduce(
+      (sum, sess) => sum + (s.usage[sess.id]?.costUsd ?? 0),
+      0,
+    ),
+  );
 
   const list = sessions ?? [];
   const working = list.some((s) => s.status === "streaming" || s.status === "spawning");
@@ -78,6 +86,11 @@ function StatusBadges({ wt }: { wt: WorktreeInfo }) {
       {diffReady && (
         <span className="badge badge-info">
           <Icon name="diff" size={11} /> {diffFiles}
+        </span>
+      )}
+      {cost > 0 && (
+        <span className="badge badge-muted" title="Agent cost on this branch (this app run)">
+          ${cost.toFixed(2)}
         </span>
       )}
       {wt.is_primary && <span className="badge badge-muted">primary</span>}
